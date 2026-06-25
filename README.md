@@ -1,10 +1,11 @@
 # Maia-3 · play & probe
 
-A tiny desktop app to play chess against **Maia-3 (5M)** — a human-like neural
+An app to play chess against **Maia-3 (5M)** — a human-like transformer based neural
 network — and watch, live, what it's doing inside: its full move policy, its
 attention (the semantic **QKᵀ** vs. the geometric **GAB** bias), and how its
 internal representation evolves layer by layer. Drag the **ELO slider** to
-re-evaluate the same position at different skill levels.
+re-evaluate the same position at different skill levels. I'm hoping to get 
+the transcoders to look at soon.
 
 ## Run
 
@@ -14,7 +15,7 @@ pip install -r requirements.txt
 python app.py
 ```
 
-That's it. The first launch downloads the Maia3-5M weights (~20 MB) from
+The first launch downloads the Maia3-5M transformer weights (~20 MB) from
 Hugging Face and a native window opens (no browser needed).
 
 Requires **Python 3.10+** and an internet connection on first run.
