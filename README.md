@@ -11,6 +11,8 @@ roughly 75% chance draw).
 
 I'm hoping to get the transcoders to analyze too soon.
 
+<img width="1440" height="900" alt="Screenshot 2026-06-25 at 12 16 03 PM" src="https://github.com/user-attachments/assets/ff7de900-cf28-4e0c-8661-0aac43409325" />
+
 ## Run
 
 ```bash
