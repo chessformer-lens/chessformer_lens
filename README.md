@@ -1,11 +1,15 @@
 # Maia-3 · play & probe
 
-An app to play chess against **Maia-3 (5M)** — a human-like transformer based neural
-network — and watch, live, what it's doing inside: its full move policy, its
-attention (the semantic **QKᵀ** vs. the geometric **GAB** bias), and how its
-internal representation evolves layer by layer. Drag the **ELO slider** to
-re-evaluate the same position at different skill levels. I'm hoping to get 
-the transcoders to look at soon.
+
+Play a transformer based chess bot (Maia-3) trained to mimic human play and watch its move policy, 
+its attention (regular self attention vs unique geometric GAB), 
+and how its residual stream evolves with depth. 
+
+Drag the ELO slider to re-evaluate a position at
+different skill levels (e.g. eval at very low ELO for King and Queen vs King comes out to
+roughly 75% chance draw).
+
+I'm hoping to get the transcoders to analyze too soon.
 
 ## Run
 
