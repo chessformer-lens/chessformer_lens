@@ -559,9 +559,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   /* live attention panel */
   .attctrls{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
-  .chiprow{display:flex;align-items:center;gap:8px}
-  .chiprow .lbl{flex:0 0 38px}
-  .chips{display:flex;flex-wrap:wrap;gap:4px}
+  .chiprow{display:flex;align-items:flex-start;gap:8px}
+  .chiprow .lbl{flex:0 0 38px;padding-top:4px}
+  .chips{display:flex;flex:1;min-width:0;flex-wrap:wrap;gap:4px}
   .chip{padding:3px 8px;font-size:11px;border:1px solid var(--line);border-radius:6px;
     background:var(--panel2);cursor:pointer;font-family:var(--mono);color:var(--text)}
   .chip:hover{border-color:var(--accent)}
@@ -695,34 +695,45 @@ const MAXPOL=14;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
 /* ---- wait for the python bridge, then boot (poll; don't rely on the event) ---- */
-let booted=false, waitN=0;
+let booted=false, booting=false, waitN=0;
 window.addEventListener('pywebviewready', tryBoot);
+function showLoading(msg){
+  $('loadtext').textContent=msg;
+  $('loading').style.display='flex';
+}
 function tryBoot(){
-  if(booted) return;
-  if(window.pywebview && window.pywebview.api){ booted=true; boot(); return; }
-  if(++waitN===40) $('loadtext').textContent='Connecting to Python bridge…';
-  if(waitN>120){ $('loadtext').textContent='Bridge not connecting — check the terminal for errors.'; return; }
+  if(booted || booting) return;
+  if(window.pywebview && window.pywebview.api){ boot(); return; }
+  if(++waitN===1) showLoading('Connecting to Python bridge…');
+  if(waitN>120){ showLoading('Bridge not connecting — check the terminal for errors.'); return; }
   setTimeout(tryBoot,100);
 }
+showLoading('Loading Maia3-5M…');
 tryBoot();
 
 async function boot(){
+  if(booted || booting) return;
+  booting=true;
+  showLoading('Loading Maia3-5M…');
   try{
     API = window.pywebview.api;
-    $('loadtext').textContent='Loading Maia3-5M…';
     let info = await API.info();
     let n=0;
     while(!info.ready && !info.error){ await sleep(400); info = await API.info(); if(++n>300) break; }
-    if(info.error){ $('loadtext').textContent='Model failed to load:\n'+info.error; return; }
-    if(!info.ready){ $('loadtext').textContent='Model load timed out — check the terminal.'; return; }
-    $('loading').style.display='none';
+    if(info.error){ showLoading('Model failed to load:\n'+info.error); return; }
+    if(!info.ready){ showLoading('Model load timed out — check the terminal.'); return; }
     MODEL_INFO = info;
     setModelInfo();
-    populateAttSelects(info);
+    initAttUi(info);
     console.log('[maia] bridge ready', info);
+    $('loading').style.display='none';
+    booted=true;
     await newGame();
   }catch(e){
-    $('loadtext').textContent='Bridge error: '+(e && e.message ? e.message : e);
+    showLoading('Bridge error: '+(e && e.message ? e.message : e));
+    setTimeout(tryBoot, 500);
+  }finally{
+    booting=false;
   }
 }
 
@@ -960,7 +971,7 @@ function sqName2(sq){ return FILES[sq%8]+(Math.floor(sq/8)+1); }
 
 function buildAttBoards(){
   ['att_qk','att_gab','att_attn'].forEach(id=>{
-    const el=$(id); if(!el) return; el.innerHTML='';
+    const el=$(id); if(!el || el.children.length) return;
     for(let idx=0;idx<64;idx++){
       const d=document.createElement('div'); d.className='attcell'; d.dataset.idx=idx;
       d.onclick=()=>{ const r=Math.floor(idx/8), c=idx%8; attQueryReal=sqName(r,c); renderAttention(); renderBoard(); };
@@ -991,14 +1002,24 @@ function renderAttention(){
 }
 async function updateAttention(){
   if(!API || !cur || cur.game_over) return;
+  ensureAttUi(MODEL_INFO);
   try{
     const d = await API.attention(elo, attLayer, attHead);
-    if(d && !d.error){ lastAtt=d; renderAttention(); }
+    if(d && !d.error){
+      if(d.num_heads && $('headChips') && $('headChips').children.length !== d.num_heads){
+        attHead = Math.min(attHead, d.num_heads - 1);
+        buildChips('headChips', d.num_heads, attHead, i=>{ attHead=i; updateAttention(); });
+      }
+      lastAtt=d; renderAttention();
+    }
   }catch(e){ /* ignore transient bridge errors */ }
 }
 function buildChips(id, n, current, onpick){
-  const el=$(id); if(!el) return; el.innerHTML='';
-  for(let i=0;i<n;i++){
+  const el=$(id); if(!el) return;
+  const count = Math.max(0, Number(n) || 0);
+  if(!count) return;
+  el.innerHTML='';
+  for(let i=0;i<count;i++){
     const b=document.createElement('div');
     b.className='chip'+(i===current?' active':''); b.textContent=i; b.dataset.i=i;
     b.onclick=()=>{ el.querySelectorAll('.chip').forEach(c=>c.classList.toggle('active',+c.dataset.i===i)); onpick(i); };
@@ -1006,10 +1027,21 @@ function buildChips(id, n, current, onpick){
   }
 }
 function populateAttSelects(info){
+  if(!info) return;
   buildChips('layerChips', info.num_blocks||8, attLayer, i=>{ attLayer=i; updateAttention(); });
   buildChips('headChips', info.num_heads||8, attHead, i=>{ attHead=i; updateAttention(); });
 }
-buildAttBoards();
+function ensureAttUi(info){
+  if(!info) return;
+  buildAttBoards();
+  const lc=$('layerChips'), hc=$('headChips');
+  if(lc && !lc.children.length) buildChips('layerChips', info.num_blocks||8, attLayer, i=>{ attLayer=i; updateAttention(); });
+  if(hc && !hc.children.length) buildChips('headChips', info.num_heads||8, attHead, i=>{ attHead=i; updateAttention(); });
+}
+function initAttUi(info){
+  populateAttSelects(info);
+  buildAttBoards();
+}
 
 /* ---- residual-stream filmstrip (live, per position + ELO) ---- */
 let residMetric='delta', lastRes=null;
