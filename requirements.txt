@@ -1,0 +1,8 @@
+# Everything the app needs. The first line installs the Maia-3 model code
+# straight from GitHub, so there is nothing else to clone.
+maia3 @ git+https://github.com/CSSLab/maia3
+torch
+numpy
+python-chess
+huggingface-hub
+pywebview
