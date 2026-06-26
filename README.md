@@ -1,4 +1,4 @@
-# Maia-3 · play & probe
+# Chessformer (Maia 3) interpretability app.
 
 
 Play a transformer based chess bot (Maia-3) trained to mimic human play and watch its move policy, 
