@@ -1,5 +1,5 @@
 """
-Maia-3 · play & probe — desktop app.
+Chessformer (Maia 3) interpretability app.
 
 Play a transformer based chess bot (Maia-3) trained to mimic human play and watch its move policy, 
 its attention (regular self attention vs unique geometric GAB), 
@@ -164,15 +164,15 @@ class MaiaEngine:
 
         logits = logits_move[0].float()
         legal_mask = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
-        logits = logits.masked_fill(~legal_mask, float("-inf"))
-        probs = torch.softmax(logits, dim=-1)   # normalized over legal moves
-
         policy = []
-        for idx in torch.nonzero(legal_mask, as_tuple=False).flatten().tolist():
-            mv = self._idx_to_move(board, idx)
-            if mv is not None:
-                policy.append((mv.uci(), float(probs[idx])))
-        policy.sort(key=lambda x: x[1], reverse=True)
+        if bool(legal_mask.any()):                  # may be empty for hand-edited positions
+            logits = logits.masked_fill(~legal_mask, float("-inf"))
+            probs = torch.softmax(logits, dim=-1)   # normalized over legal moves
+            for idx in torch.nonzero(legal_mask, as_tuple=False).flatten().tolist():
+                mv = self._idx_to_move(board, idx)
+                if mv is not None:
+                    policy.append((mv.uci(), float(probs[idx])))
+            policy.sort(key=lambda x: x[1], reverse=True)
 
         loss, draw, win = torch.softmax(logits_value[0].float(), dim=-1).tolist()
         return {
@@ -441,6 +441,41 @@ class MaiaApi:
                 self.san_history.pop()
         return self._base()
 
+    def analyze(self):
+        """Switch to set-up / analyze mode (you move both sides; Maia never
+        auto-moves) WITHOUT resetting the board."""
+        self.human_both = True
+        return self._base()
+
+    def set_fen(self, fen):
+        """Load an arbitrary position from a FEN (enters analyze mode)."""
+        try:
+            board = chess.Board(fen)
+        except Exception:
+            return {**self._base(), "error": "invalid FEN"}
+        self.board = board
+        self.human_both = True
+        self.san_history = []
+        return self._base()
+
+    def edit_square(self, frm, to=None):
+        """Free position editing: move the piece on `frm` to `to` ignoring
+        legality, or delete it if `to` is None. Stays in analyze mode."""
+        try:
+            f = chess.parse_square(frm)
+        except Exception:
+            return self._base()
+        piece = self.board.piece_at(f)
+        self.board.remove_piece_at(f)
+        if to and piece is not None:
+            try:
+                self.board.set_piece_at(chess.parse_square(to), piece)
+            except Exception:
+                pass
+        self.human_both = True
+        self.san_history = []
+        return self._base()
+
     def attention(self, elo=1500, layer=0, head=0):
         if not self.ready:
             return {"error": self.error or "model still loading"}
@@ -469,7 +504,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Maia-3 · play & probe</title>
+<title>Chessformer (Maia 3) Interpretability</title>
 <style>
   :root{
     --bg:#0e1014; --panel:#161a21; --panel2:#1b2029; --line:#262c37;
@@ -572,8 +607,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .attboard{width:100%;max-width:202px;aspect-ratio:1/1;margin:0 auto;display:grid;
     grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr);
     border:1px solid var(--line);border-radius:5px;overflow:hidden;background:#10141b}
-  .attcell{cursor:pointer}
+  .attcell{cursor:pointer;position:relative}
   .attcell.q{box-shadow:inset 0 0 0 2px #ff5d6c}
+  .attcoord{position:absolute;font-size:6px;line-height:1;font-family:var(--mono);
+    color:rgba(255,255,255,.9);text-shadow:0 0 2px rgba(0,0,0,.95);pointer-events:none}
+  .attcoord.f{right:1px;bottom:0} .attcoord.r{left:1px;top:0}
+  .fenrow{display:flex;gap:6px;margin-top:8px}
+  .fenbox{flex:1;min-width:0;background:#0f131a;border:1px solid var(--line);border-radius:6px;
+    color:var(--text);font-family:var(--mono);font-size:10px;padding:5px 7px}
+  #fenload{padding:5px 10px;font-size:11px}
+  .attlegend{display:flex;align-items:center;gap:6px;margin-top:10px;font-size:9px;color:var(--muted);font-family:var(--mono)}
+  .legbar{flex:1;height:8px;border-radius:4px;border:1px solid var(--line);
+    background:linear-gradient(90deg, rgb(68,1,84), rgb(59,82,139), rgb(33,144,141), rgb(93,200,99), rgb(253,231,37))}
+  .leghint{font-size:8px;color:var(--muted);margin-top:3px;font-family:var(--mono)}
 
   /* residual-stream filmstrip */
   .resid{padding:12px 14px}
@@ -609,7 +655,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="wrap">
   <div class="left">
     <div>
-      <h1>Maia-3 · play &amp; probe</h1>
+      <h1>Chessformer (Maia 3) interpretability app</h1>
       <div class="sub" id="modelinfo">loading model…</div>
     </div>
     <div id="board"></div>
@@ -617,7 +663,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <button class="primary" id="newbtn">New game</button>
       <button id="undobtn">← Back</button>
       <label class="lbl">You play</label>
-      <select id="color"><option value="white">White</option><option value="black">Black</option><option value="both">Both (analyze)</option></select>
+      <select id="color"><option value="white">White</option><option value="black">Black</option><option value="setup">Set up position</option></select>
       <label class="lbl"><input type="checkbox" id="showresid" checked> residual</label>
       <span class="status" id="status" style="margin-left:auto"></span>
     </div>
@@ -658,6 +704,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="card">
       <h2>Moves</h2>
       <div class="moves" id="moves">—</div>
+      <div class="fenrow"><input id="fenin" class="fenbox" spellcheck="false" placeholder="paste a FEN to load"><button id="fenload">Load</button></div>
     </div>
   </div>
 
@@ -668,14 +715,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <div class="chiprow"><span class="lbl">Layer</span><div class="chips" id="layerChips"></div></div>
         <div class="chiprow"><span class="lbl">Head</span><div class="chips" id="headChips"></div></div>
       </div>
-      <div class="attcap">QKᵀ ⊕ GAB → softmax, computed for the position on the board.
-        Click any square to set the query — each board shows attention <b>from</b> that square.</div>
+      <div class="attcap">Click any square to set the query.</div>
       <div class="attset">
-        <div><div class="attlabel">QKᵀ · semantic (dot-product)</div><div class="attboard" id="att_qk"></div></div>
-        <div><div class="attlabel">GAB · geometric bias</div><div class="attboard" id="att_gab"></div></div>
-        <div><div class="attlabel">attention · softmax(QKᵀ + GAB)</div><div class="attboard" id="att_attn"></div></div>
+        <div><div class="attlabel">Semantic (regular dot product attention):</div><div class="attboard" id="att_qk"></div></div>
+        <div><div class="attlabel">GAB (geometrically biased attention):</div><div class="attboard" id="att_gab"></div></div>
+        <div><div class="attlabel">Combined Attentions after softmax:</div><div class="attboard" id="att_attn"></div></div>
       </div>
-      <div class="act" id="attinfo" style="margin-top:8px"></div>
+      <div class="attlegend"><span>low</span><div class="legbar"></div><span>high</span></div>
+      <div class="leghint">color = attention strength, scaled relative to each board</div>
     </div>
   </div>
 </div>
@@ -689,7 +736,7 @@ const GLYPH={k:'♚',q:'♛',r:'♜',b:'♝',n:'♞',p:'♟'};
 const $=id=>document.getElementById(id);
 
 let API=null, cur=null, orient='white', sel=null, busy=false;
-let elo=1500, temp=0, pendingPromo=null, MODEL_INFO=null;
+let elo=1500, temp=0, pendingPromo=null, MODEL_INFO=null, setupMode=false;
 const MAXPOL=14;
 
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -747,7 +794,33 @@ function setModelInfo(){
 /* ---- controls ---- */
 $('newbtn').onclick = ()=>{ if(!busy) newGame(); };
 $('undobtn').onclick = ()=>{ if(!busy) doUndo(); };
-$('color').addEventListener('change', ()=>{ if(!busy) newGame(); });
+$('color').addEventListener('change', ()=>{ if(busy) return; setupMode=($('color').value==='setup'); if(setupMode) enterSetup(); else newGame(); });
+$('fenload').onclick = ()=>{ if(!busy) doSetFen($('fenin').value.trim()); };
+async function enterSetup(){
+  if(!API || busy) return;
+  setupMode=true;
+  sel=null;
+  cur = await API.analyze();
+  renderBoard(); renderMoves();
+  await advance();
+}
+async function doSetFen(fen){
+  if(!API || busy || !fen) return;
+  sel=null;
+  const r = await API.set_fen(fen);
+  if(r.error){ setStatus('⚠ '+r.error); return; }
+  cur=r; $('color').value='setup'; setupMode=true;
+  renderBoard(); renderMoves();
+  await advance();
+}
+async function freeEdit(from, to){
+  if(busy) return;
+  busy=true;
+  cur = await API.edit_square(from, to);
+  renderBoard(); renderMoves();
+  busy=false;
+  await advance();
+}
 $('elo').addEventListener('input', e=>{
   elo = +e.target.value; $('eloval').textContent = elo;
   scheduleProbe();
@@ -767,11 +840,11 @@ async function probe(){
 }
 
 async function newGame(){
-  sel=null; busy=true;
-  const hc = $('color').value;
+  sel=null; busy=true; setupMode=false;
+  let hc = $('color').value; if(hc==='setup'){ hc='white'; $('color').value='white'; }
   cur = await API.new_game(hc);
   orient = (hc==='black') ? 'black' : 'white';
-  renderBoard(); renderMoves(); setModelInfo();
+  renderBoard(); renderMoves(); setModelInfo(); relabelAttCoords();
   busy=false;
   await advance();
 }
@@ -831,7 +904,7 @@ function renderBoard(){
   const board=$('board'); board.innerHTML='';
   const pieces = cur ? parseFen(cur.fen) : {};
   const last = cur && cur.last_move ? [cur.last_move.slice(0,2),cur.last_move.slice(2,4)] : [];
-  const targets = sel ? legalTargets(sel) : {};
+  const targets = (sel && !setupMode) ? legalTargets(sel) : {};
   const hlSq = attQueryReal || null;
   for(let row=0;row<8;row++) for(let col=0;col<8;col++){
     const name=sqName(row,col);
@@ -842,7 +915,7 @@ function renderBoard(){
     if(last.includes(name)) d.classList.add('lastmove');
     if(sel===name) d.classList.add('sel');
     if(name===hlSq) d.classList.add('attq');
-    if(cur && cur.human_to_move) d.classList.add('playable');
+    if(cur && (cur.human_to_move || setupMode)) d.classList.add('playable');
     const pc=pieces[name];
     if(pc){
       const span=document.createElement('span');
@@ -877,7 +950,13 @@ function realToCanon(name, turn){
   return rank0*8+file;
 }
 async function onSquare(name){
-  if(busy || !cur || !cur.human_to_move) return;
+  if(busy || !cur) return;
+  if(setupMode){
+    if(sel===null){ if(pieceColorAt(name)){ sel=name; renderBoard(); } return; }
+    if(name===sel){ await freeEdit(sel, null); sel=null; return; }   // click selected square again = delete
+    await freeEdit(sel, name); sel=null; return;
+  }
+  if(!cur.human_to_move) return;
   if(sel===null){
     if(canMove(pieceColorAt(name)) && legalMovesFrom(name).length){ sel=name; renderBoard(); }
     return;
@@ -947,6 +1026,7 @@ function renderMoves(){
   const h=cur && cur.san_history ? cur.san_history : [];
   let out=''; for(let i=0;i<h.length;i+=2){ out+=`${i/2+1}. ${h[i]||''} ${h[i+1]||''}  `; }
   $('moves').textContent = out.trim() || '—';
+  const fb=$('fenin'); if(fb && cur && document.activeElement!==fb) fb.value = cur.fen;
 }
 function setStatus(msg){
   if(msg){ $('status').innerHTML=msg; return; }
@@ -969,36 +1049,58 @@ function viridis(t){
 }
 function sqName2(sq){ return FILES[sq%8]+(Math.floor(sq/8)+1); }
 
+// --- attention colormaps ---
+function lerp3(a,b,t){return `rgb(${Math.round(a[0]+(b[0]-a[0])*t)},${Math.round(a[1]+(b[1]-a[1])*t)},${Math.round(a[2]+(b[2]-a[2])*t)})`;}
+const INFERNO=[[0,0,4],[40,11,84],[101,21,110],[159,42,99],[212,72,66],[245,125,21],[250,193,39],[252,255,164]];
+function hotmap(t){ t=Math.max(0,Math.min(1,t)); const x=t*(INFERNO.length-1), i=Math.min(Math.floor(x),INFERNO.length-2); return lerp3(INFERNO[i],INFERNO[i+1],x-i); }
+function divmap(v){ const mid=[24,28,36], blue=[64,132,234], orange=[244,134,58]; return lerp3(mid, v<0?blue:orange, Math.min(1,Math.abs(v))); }
+function mean(a){ let s=0; for(const v of a) s+=v; return s/a.length; }
+
 function buildAttBoards(){
   ['att_qk','att_gab','att_attn'].forEach(id=>{
     const el=$(id); if(!el || el.children.length) return;
     for(let idx=0;idx<64;idx++){
+      const r=Math.floor(idx/8), c=idx%8, name=sqName(r,c);
       const d=document.createElement('div'); d.className='attcell'; d.dataset.idx=idx;
-      d.onclick=()=>{ const r=Math.floor(idx/8), c=idx%8; attQueryReal=sqName(r,c); renderAttention(); renderBoard(); };
+      d.onclick=()=>{ attQueryReal=sqName(Math.floor(idx/8), idx%8); renderAttention(); renderBoard(); };
+      if(c===0){ const sp=document.createElement('span'); sp.className='attcoord r'; sp.textContent=name[1]; d.appendChild(sp); }
+      if(r===7){ const sp=document.createElement('span'); sp.className='attcoord f'; sp.textContent=name[0]; d.appendChild(sp); }
       el.appendChild(d);
     }
   });
 }
-function paintAtt(id, mat){
-  const el=$(id); if(!el || !mat || !cur) return;
-  const row=mat[realToCanon(attQueryReal, cur.turn)]; if(!row) return;
-  let lo=Infinity, hi=-Infinity;
-  for(const v of row){ if(v<lo)lo=v; if(v>hi)hi=v; }
-  const span=(hi-lo)||1;
+function relabelAttCoords(){
+  ['att_qk','att_gab','att_attn'].forEach(id=>{
+    const el=$(id); if(!el) return;
+    for(const cell of el.children){
+      const idx=+cell.dataset.idx, name=sqName(Math.floor(idx/8), idx%8);
+      const rc=cell.querySelector('.attcoord.r'); if(rc) rc.textContent=name[1];
+      const fc=cell.querySelector('.attcoord.f'); if(fc) fc.textContent=name[0];
+    }
+  });
+}
+function paintRow(id, row, colf){
+  const el=$(id); if(!el || !row || !cur) return;
   for(const cell of el.children){
-    const idx=+cell.dataset.idx, r=Math.floor(idx/8), c=idx%8;
-    const name=sqName(r,c), canon=realToCanon(name, cur.turn);
-    cell.style.background=viridis((row[canon]-lo)/span);
+    const idx=+cell.dataset.idx, name=sqName(Math.floor(idx/8), idx%8);
+    cell.style.background = colf(row[realToCanon(name, cur.turn)]);
     cell.classList.toggle('q', name===attQueryReal);
   }
 }
 function renderAttention(){
-  if(!lastAtt) return;
-  paintAtt('att_qk', lastAtt.qk);
-  paintAtt('att_gab', lastAtt.gab);
-  paintAtt('att_attn', lastAtt.attn);
-  $('attinfo').textContent =
-    `block ${lastAtt.layer} · head ${lastAtt.head} · query ${attQueryReal} · elo ${elo}`;
+  if(!lastAtt || !cur) return;
+  const q = realToCanon(attQueryReal, cur.turn);
+  const qk = lastAtt.qk[q], gab = lastAtt.gab[q], att = lastAtt.attn[q];
+  if(!qk || !gab || !att) return;
+  // semantic & GAB are pre-softmax logits, normalized within each row
+  const norm = row => { let lo=Infinity,hi=-Infinity; for(const v of row){ if(v<lo)lo=v; if(v>hi)hi=v; } const span=(hi-lo)||1; return v=>(v-lo)/span; };
+  const nqk=norm(qk), ngab=norm(gab);
+  paintRow('att_qk',  qk,  v=>viridis(nqk(v)));
+  paintRow('att_gab', gab, v=>viridis(ngab(v)));
+  // Combined IS the softmax (a probability distribution); gamma-lift so the
+  // secondary squares show, not just the single brightest one.
+  let mx=1e-9; for(const v of att) if(v>mx) mx=v;
+  paintRow('att_attn', att, v=>viridis(Math.pow(v/mx, 0.6)));
 }
 async function updateAttention(){
   if(!API || !cur || cur.game_over) return;
@@ -1101,7 +1203,7 @@ def main():
         sys.exit("pywebview is not installed.  Run:  pip install -r requirements.txt")
     api = MaiaApi()
     webview.create_window(
-        "Maia-3 · play & probe",
+        "Chessformer (Maia 3) Interpretability App",
         html=INDEX_HTML,
         js_api=api,
         width=1400, height=920, min_size=(1240, 840),
