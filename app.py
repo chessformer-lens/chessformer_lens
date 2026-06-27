@@ -87,6 +87,7 @@ class MaiaEngine:
 
         self.device = self.cfg.device
         self.model = load_model(self.cfg)   # builds MAIA3Model(cfg), loads weights, .eval()
+        self.model.to(self.device)          # ensure placement (cuda/mps/cpu) for GPU runs
 
         # exact index <-> UCI mapping used by the released engine
         self.all_moves = get_all_possible_moves()
@@ -235,29 +236,67 @@ class MaiaEngine:
         }
 
     # ----- residual-stream evolution across depth ---------------------------
+    @staticmethod
+    def _move_squares(idx):
+        """Canonical (from, to) squares for a policy-move index (handles promotions).
+        Mirrors MAIA3Model.forward's move layout: first 64*64 are from*64+to, then
+        256 promotions ordered from_file*32 + to_file*4 + piece (rank7 -> rank8)."""
+        if idx < 64 * 64:
+            return idx // 64, idx % 64
+        idx -= 64 * 64
+        from_file, to_file = idx // 32, (idx % 32) // 4
+        return 48 + from_file, 56 + to_file          # rank-7 -> rank-8, canonical
+
+    def _move_logits(self, x):
+        """Full (4352,) move logits from one position's residual x (64, dim),
+        replicating MAIA3Model.forward's policy head (64*64 moves + 256 promotions)."""
+        hid = self.cfg.head_hid_dim
+        sq_from = self.model.proj_sq_from(x)                  # (64, hid)
+        sq_to = self.model.proj_sq_to(x)                      # (64, hid)
+        scores = (sq_from @ sq_to.t()) / math.sqrt(hid)      # (64, 64)
+        promo_bias = self.model.promo_bias_proj(sq_to[56:64]) * math.sqrt(hid)  # (8 files, 4 pieces)
+        promo = [scores[48 + ff, 56 + tf] + promo_bias[tf, pc]
+                 for ff in range(8) for tf in range(8) for pc in range(4)]      # (256,)
+        return torch.cat([scores.reshape(-1), torch.stack(promo)])             # (4352,)
+
     @torch.no_grad()
     def residual_stream(self, board, self_elo, oppo_elo=None):
-        """Per-square summaries of the residual stream at every captured depth
-        (embed_in, block_00..block_07, encoder_out) for the current position:
-          norm      = ||x_L|| per square
-          delta     = ||x_L - x_(L-1)|| per square  (where each block edits the stream)
-          cos_final = cosine(x_L, x_final) per square (how early a square settles)
-        Each is (num_layers, 64), side-to-move frame, square = rank*8 + file."""
+        """Two per-square views of the residual stream at every captured depth
+        (embed_in, block_00..NN, encoder_out), in the side-to-move frame
+        (square = rank*8 + file):
+          norm = ||x_L|| per square.
+          moves = per-depth logit lens: decode each layer's residual through the
+                  policy head and take the top *legal* move. The UI highlights it on
+                  a board per depth, so you watch the prediction change with depth
+                  (e.g. e2e4 -> e2e4 -> d2d4 -> ...).
+        `norm` is (num_depths, 64); `moves` is a list of {from, to, uci} per depth
+        (from/to are canonical squares; uci is the real-board move)."""
         oppo_elo = self_elo if oppo_elo is None else oppo_elo
-        self.evaluate(board, self_elo, oppo_elo)
+        res = self.evaluate(board, self_elo, oppo_elo)   # populates activations + logits
         names = (["embed_in"]
                  + [f"block_{i:02d}" for i in range(self.cfg.num_blocks)]
                  + ["encoder_out"])
-        acts = [self._activations[n][0] for n in names]      # each (64, dim)
-        final = acts[-1]
-        norm, delta, cos_final = [], [], []
-        for i, a in enumerate(acts):
-            norm.append(a.norm(dim=-1).tolist())
-            delta.append([0.0] * 64 if i == 0
-                         else (a - acts[i - 1]).norm(dim=-1).tolist())
-            cos_final.append(torch.nn.functional.cosine_similarity(a, final, dim=-1).tolist())
+        acts = [self._activations[n][0] for n in names]      # each (64, dim), on CPU
         labels = ["emb"] + [f"b{i}" for i in range(self.cfg.num_blocks)] + ["enc"]
-        return {"labels": labels, "norm": norm, "delta": delta, "cos_final": cos_final}
+
+        delta = []
+        delta.append([0.0] * 64 if i == 0ZZ
+                         else (a - acts[i - 1]).norm(dim=-1).tolist())
+
+        # per-depth logit lens: decode each layer's residual through the policy head,
+        # take the top legal move, hand the UI its squares to highlight on a board.
+        legal = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
+        moves = []
+        for a in acts:
+            logits = self._move_logits(a.to(self.device))    # (4352,), honors device
+            if bool(legal.any()):
+                logits = logits.masked_fill(~legal, float("-inf"))
+            idx = int(torch.argmax(logits))
+            frm, to = self._move_squares(idx)
+            mv = self._idx_to_move(board, idx)
+            moves.append({"from": frm, "to": to, "uci": mv.uci() if mv else None})
+
+        return {"labels": labels, "norm": norm, "moves": moves}
 
     # ----- activation dump --------------------------------------------------
     def save_activations(self, filename: str, meta: dict | None = None) -> str:
@@ -671,9 +710,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="card resid">
       <h2>Residual stream across depth · this position</h2>
       <div class="residctrls">
-        <button class="rbtn active" data-m="delta">Δ from prev</button>
-        <button class="rbtn" data-m="cos_final">cos → final</button>
-        <button class="rbtn" data-m="norm">‖·‖ norm</button>
+        <button class="rbtn active" data-m="norm">‖·‖ norm</button>
+        <button class="rbtn" data-m="move">→ move logit-lens</button>
       </div>
       <div class="film" id="film"></div>
       <div class="act" id="residinfo" style="margin-top:6px"></div>
@@ -1146,9 +1184,9 @@ function initAttUi(info){
 }
 
 /* ---- residual-stream filmstrip (live, per position + ELO) ---- */
-let residMetric='delta', lastRes=null;
-function buildFilm(labels){
-  const f=$('film'); f.innerHTML='';
+let residMetric='norm', lastRes=null;
+function buildFilm(labels){            // one mini-board per depth (both tabs)
+  const f=$('film'); f.innerHTML=''; f.dataset.mode='board';
   labels.forEach((lab,li)=>{
     const col=document.createElement('div'); col.className='filmcol';
     const mb=document.createElement('div'); mb.className='miniboard'; mb.dataset.li=li;
@@ -1159,26 +1197,37 @@ function buildFilm(labels){
 }
 function renderResidual(){
   if(!lastRes) return;
-  const mats=lastRes[residMetric];
-  let lo=Infinity,hi=-Infinity;
-  for(const row of mats) for(const v of row){ if(v<lo)lo=v; if(v>hi)hi=v; }
-  const span=(hi-lo)||1;
-  const cols=$('film').children;
-  for(let li=0; li<cols.length; li++){
-    const cells=cols[li].querySelector('.miniboard').children, row=mats[li];
-    for(const cell of cells){ const sq=+cell.dataset.sq; cell.style.background=viridis((row[sq]-lo)/span); }
+  const film=$('film'), labels=lastRes.labels, n=labels.length;
+  if(film.dataset.mode!=='board' || film.children.length!==n) buildFilm(labels);
+  if(residMetric==='move'){
+    [...film.children].forEach((col,li)=>{
+      const mv=lastRes.moves[li], cells=col.querySelector('.miniboard').children;
+      for(const cell of cells){ const sq=+cell.dataset.sq;
+        cell.style.background = sq===mv.to   ? 'rgba(90,200,120,.9)'      // to = green
+                             : sq===mv.from ? 'rgba(255,205,70,.65)'      // from = yellow
+                             : 'transparent'; }
+      col.querySelector('.filmlbl').textContent = labels[li]+(mv.uci?' '+mv.uci:'');
+    });
+    $('residinfo').textContent='logit-lens top move per depth: decode each layer’s residual through the policy head, argmax over legal moves — watch the prediction change (green = to, yellow = from) · side-to-move frame · elo '+elo;
+  } else {
+    const mats=lastRes.norm;
+    let lo=Infinity,hi=-Infinity;
+    for(const row of mats) for(const v of row){ if(v<lo)lo=v; if(v>hi)hi=v; }
+    const span=(hi-lo)||1;
+    [...film.children].forEach((col,li)=>{
+      const cells=col.querySelector('.miniboard').children, row=mats[li];
+      for(const cell of cells){ const sq=+cell.dataset.sq; cell.style.background=viridis((row[sq]-lo)/span); }
+      col.querySelector('.filmlbl').textContent=labels[li];
+    });
+    $('residinfo').textContent='‖x_L‖ per square (RMS-normed blocks look ~flat — expected) · side-to-move frame · elo '+elo;
   }
-  const desc={delta:'‖x_L − x_(L-1)‖ per square — where each block edits the stream',
-              cos_final:'cosine(x_L, x_final) per square — how early each square settles',
-              norm:'‖x_L‖ per square (RMS-normed blocks look ~flat — expected)'};
-  $('residinfo').textContent = desc[residMetric]+' · side-to-move frame · elo '+elo;
 }
 async function updateResidual(){
   if(!API || !cur || cur.game_over) return;
   if(!$('showresid').checked) return;
   try{
     const d=await API.residual(elo);
-    if(d && !d.error){ if(!lastRes || !$('film').children.length) buildFilm(d.labels); lastRes=d; renderResidual(); }
+    if(d && !d.error){ lastRes=d; renderResidual(); }
   }catch(e){ /* ignore */ }
 }
 document.querySelectorAll('.rbtn').forEach(b=>{ b.onclick=()=>{
