@@ -130,6 +130,12 @@ class MaiaEngine:
             self._hooks.append(
                 blk.linear2.register_forward_hook(make_hook(f"mlp_{i:02d}"))
             )
+            # Running residual stream AFTER the attention sub-layer (norm1's
+            # output = norm1(x + sa_out)), so the logit lens can be read at the
+            # mid-block point, not just post-block. (post-MLP point = block_NN.)
+            self._hooks.append(
+                blk.norm1.register_forward_hook(make_hook(f"postattn_{i:02d}"))
+            )
         self._hooks.append(
             self.model.transformer.norm.register_forward_hook(make_hook("encoder_out"))
         )
@@ -288,12 +294,15 @@ class MaiaEngine:
                   *what* is writing at each point. This is the residual-stream
                   evolution decomposed by contributing module, not just norms.
 
-          moves = per-depth logit lens at the post-block residual (emb, b0..bN,
-                  enc): decode each depth through the policy head, take the top
-                  *legal* move. Watch the prediction form across depth.
+          moves = per-SUB-LAYER logit lens on the running residual stream, same
+                  resolution as `delta`: emb, then for every block the post-
+                  attention point (norm1 out) and the post-MLP point (block out),
+                  then enc. Decode each through the policy head, take the top
+                  *legal* move. Watch the prediction form sub-layer by sub-layer.
 
         `delta` is a list of {label, kind, norm:[64]}; `moves` is a list of
-        {label, from, to, uci, san} (from/to canonical squares; uci/san real-board)."""
+        {label, kind, from, to, uci, san, piece} (from/to canonical squares;
+        uci/san real-board; piece = symbol of the moving piece, e.g. 'N'/'n')."""
         oppo_elo = self_elo if oppo_elo is None else oppo_elo
         self.evaluate(board, self_elo, oppo_elo)         # populates activations + logits
         nb = self.cfg.num_blocks
@@ -309,14 +318,17 @@ class MaiaEngine:
             delta.append({"label": f"b{i} mlp", "kind": "mlp",
                           "norm": per_sq_norm(f"mlp_{i:02d}")})
 
-        # ---- moves: per-depth logit lens on the post-block residual ----
-        depth_names = (["embed_in"]
-                       + [f"block_{i:02d}" for i in range(nb)]
-                       + ["encoder_out"])
-        depth_labels = ["emb"] + [f"b{i}" for i in range(nb)] + ["enc"]
+        # ---- moves: per-sub-layer logit lens on the running residual stream ----
+        # Same resolution as delta: emb, then (post-attn, post-mlp) per block, enc.
+        steps = [("embed_in", "emb", "emb")]
+        for i in range(nb):
+            steps.append((f"postattn_{i:02d}", f"b{i} attn", "attn"))
+            steps.append((f"block_{i:02d}",    f"b{i} mlp",  "mlp"))
+        steps.append(("encoder_out", "enc", "enc"))
+
         legal = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
         moves = []
-        for name, lab in zip(depth_names, depth_labels):
+        for name, lab, kind in steps:
             a = self._activations[name][0]
             logits = self._move_logits(a.to(self.device))    # (4352,), honors device
             if bool(legal.any()):
@@ -325,8 +337,12 @@ class MaiaEngine:
             frm, to = self._move_squares(idx)
             mv = self._idx_to_move(board, idx)
             san = board.san(mv) if mv is not None else None
-            moves.append({"label": lab, "from": frm, "to": to,
-                          "uci": mv.uci() if mv else None, "san": san})
+            # the piece doing the move (real board), so the UI can draw it on the
+            # from-square instead of a generic highlight.
+            pc = board.piece_at(mv.from_square) if mv is not None else None
+            moves.append({"label": lab, "kind": kind, "from": frm, "to": to,
+                          "uci": mv.uci() if mv else None, "san": san,
+                          "piece": pc.symbol() if pc is not None else None})
 
         return {"delta": delta, "moves": moves}
 
@@ -699,18 +715,26 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .residctrls{display:flex;gap:6px;margin-bottom:10px}
   .rbtn{padding:4px 9px;font-size:11px}
   .rbtn.active{background:var(--accent);color:#0a1220;border-color:var(--accent);font-weight:600}
-  .film{display:flex;gap:6px}
-  .filmcol{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;min-width:0}
+  .film{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px}
+  .filmcol{flex:0 0 52px;display:flex;flex-direction:column;align-items:center;gap:4px;min-width:0}
   .miniboard{width:100%;aspect-ratio:1/1;display:grid;grid-template-columns:repeat(8,1fr);
     grid-template-rows:repeat(8,1fr);border:1px solid var(--line);border-radius:3px;overflow:hidden;background:#10141b}
+  .miniboard>div{display:flex;align-items:center;justify-content:center;line-height:1}
+  /* moving piece drawn on the from-square of the logit-lens move (replaces the
+     old yellow highlight); stroke keeps both colors legible on any cell */
+  .miniboard .pc{font-size:13px;z-index:3}
+  .miniboard .pc.white{color:#fbfdff;-webkit-text-stroke:.5px #0a0d12}
+  .miniboard .pc.black{color:#20242c;-webkit-text-stroke:.5px #d4dae4}
   .filmlbl{font-size:8px;color:var(--muted);font-family:var(--mono);text-align:center}
   /* structure tags: which module wrote this column of the stream */
   .filmcol.emb  .miniboard{border-top:2px solid #8a93a3}
   .filmcol.attn .miniboard{border-top:2px solid #f0a35e}   /* attention add */
   .filmcol.mlp  .miniboard{border-top:2px solid #6fb3ff}   /* MLP add */
+  .filmcol.enc  .miniboard{border-top:2px solid #5ac878}   /* final norm = real output */
   .filmcol.emb  .filmlbl{color:#8a93a3}
   .filmcol.attn .filmlbl{color:#f0a35e}
   .filmcol.mlp  .filmlbl{color:#6fb3ff}
+  .filmcol.enc  .filmlbl{color:#5ac878}
   .residlegend{display:flex;gap:12px;font-size:9px;font-family:var(--mono);margin-bottom:8px;color:var(--muted)}
   .residlegend span::before{content:"";display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:middle}
   .residlegend .lg-attn::before{background:#f0a35e}
@@ -1251,19 +1275,26 @@ function renderResidual(){
   if(!lastRes) return;
   const film=$('film'), isMove = residMetric==='move';
   $('residlegend').classList.toggle('hidden', isMove);
-  const cols = isMove ? lastRes.moves.map(m=>({label:m.label,kind:null}))
+  const cols = isMove ? lastRes.moves.map(m=>({label:m.label,kind:m.kind}))
                       : lastRes.delta.map(d=>({label:d.label,kind:d.kind}));
   if(film.dataset.mode!==residMetric || film.children.length!==cols.length) buildFilm(cols);
   if(isMove){
     [...film.children].forEach((col,li)=>{
       const mv=lastRes.moves[li], cells=col.querySelector('.miniboard').children;
       for(const cell of cells){ const sq=+cell.dataset.sq;
-        cell.style.background = sq===mv.to   ? 'rgba(90,200,120,.9)'      // to = green
-                             : sq===mv.from ? 'rgba(255,205,70,.65)'      // from = yellow
-                             : 'transparent'; }
+        cell.innerHTML='';                                          // clear stale glyph
+        if(sq===mv.to){ cell.style.background='rgba(90,200,120,.9)'; }  // to = green
+        else { cell.style.background='transparent'; }
+        if(sq===mv.from && mv.piece){                               // from = the moving piece
+          const span=document.createElement('span');
+          span.className='pc '+(mv.piece===mv.piece.toUpperCase()?'white':'black');
+          span.textContent=GLYPH[mv.piece.toLowerCase()];
+          cell.appendChild(span);
+        }
+      }
       col.querySelector('.filmlbl').textContent = mv.label+(mv.san?' '+mv.san:'');
     });
-    $('residinfo').textContent='logit-lens top move per depth: decode each depth’s residual through the policy head, argmax over legal moves — watch the prediction form (green = to, yellow = from) · side-to-move frame · elo '+elo;
+    $('residinfo').textContent='logit-lens top move after every sub-layer: decode the running residual through the policy head, argmax over legal moves — the moving piece sits on its from-square, green = destination · side-to-move frame · elo '+elo;
   } else {
     // ||Δ|| each structure writes. attn+mlp adds share one scale (compare across
     // depth); emb (the input write) is much larger, so it gets its own scale.
