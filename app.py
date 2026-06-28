@@ -1,9 +1,9 @@
 """
 Chessformer (Maia 3) interpretability app.
 
-Play a transformer based chess bot (Maia-3) trained to mimic human play and watch its move policy, 
-its attention (regular self attention vs unique geometric GAB), 
-and how its residual stream evolves with depth. 
+Play a transformer based chess bot (Maia-3) trained to mimic human play and watch its move policy,
+its attention (regular self attention vs unique geometric GAB),
+and how its residual stream evolves with depth.
 
 Drag the ELO slider to re-evaluate a position at
 different skill levels (e.g. eval at very low ELO for King and Queen vs King comes out to
@@ -119,6 +119,17 @@ class MaiaEngine:
             self._hooks.append(
                 blk.register_forward_hook(make_hook(f"block_{i:02d}"))
             )
+            # Sub-layer writes: the actual vectors each structure ADDS to the
+            # residual stream inside a (Post-LN) block. self_attn returns
+            # (sa_out, weights) -> sa_out is the attention add; linear2's output
+            # is ff_out, the MLP add. (dropout is identity in eval, so these are
+            # exactly the vectors summed onto x before each norm.)
+            self._hooks.append(
+                blk.self_attn.register_forward_hook(make_hook(f"attn_{i:02d}"))
+            )
+            self._hooks.append(
+                blk.linear2.register_forward_hook(make_hook(f"mlp_{i:02d}"))
+            )
         self._hooks.append(
             self.model.transformer.norm.register_forward_hook(make_hook("encoder_out"))
         )
@@ -195,9 +206,11 @@ class MaiaEngine:
     def attention(self, board, self_elo, oppo_elo=None, layer=0, head=0):
         """Return the 64x64 attention components of one (layer, head) for the
         current position, reproducing Chessformer Fig. 1:
-          qk   = semantic dot-product logits (scaled QK^T)
-          gab  = geometric attention bias (the learned positional bias)
-          attn = softmax(qk + gab)   -- the attention the block actually uses
+          qk         = semantic dot-product logits (scaled QK^T)  -- selected head
+          gab        = geometric attention bias (learned positional bias) -- selected head
+          attn       = softmax(qk + gab)  -- the selected head's attention
+          attn_layer = mean over ALL heads of softmax(qk + gab) -- the whole layer's
+                       aggregate attention pattern (head-independent)
         Matrices are in the side-to-move (mirrored) frame; square = rank*8 + file.
         Computed directly from the residual stream entering the block, using that
         block's own projections and GAB generator -- no model re-implementation."""
@@ -230,9 +243,10 @@ class MaiaEngine:
         h = int(head)
         return {
             "layer": L, "head": h, "num_heads": H,
-            "qk": qk[0, h].cpu().tolist(),
-            "gab": gab[0, h].cpu().tolist(),
-            "attn": attn[0, h].cpu().tolist(),
+            "qk": qk[0, h].cpu().tolist(),                    # selected head
+            "gab": gab[0, h].cpu().tolist(),                  # selected head
+            "attn": attn[0, h].cpu().tolist(),                # selected head
+            "attn_layer": attn[0].mean(0).cpu().tolist(),     # whole layer: mean softmax over heads
         }
 
     # ----- residual-stream evolution across depth ---------------------------
@@ -261,47 +275,67 @@ class MaiaEngine:
 
     @torch.no_grad()
     def residual_stream(self, board, self_elo, oppo_elo=None):
-        """Two per-square views of the residual stream at every captured depth
-        (embed_in, block_00..NN, encoder_out), in the side-to-move frame
-        (square = rank*8 + file):
-          norm = ||x_L|| per square.
-          moves = per-depth logit lens: decode each layer's residual through the
-                  policy head and take the top *legal* move. The UI highlights it on
-                  a board per depth, so you watch the prediction change with depth
-                  (e.g. e2e4 -> e2e4 -> d2d4 -> ...).
-        `norm` is (num_depths, 64); `moves` is a list of {from, to, uci} per depth
-        (from/to are canonical squares; uci is the real-board move)."""
+        """Two per-square views of how the residual stream is built up, in the
+        side-to-move frame (square = rank*8 + file):
+
+          delta = the per-square magnitude of the vector each STRUCTURE writes
+                  into the stream, in execution order. The blocks are Post-LN
+                  (x = norm(x + sublayer(x))), so the things that actually add a
+                  vector are: the input embedding (`emb`), then, for every block,
+                  the self-attention sub-layer (`bN attn` = ||sa_out||) and the
+                  feed-forward sub-layer (`bN mlp` = ||ff_out||). Each entry is
+                  tagged with its `kind` ('emb'/'attn'/'mlp') so the UI can mark
+                  *what* is writing at each point. This is the residual-stream
+                  evolution decomposed by contributing module, not just norms.
+
+          moves = per-depth logit lens at the post-block residual (emb, b0..bN,
+                  enc): decode each depth through the policy head, take the top
+                  *legal* move. Watch the prediction form across depth.
+
+        `delta` is a list of {label, kind, norm:[64]}; `moves` is a list of
+        {label, from, to, uci, san} (from/to canonical squares; uci/san real-board)."""
         oppo_elo = self_elo if oppo_elo is None else oppo_elo
-        res = self.evaluate(board, self_elo, oppo_elo)   # populates activations + logits
-        names = (["embed_in"]
-                 + [f"block_{i:02d}" for i in range(self.cfg.num_blocks)]
-                 + ["encoder_out"])
-        acts = [self._activations[n][0] for n in names]      # each (64, dim), on CPU
-        labels = ["emb"] + [f"b{i}" for i in range(self.cfg.num_blocks)] + ["enc"]
+        self.evaluate(board, self_elo, oppo_elo)         # populates activations + logits
+        nb = self.cfg.num_blocks
 
-        delta = []
-        delta.append([0.0] * 64 if i == 0ZZ
-                         else (a - acts[i - 1]).norm(dim=-1).tolist())
+        # ---- delta: the vector each structure adds to the stream, in order ----
+        def per_sq_norm(name):
+            return self._activations[name][0].norm(dim=-1).tolist()   # (64,)
 
-        # per-depth logit lens: decode each layer's residual through the policy head,
-        # take the top legal move, hand the UI its squares to highlight on a board.
+        delta = [{"label": "emb", "kind": "emb", "norm": per_sq_norm("embed_in")}]
+        for i in range(nb):
+            delta.append({"label": f"b{i} attn", "kind": "attn",
+                          "norm": per_sq_norm(f"attn_{i:02d}")})
+            delta.append({"label": f"b{i} mlp", "kind": "mlp",
+                          "norm": per_sq_norm(f"mlp_{i:02d}")})
+
+        # ---- moves: per-depth logit lens on the post-block residual ----
+        depth_names = (["embed_in"]
+                       + [f"block_{i:02d}" for i in range(nb)]
+                       + ["encoder_out"])
+        depth_labels = ["emb"] + [f"b{i}" for i in range(nb)] + ["enc"]
         legal = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
         moves = []
-        for a in acts:
+        for name, lab in zip(depth_names, depth_labels):
+            a = self._activations[name][0]
             logits = self._move_logits(a.to(self.device))    # (4352,), honors device
             if bool(legal.any()):
                 logits = logits.masked_fill(~legal, float("-inf"))
             idx = int(torch.argmax(logits))
             frm, to = self._move_squares(idx)
             mv = self._idx_to_move(board, idx)
-            moves.append({"from": frm, "to": to, "uci": mv.uci() if mv else None})
+            san = board.san(mv) if mv is not None else None
+            moves.append({"label": lab, "from": frm, "to": to,
+                          "uci": mv.uci() if mv else None, "san": san})
 
-        return {"labels": labels, "norm": norm, "moves": moves}
+        return {"delta": delta, "moves": moves}
 
     # ----- activation dump --------------------------------------------------
     def save_activations(self, filename: str, meta: dict | None = None) -> str:
         """Persist the most recent forward's residual-stream snapshot.
-        Each tensor is (64, dim_vit); keys: embed_in, block_00..block_07, encoder_out."""
+        Each tensor is (64, dim_vit). Keys: embed_in, block_00..block_07,
+        encoder_out (post-block residual at each depth), plus attn_NN / mlp_NN
+        (the raw vector each sub-layer writes into the stream inside block NN)."""
         snap = {k: v.squeeze(0).clone() for k, v in self._activations.items()}
         snap["meta"] = meta or {}
         path = self.activation_dir / filename
@@ -669,7 +703,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .filmcol{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;min-width:0}
   .miniboard{width:100%;aspect-ratio:1/1;display:grid;grid-template-columns:repeat(8,1fr);
     grid-template-rows:repeat(8,1fr);border:1px solid var(--line);border-radius:3px;overflow:hidden;background:#10141b}
-  .filmlbl{font-size:8px;color:var(--muted);font-family:var(--mono)}
+  .filmlbl{font-size:8px;color:var(--muted);font-family:var(--mono);text-align:center}
+  /* structure tags: which module wrote this column of the stream */
+  .filmcol.emb  .miniboard{border-top:2px solid #8a93a3}
+  .filmcol.attn .miniboard{border-top:2px solid #f0a35e}   /* attention add */
+  .filmcol.mlp  .miniboard{border-top:2px solid #6fb3ff}   /* MLP add */
+  .filmcol.emb  .filmlbl{color:#8a93a3}
+  .filmcol.attn .filmlbl{color:#f0a35e}
+  .filmcol.mlp  .filmlbl{color:#6fb3ff}
+  .residlegend{display:flex;gap:12px;font-size:9px;font-family:var(--mono);margin-bottom:8px;color:var(--muted)}
+  .residlegend span::before{content:"";display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:middle}
+  .residlegend .lg-attn::before{background:#f0a35e}
+  .residlegend .lg-mlp::before{background:#6fb3ff}
+  .residlegend .lg-emb::before{background:#8a93a3}
+  .residlegend.hidden{display:none}
   .resid.hidden{display:none}
 
   .status{font-size:12px;color:var(--muted);min-height:16px}
@@ -710,8 +757,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="card resid">
       <h2>Residual stream across depth · this position</h2>
       <div class="residctrls">
-        <button class="rbtn active" data-m="norm">‖·‖ norm</button>
+        <button class="rbtn active" data-m="delta">Δ structure writes</button>
         <button class="rbtn" data-m="move">→ move logit-lens</button>
+      </div>
+      <div class="residlegend" id="residlegend">
+        <span class="lg-emb">emb (input)</span>
+        <span class="lg-attn">attn add</span>
+        <span class="lg-mlp">MLP add</span>
       </div>
       <div class="film" id="film"></div>
       <div class="act" id="residinfo" style="margin-top:6px"></div>
@@ -753,11 +805,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <div class="chiprow"><span class="lbl">Layer</span><div class="chips" id="layerChips"></div></div>
         <div class="chiprow"><span class="lbl">Head</span><div class="chips" id="headChips"></div></div>
       </div>
-      <div class="attcap">Click any square to set the query.</div>
+      <div class="attcap">Click any square to set the query. Top two boards are the selected head; the bottom is the whole layer.</div>
       <div class="attset">
         <div><div class="attlabel">Semantic (regular dot product attention):</div><div class="attboard" id="att_qk"></div></div>
         <div><div class="attlabel">GAB (geometrically biased attention):</div><div class="attboard" id="att_gab"></div></div>
-        <div><div class="attlabel">Combined Attentions after softmax:</div><div class="attboard" id="att_attn"></div></div>
+        <div><div class="attlabel">Whole-layer attention (mean softmax over all heads):</div><div class="attboard" id="att_attn"></div></div>
       </div>
       <div class="attlegend"><span>low</span><div class="legbar"></div><span>high</span></div>
       <div class="leghint">color = attention strength, scaled relative to each board</div>
@@ -1128,15 +1180,15 @@ function paintRow(id, row, colf){
 function renderAttention(){
   if(!lastAtt || !cur) return;
   const q = realToCanon(attQueryReal, cur.turn);
-  const qk = lastAtt.qk[q], gab = lastAtt.gab[q], att = lastAtt.attn[q];
+  const qk = lastAtt.qk[q], gab = lastAtt.gab[q], att = (lastAtt.attn_layer||lastAtt.attn)[q];
   if(!qk || !gab || !att) return;
   // semantic & GAB are pre-softmax logits, normalized within each row
   const norm = row => { let lo=Infinity,hi=-Infinity; for(const v of row){ if(v<lo)lo=v; if(v>hi)hi=v; } const span=(hi-lo)||1; return v=>(v-lo)/span; };
   const nqk=norm(qk), ngab=norm(gab);
   paintRow('att_qk',  qk,  v=>viridis(nqk(v)));
   paintRow('att_gab', gab, v=>viridis(ngab(v)));
-  // Combined IS the softmax (a probability distribution); gamma-lift so the
-  // secondary squares show, not just the single brightest one.
+  // Bottom board = whole-layer mean softmax over heads (still a per-row distribution);
+  // gamma-lift so the secondary squares show, not just the single brightest one.
   let mx=1e-9; for(const v of att) if(v>mx) mx=v;
   paintRow('att_attn', att, v=>viridis(Math.pow(v/mx, 0.6)));
 }
@@ -1184,42 +1236,50 @@ function initAttUi(info){
 }
 
 /* ---- residual-stream filmstrip (live, per position + ELO) ---- */
-let residMetric='norm', lastRes=null;
-function buildFilm(labels){            // one mini-board per depth (both tabs)
-  const f=$('film'); f.innerHTML=''; f.dataset.mode='board';
-  labels.forEach((lab,li)=>{
-    const col=document.createElement('div'); col.className='filmcol';
+let residMetric='delta', lastRes=null;
+function buildFilm(cols){            // cols: [{label, kind}] — one mini-board each
+  const f=$('film'); f.innerHTML=''; f.dataset.mode=residMetric;
+  cols.forEach((cd,li)=>{
+    const col=document.createElement('div'); col.className='filmcol'+(cd.kind?(' '+cd.kind):'');
     const mb=document.createElement('div'); mb.className='miniboard'; mb.dataset.li=li;
     for(let r=0;r<8;r++) for(let c=0;c<8;c++){ const d=document.createElement('div'); d.dataset.sq=(7-r)*8+c; mb.appendChild(d); }
-    const t=document.createElement('div'); t.className='filmlbl'; t.textContent=lab;
+    const t=document.createElement('div'); t.className='filmlbl'; t.textContent=cd.label;
     col.appendChild(mb); col.appendChild(t); f.appendChild(col);
   });
 }
 function renderResidual(){
   if(!lastRes) return;
-  const film=$('film'), labels=lastRes.labels, n=labels.length;
-  if(film.dataset.mode!=='board' || film.children.length!==n) buildFilm(labels);
-  if(residMetric==='move'){
+  const film=$('film'), isMove = residMetric==='move';
+  $('residlegend').classList.toggle('hidden', isMove);
+  const cols = isMove ? lastRes.moves.map(m=>({label:m.label,kind:null}))
+                      : lastRes.delta.map(d=>({label:d.label,kind:d.kind}));
+  if(film.dataset.mode!==residMetric || film.children.length!==cols.length) buildFilm(cols);
+  if(isMove){
     [...film.children].forEach((col,li)=>{
       const mv=lastRes.moves[li], cells=col.querySelector('.miniboard').children;
       for(const cell of cells){ const sq=+cell.dataset.sq;
         cell.style.background = sq===mv.to   ? 'rgba(90,200,120,.9)'      // to = green
                              : sq===mv.from ? 'rgba(255,205,70,.65)'      // from = yellow
                              : 'transparent'; }
-      col.querySelector('.filmlbl').textContent = labels[li]+(mv.uci?' '+mv.uci:'');
+      col.querySelector('.filmlbl').textContent = mv.label+(mv.san?' '+mv.san:'');
     });
-    $('residinfo').textContent='logit-lens top move per depth: decode each layer’s residual through the policy head, argmax over legal moves — watch the prediction change (green = to, yellow = from) · side-to-move frame · elo '+elo;
+    $('residinfo').textContent='logit-lens top move per depth: decode each depth’s residual through the policy head, argmax over legal moves — watch the prediction form (green = to, yellow = from) · side-to-move frame · elo '+elo;
   } else {
-    const mats=lastRes.norm;
-    let lo=Infinity,hi=-Infinity;
-    for(const row of mats) for(const v of row){ if(v<lo)lo=v; if(v>hi)hi=v; }
-    const span=(hi-lo)||1;
+    // ||Δ|| each structure writes. attn+mlp adds share one scale (compare across
+    // depth); emb (the input write) is much larger, so it gets its own scale.
+    const cs=lastRes.delta;
+    let lo=Infinity,hi=-Infinity,eLo=Infinity,eHi=-Infinity;
+    for(const c of cs){ const isE=(c.kind==='emb');
+      for(const v of c.norm){ if(isE){ if(v<eLo)eLo=v; if(v>eHi)eHi=v; } else { if(v<lo)lo=v; if(v>hi)hi=v; } } }
+    const span=(hi-lo)||1, eSpan=(eHi-eLo)||1;
     [...film.children].forEach((col,li)=>{
-      const cells=col.querySelector('.miniboard').children, row=mats[li];
-      for(const cell of cells){ const sq=+cell.dataset.sq; cell.style.background=viridis((row[sq]-lo)/span); }
-      col.querySelector('.filmlbl').textContent=labels[li];
+      const c=cs[li], isE=(c.kind==='emb'), cells=col.querySelector('.miniboard').children;
+      for(const cell of cells){ const sq=+cell.dataset.sq;
+        const t = isE ? (c.norm[sq]-eLo)/eSpan : (c.norm[sq]-lo)/span;
+        cell.style.background=viridis(t); }
+      col.querySelector('.filmlbl').textContent=c.label;
     });
-    $('residinfo').textContent='‖x_L‖ per square (RMS-normed blocks look ~flat — expected) · side-to-move frame · elo '+elo;
+    $('residinfo').textContent='‖Δ‖ the vector each structure adds per square — Post-LN block writes the attention add then the MLP add. attn+mlp share one viridis scale (bright = bigger edit, comparable across depth); emb scaled on its own · side-to-move frame · elo '+elo;
   }
 }
 async function updateResidual(){
