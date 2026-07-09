@@ -28,4 +28,4 @@ Built on
  Chessformer / Maia-3 (Monroe et al., ICLR 2026).
 Model weights: <https://huggingface.co/UofTCSSLab/Maia3-5M>
 
-Don't hesitate to give feedback by email or at davidlitman.com
+Please don't hesitate to give feedback by email or at davidlitman.com
