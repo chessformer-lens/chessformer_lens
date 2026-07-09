@@ -29,3 +29,19 @@ Built on
 Model weights: <https://huggingface.co/UofTCSSLab/Maia3-5M>
 
 Please don't hesitate to give feedback by email or at davidlitman.com
+
+## License
+
+AGPLv3 — see [LICENSE](LICENSE). This app is built on the
+[CSSLab/maia3](https://github.com/CSSLab/maia3) model code (also AGPLv3);
+model weights from [Hugging Face](https://huggingface.co/UofTCSSLab/Maia3-5M).
+Chess piece artwork is python-chess's built-in "cburnett" set
+(Colin M.L. Burnett, GFDL/BSD/GPL).
+
+## Code layout
+
+- `engine.py` — `MaiaEngine`: the interp core (model + hooks + logit lens + head ablation). No UI deps; imports cleanly in a notebook.
+- `bridge.py` — game state + the JSON API the UI calls.
+- `ui.py` — the whole interface (HTML/CSS/JS) as one string.
+- `pieces.py` — SVG piece set as data URIs.
+- `app.py` — launcher (native window via pywebview).
