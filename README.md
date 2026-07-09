@@ -1,15 +1,16 @@
-# Chessformer (Maia 3) interpretability app.
+# Chessformer (Maia 3) mechanistic interpretability app.
 
 
 Play a transformer based chess bot (Maia 3) trained to mimic human play and watch its move policy, 
-its attention (regular self attention vs unique geometric GAB), 
-and how its residual stream evolves with depth. 
+its attention (self attention vs unique geometric attention), 
+and how its residual stream evolves with depth LIVE. 
+
+Visualize mechanistic interpretability tools like logit lens and head ablations.
 
 Drag the ELO slider to re-evaluate a position at
-different skill levels (e.g. eval at very low ELO for a King and Queen engame vs 
-a solo King comes out to roughly 75% chance for a draw).
+different skill levels.
 
-<img width="1440" height="900" alt="Screenshot 2026-06-25 at 12 16 03 PM" src="https://github.com/user-attachments/assets/ff7de900-cf28-4e0c-8661-0aac43409325" />
+<img width="1440" height="900" alt="Screenshot 2026-07-09 at 6 09 56 PM" src="https://github.com/user-attachments/assets/42218edf-d8b2-4d89-81d3-c750837d3df3" />
 
 ## Run
 
@@ -22,5 +23,8 @@ python app.py
 The first launch downloads the Maia3-5M transformer weights (~20 MB) from
 Hugging Face and a native window opens (no browser needed).
 
-Built on Chessformer / Maia-3 (Monroe et al., ICLR 2026).
+Built on
+ Chessformer / Maia-3 (Monroe et al., ICLR 2026).
 Model weights: <https://huggingface.co/UofTCSSLab/Maia3-5M>
+
+Don't hesitate to give feedback by email or at davidlitman.com
