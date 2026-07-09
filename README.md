@@ -1,5 +1,6 @@
 # Chessformer (Maia 3) mechanistic interpretability app.
 
+<img width="1440" height="900" alt="Screenshot 2026-07-09 at 6 09 56 PM" src="https://github.com/user-attachments/assets/42218edf-d8b2-4d89-81d3-c750837d3df3" />
 
 Play a transformer based chess bot (Maia 3) trained to mimic human play and watch its move policy, 
 its attention (self attention vs unique geometric attention), 
@@ -10,7 +11,7 @@ Visualize mechanistic interpretability tools like logit lens and head ablations.
 Drag the ELO slider to re-evaluate a position at
 different skill levels.
 
-<img width="1440" height="900" alt="Screenshot 2026-07-09 at 6 09 56 PM" src="https://github.com/user-attachments/assets/42218edf-d8b2-4d89-81d3-c750837d3df3" />
+
 
 ## Run
 
