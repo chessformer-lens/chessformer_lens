@@ -3,7 +3,10 @@ Chessformer (Maia 3) interpretability app — launcher.
 
 Play a transformer-based chess bot (Maia-3) trained to mimic human play and watch
 its move policy, its attention (regular self-attention vs the unique geometric
-GAB), and how its residual stream evolves with depth. Drag the ELO slider to
+GAB), and how its residual stream evolves with depth. The GAB itself is taken
+apart live: content-only vs geometry-biased softmax side by side, the static
+square-pair template bank, and the generated smolgen mixing coefficients that
+combine it into each head's bias. Drag the ELO slider to
 re-evaluate a position at different skill levels (e.g. at very low ELO, King and
 Queen vs King comes out to roughly 75% draw).
 
@@ -33,7 +36,7 @@ def main():
         "Chessformer (Maia 3) Interpretability App",
         html=INDEX_HTML,
         js_api=api,
-        width=1400, height=920, min_size=(1240, 840),
+        width=1400, height=840, min_size=(1360, 780),
         background_color="#0e1014",
     )
     webview.start()

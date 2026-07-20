@@ -8,6 +8,19 @@ and how its residual stream evolves with depth LIVE.
 
 Visualize mechanistic interpretability tools like logit lens and head ablations.
 
+Take the geometric attention bias (GAB / "smolgen") apart live: softmax(QKᵀ)
+vs softmax(QKᵀ+GAB) side by side per head, the 64 static square-pair templates
+every layer shares, the generated mixing coefficients, and a per-square-pair
+decomposition ("GAB b5→h5 = −0.34·#5 −0.17·#31 …") for any position.
+
+Go move-centric with the move microscope (click any policy row): one move's
+logit at all 18 residual readout points — where it snaps into the plan — plus
+its carrier-head heatmap (every head ablated; Δ = ablated − clean everywhere
+in the app). The residual filmstrip lives in a second bottom drawer, with the
+structure-write heat and the per-point logit-lens move combined in one strip.
+(`compare_residual(elo_a, elo_b)` — per-square internals diff between two
+ratings — stays available in engine.py / bridge.py for notebook work.)
+
 Drag the ELO slider to re-evaluate a position at
 different skill levels.
 

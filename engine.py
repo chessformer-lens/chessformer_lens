@@ -31,7 +31,12 @@ Quick start (Colab / Jupyter / REPL):
     def zero_attn(act):  return act * 0            # kill block 5's attention write
     eng.run_with_hooks(board, 1500, fwd_hooks=[("attn_05", zero_attn)])
 
-See `attention()` and `residual_stream()` for the structured views the app draws.
+See `attention()` and `residual_stream()` for the structured views the app draws,
+the GAB/smolgen decomposition suite — `gab_templates()`, `gab_coeffs()`,
+`gab_bias()`, `qk_scores()` — for taking the geometric attention bias apart,
+`compare_residual()` for the skill diff on internals, and the move-centric
+lenses `move_logit_lens()` (one move's depth curve) and `ablate_grid()` (its
+per-head carrier heatmap, delta = ablated − clean).
 """
 import math
 import os
@@ -110,6 +115,7 @@ class MaiaEngine:
         self._activations: dict[str, torch.Tensor] = {}
         self._hooks: list = []
         self.hook_points: dict[str, torch.nn.Module] = {}   # name -> module (read or patch)
+        self._gab_templates: torch.Tensor | None = None     # lazy (gen, 64, 64) cache
         self._register_hooks()
 
     # ----- activation hooks -------------------------------------------------
@@ -307,31 +313,22 @@ class MaiaEngine:
 
     # ----- live attention (per layer / head) --------------------------------
     @torch.no_grad()
-    def attention(self, board, self_elo, oppo_elo=None, layer=0, head=0):
-        """Return the 64x64 attention components of one (layer, head) for the
-        current position, reproducing Chessformer Fig. 1:
-          qk         = semantic dot-product logits (scaled QK^T)  -- selected head
-          gab        = geometric attention bias (learned positional bias) -- selected head
-          attn       = softmax(qk + gab)  -- the selected head's attention
-          attn_layer = mean over ALL heads of softmax(qk + gab) -- the whole layer's
-                       aggregate attention pattern (head-independent)
-        Matrices are in the side-to-move (mirrored) frame; square = rank*8 + file.
-        Computed directly from the residual stream entering the block, using that
-        block's own projections and GAB generator -- no model re-implementation."""
+    def _block_input(self, board, self_elo, oppo_elo, layer):
+        """One forward pass, then the residual stream ENTERING block `layer`:
+        (1, 64, dim) on the live device. This is exactly the tensor the block's
+        attention (and its GAB generator) sees as query/key/value."""
         oppo_elo = self_elo if oppo_elo is None else oppo_elo
-        L = int(layer)
-
-        # one forward populates the residual-stream snapshot via the hooks
         self.evaluate(board, self_elo, oppo_elo)
-        key = "embed_in" if L == 0 else f"block_{L-1:02d}"
-        x = self._activations[key].to(self.device)            # (1, 64, dim) -> input to block L
-        blk = self.model.transformer.layers[L].self_attn
+        key = "embed_in" if layer == 0 else f"block_{layer-1:02d}"
+        return self._activations[key].to(self.device)
+
+    @staticmethod
+    def _qk_from_x(blk, x):
+        """Scaled QK^T content logits of one MHA block from its input x:
+        (1, H, 64, 64), using the block's own in-projection."""
         H = blk.num_heads
         d = x.size(-1)
         dh = d // H
-
-        gab = blk._sq_bias(x)                                  # (1, H, 64, 64)
-
         W = blk.mha.in_proj_weight                             # (3d, d), order [q; k; v]
         q = x @ W[:d].t()
         k = x @ W[d:2 * d].t()
@@ -341,17 +338,127 @@ class MaiaEngine:
             k = k + b[d:2 * d]
         q = q.view(1, 64, H, dh).transpose(1, 2)              # (1, H, 64, dh)
         k = k.view(1, 64, H, dh).transpose(1, 2)
-        qk = (q @ k.transpose(-2, -1)) / math.sqrt(dh)        # (1, H, 64, 64)
+        return (q @ k.transpose(-2, -1)) / math.sqrt(dh)      # (1, H, 64, 64)
+
+    @torch.no_grad()
+    def attention(self, board, self_elo, oppo_elo=None, layer=0, head=0):
+        """Return the 64x64 attention components of one (layer, head) for the
+        current position, reproducing Chessformer Fig. 1:
+          qk           = semantic dot-product logits (scaled QK^T)  -- selected head
+          gab          = geometric attention bias (learned positional bias) -- selected head
+          attn         = softmax(qk + gab)  -- the selected head's attention
+          attn_content = softmax(qk) -- what the head would attend to WITHOUT the
+                         geometry; compare with `attn` to see what GAB adds
+          attn_layer   = mean over ALL heads of softmax(qk + gab) -- the whole layer's
+                         aggregate attention pattern (head-independent)
+          coeffs       = the smolgen mixing coefficients that generated this head's
+                         gab (see gab_coeffs()); None if the block has no GAB
+        Matrices are in the side-to-move (mirrored) frame; square = rank*8 + file.
+        Computed directly from the residual stream entering the block, using that
+        block's own projections and GAB generator -- no model re-implementation."""
+        L = int(layer)
+        x = self._block_input(board, self_elo, oppo_elo, L)   # (1, 64, dim) -> input to block L
+        blk = self.model.transformer.layers[L].self_attn
+
+        gab = blk._sq_bias(x)                                  # (1, H, 64, 64)
+        qk = self._qk_from_x(blk, x)                           # (1, H, 64, 64)
         attn = torch.softmax(qk + gab, dim=-1)
+        attn_content = torch.softmax(qk, dim=-1)
+        coeffs = self._smolgen_coeffs(blk, x) if blk.use_gab else None
 
         h = int(head)
         return {
-            "layer": L, "head": h, "num_heads": H,
+            "layer": L, "head": h, "num_heads": blk.num_heads,
+            "gen_size": blk.gen_size if blk.use_gab else None,
             "qk": qk[0, h].cpu().tolist(),                    # selected head
             "gab": gab[0, h].cpu().tolist(),                  # selected head
             "attn": attn[0, h].cpu().tolist(),                # selected head
+            "attn_content": attn_content[0, h].cpu().tolist(),  # selected head, no GAB
             "attn_layer": attn[0].mean(0).cpu().tolist(),     # whole layer: mean softmax over heads
+            "coeffs": coeffs[0, h].cpu().tolist() if coeffs is not None else None,
         }
+
+    # ----- GAB / smolgen decomposition --------------------------------------
+    # GAB is generated, not stored: a tiny MLP ("smolgen") reads the board state
+    # and emits, per head, `gen_size` mixing coefficients over a bank of static
+    # 64x64 square-pair templates (`gab_shared_weight`, shared by EVERY layer and
+    # head). The bias is exactly  gab[h] = sum_i coeffs[h,i] * template_i.
+    # These methods expose the pieces of that factorization.
+
+    @staticmethod
+    def _smolgen_coeffs(blk, x):
+        """Replicate one block's smolgen generator up to the mixing coefficients:
+        (1, H, gen_size). Verified on the spot: mixing the shared templates with
+        these coefficients must reproduce the block's own _sq_bias() exactly."""
+        B = x.size(0)
+        if blk.sm1 is not None:                                # per-square path
+            y = blk.sm1(x).reshape(B, -1)                      # (B, 64*p)
+        else:                                                  # mean-pooled path
+            y = torch.mean(x, dim=1)                           # (B, d_model)
+        y = blk.sm_act(blk.sm2(y))
+        y = blk.ln1(y)
+        y = blk.sm_act(blk.sm3(y))
+        y = blk.ln2(y).view(B, blk.num_heads, blk.gen_size)    # (B, H, gen)
+
+        recon = torch.einsum("bhi,oi->bho", y, blk.gab_weight).view(B, blk.num_heads, 64, 64)
+        target = blk._sq_bias(x)
+        assert torch.allclose(recon, target, atol=1e-4, rtol=1e-4), \
+            "smolgen coefficient reconstruction failed — do not trust the decomposition"
+        return y
+
+    @torch.no_grad()
+    def gab_templates(self):
+        """The static square-pair template bank behind every GAB: (gen_size, 64, 64).
+
+        Template i is gab_shared_weight[:, i] reshaped so that template[i][q][k]
+        is its contribution to query square q attending to key square k (canonical
+        side-to-move frame, square = rank*8 + file). Position-independent and
+        shared across all layers and heads — this is the model's entire geometric
+        vocabulary. Computed once and cached."""
+        if self.model.gab_shared_weight is None:
+            raise RuntimeError("this model was built without GAB (use_gab=False)")
+        if self._gab_templates is None:
+            w = self.model.gab_shared_weight.detach()          # (64*64, gen)
+            self._gab_templates = w.t().reshape(-1, 64, 64).cpu().clone()
+        return self._gab_templates
+
+    @torch.no_grad()
+    def gab_coeffs(self, board, self_elo, oppo_elo=None, layer=0):
+        """The generated smolgen mixing coefficients of one block for this
+        position: (H, gen_size). Row h are the weights with which head h mixes
+        the static `gab_templates()` into its 64x64 bias:
+            gab_bias(layer, h) == (coeffs[h, :, None, None] * gab_templates()).sum(0)
+        (exact — verified inside). This is the model *choosing geometry* live."""
+        L = int(layer)
+        x = self._block_input(board, self_elo, oppo_elo, L)
+        blk = self.model.transformer.layers[L].self_attn
+        if not blk.use_gab:
+            raise RuntimeError(f"block {L} has no GAB (use_gab=False)")
+        return self._smolgen_coeffs(blk, x)[0].cpu()
+
+    @torch.no_grad()
+    def gab_bias(self, board, self_elo, oppo_elo=None, layer=0, head=None):
+        """The generated geometric attention bias of one block for this position:
+        (H, 64, 64), or (64, 64) for a single `head`. bias[h][q][k] is added to
+        the scaled QK^T logit of query q, key k before the softmax."""
+        L = int(layer)
+        x = self._block_input(board, self_elo, oppo_elo, L)
+        blk = self.model.transformer.layers[L].self_attn
+        if not blk.use_gab:
+            raise RuntimeError(f"block {L} has no GAB (use_gab=False)")
+        gab = blk._sq_bias(x)[0].cpu()
+        return gab if head is None else gab[int(head)]
+
+    @torch.no_grad()
+    def qk_scores(self, board, self_elo, oppo_elo=None, layer=0, head=None):
+        """The raw content half of attention — scaled QK^T logits — of one block
+        for this position: (H, 64, 64), or (64, 64) for a single `head`.
+        softmax(qk_scores + gab_bias) is the attention the model actually runs."""
+        L = int(layer)
+        x = self._block_input(board, self_elo, oppo_elo, L)
+        blk = self.model.transformer.layers[L].self_attn
+        qk = self._qk_from_x(blk, x)[0].cpu()
+        return qk if head is None else qk[int(head)]
 
     # ----- per-head attention writes (for true head ablation) ---------------
     @torch.no_grad()
@@ -365,12 +472,8 @@ class MaiaEngine:
         channels does not correspond to heads. Recomputed from the block's own weights
         (same approach as `attention()`); verified on the spot — the writes must sum
         (plus the out_proj bias) back to the attn_NN activation of this forward."""
-        oppo_elo = self_elo if oppo_elo is None else oppo_elo
         L = int(layer)
-
-        self.evaluate(board, self_elo, oppo_elo)
-        key = "embed_in" if L == 0 else f"block_{L-1:02d}"
-        x = self._activations[key].to(self.device)             # (1, 64, dim) into block L
+        x = self._block_input(board, self_elo, oppo_elo, L)    # (1, 64, dim) into block L
         blk = self.model.transformer.layers[L].self_attn
         H = blk.num_heads
         d = x.size(-1)
@@ -478,31 +581,132 @@ class MaiaEngine:
 
         # ---- moves: per-sub-layer logit lens on the running residual stream ----
         # Same resolution as delta: emb, then (post-attn, post-mlp) per block, enc.
+        legal = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
+        moves = [{"label": lab, "kind": kind,
+                  **self._lens_move(self._activations[name][0], board, legal)}
+                 for name, lab, kind in self._lens_steps()]
+
+        return {"delta": delta, "moves": moves}
+
+    # ----- skill diff on internals ------------------------------------------
+    def _lens_steps(self):
+        """The 18 readout points of the running residual stream, in order:
+        emb, then per block the post-attention and post-MLP points, then enc."""
         steps = [("embed_in", "emb", "emb")]
-        for i in range(nb):
+        for i in range(self.cfg.num_blocks):
             steps.append((f"postattn_{i:02d}", f"b{i} attn", "attn"))
             steps.append((f"block_{i:02d}",    f"b{i} mlp",  "mlp"))
         steps.append(("encoder_out", "enc", "enc"))
+        return steps
 
+    def _lens_move(self, activation, board, legal_mask):
+        """Top legal move of one residual snapshot through the policy head."""
+        logits = self._move_logits(activation.to(self.device))
+        if bool(legal_mask.any()):
+            logits = logits.masked_fill(~legal_mask, float("-inf"))
+        idx = int(torch.argmax(logits))
+        frm, to = self.move_squares(idx)
+        mv = self._idx_to_move(board, idx)
+        pc = board.piece_at(mv.from_square) if mv is not None else None
+        return {"from": frm, "to": to, "uci": mv.uci() if mv else None,
+                "san": board.san(mv) if mv is not None else None,
+                "piece": pc.symbol() if pc is not None else None}
+
+    @torch.no_grad()
+    def compare_residual(self, board, elo_a, elo_b):
+        """Skill diff on INTERNALS, not just outputs: run the same position at
+        two ratings and, at each of the 18 readout points of the running
+        residual stream, report
+
+          norm    = per-square ||x_A − x_B||  (where on the board, and at what
+                    depth, the two skill levels diverge)
+          move_a/b = logit-lens top legal move of each run at that point
+          same    = whether the two lenses agree
+
+        Elo enters as an embedding concatenated to EVERY square token before
+        token_projection, so at `emb` the diff is one constant "skill vector"
+        repeated on all 64 squares (flat heat) — the interesting structure is
+        how depth localizes it. Side-to-move frame; square = rank*8 + file."""
+        _, cache_a = self.run_with_cache(board, int(elo_a))
+        _, cache_b = self.run_with_cache(board, int(elo_b))
         legal = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
-        moves = []
-        for name, lab, kind in steps:
-            a = self._activations[name][0]
-            logits = self._move_logits(a.to(self.device))    # (4352,), honors device
-            if bool(legal.any()):
-                logits = logits.masked_fill(~legal, float("-inf"))
-            idx = int(torch.argmax(logits))
-            frm, to = self.move_squares(idx)
-            mv = self._idx_to_move(board, idx)
-            san = board.san(mv) if mv is not None else None
-            # the piece doing the move (real board), so the UI can draw it on the
-            # from-square instead of a generic highlight.
-            pc = board.piece_at(mv.from_square) if mv is not None else None
-            moves.append({"label": lab, "kind": kind, "from": frm, "to": to,
-                          "uci": mv.uci() if mv else None, "san": san,
-                          "piece": pc.symbol() if pc is not None else None})
+        steps = []
+        for name, lab, kind in self._lens_steps():
+            xa, xb = cache_a[name], cache_b[name]
+            ma = self._lens_move(xa, board, legal)
+            mb = self._lens_move(xb, board, legal)
+            steps.append({
+                "label": lab, "kind": kind,
+                "norm": (xa - xb).norm(dim=-1).tolist(),
+                "move_a": ma, "move_b": mb,
+                "same": ma["uci"] == mb["uci"],
+            })
+        return {"elo_a": int(elo_a), "elo_b": int(elo_b), "steps": steps}
 
-        return {"delta": delta, "moves": moves}
+    # ----- move-centric lenses ----------------------------------------------
+    def _move_index(self, board, uci: str):
+        """Policy index of a uci move on this board (handles the Black mirror).
+        Raises KeyError if the move can't be encoded."""
+        enc = mirror_move(uci) if board.turn == chess.BLACK else uci
+        return self.all_moves_dict[enc]
+
+    @torch.no_grad()
+    def move_logit_lens(self, board, self_elo, uci, oppo_elo=None):
+        """ONE move's depth curve — the logit lens applied to a single chosen
+        move at all 18 readout points of the residual stream. This is where a
+        move "snaps" into the plan: watch its logit, its probability over legal
+        moves, and its rank cross the field (rank 1 = currently the top move).
+
+        Returns {uci, san, steps: [{label, kind, logit, prob, rank}], n_legal}."""
+        self.evaluate(board, self_elo, oppo_elo)
+        idx = self._move_index(board, uci)
+        legal = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
+        n_legal = int(legal.sum())
+        steps = []
+        for name, lab, kind in self._lens_steps():
+            logits = self._move_logits(self._activations[name][0].to(self.device))
+            lg = float(logits[idx])
+            masked = logits.masked_fill(~legal, float("-inf"))
+            prob = float(torch.softmax(masked, dim=-1)[idx]) if n_legal else None
+            rank = int((masked > masked[idx]).sum()) + 1 if n_legal else None
+            steps.append({"label": lab, "kind": kind,
+                          "logit": lg, "prob": prob, "rank": rank})
+        mv = chess.Move.from_uci(uci)
+        return {"uci": uci, "san": board.san(mv) if mv in board.legal_moves else uci,
+                "steps": steps, "n_legal": n_legal}
+
+    @torch.no_grad()
+    def ablate_grid(self, board, self_elo, uci, oppo_elo=None):
+        """The carrier heatmap of one move: ablate EVERY attention head (all
+        num_blocks × num_heads of them, exactly, via head_writes) and record
+        what the intervention did to the move's logit. Sign convention, used
+        everywhere in this app:  delta = ablated − clean  — negative means the
+        head was SUPPORTING the move (removing it hurts), positive means it
+        suppresses. (The fork-around-and-find-out notebooks report the negation,
+        drop = clean − ablated.)
+
+        Returns {uci, san, base_logit, deltas: (num_blocks, num_heads) nested
+        list}. ~num_blocks·(num_heads+1) forward passes, so seconds, not ms."""
+        idx = self._move_index(board, uci)
+        base_logits, _ = self._forward(board, self_elo, oppo_elo)
+        base = float(base_logits[idx])
+        nb, nh = self.cfg.num_blocks, self.cfg.num_heads
+        deltas = []
+        for L in range(nb):
+            writes = self.head_writes(board, self_elo, oppo_elo, layer=L)  # (H, 64, dim)
+            row = []
+            for h in range(nh):
+                w = writes[h]
+                abl_logits, _ = self.run_with_hooks(
+                    board, self_elo, oppo_elo,
+                    fwd_hooks=[(f"attn_{L:02d}", lambda a, w=w: a - w.to(a.device, a.dtype))],
+                    return_type="logits",
+                )
+                row.append(float(abl_logits[idx]) - base)     # ablated − clean
+            deltas.append(row)
+        mv = chess.Move.from_uci(uci)
+        return {"uci": uci, "san": board.san(mv) if mv in board.legal_moves else uci,
+                "base_logit": base, "deltas": deltas}
 
     # ----- activation dump --------------------------------------------------
     def save_activations(self, filename: str, meta: dict | None = None) -> str:

@@ -23,20 +23,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;}
-  .wrap{display:flex;gap:22px;padding:20px;height:100%;align-items:flex-start}
-  .left{display:flex;flex-direction:column;gap:12px}
-  .right{flex:1;display:flex;flex-direction:column;gap:14px;min-width:300px;max-width:360px;height:100%}
+  .wrap{display:flex;gap:18px;padding:16px 20px;height:100%;align-items:flex-start;overflow:hidden}
+  .left{display:flex;flex-direction:column;gap:10px}
+  .right{flex:1;display:flex;flex-direction:column;gap:12px;min-width:260px;max-width:340px;height:100%}
   .arch{flex:0 0 384px;display:flex;flex-direction:column;height:100%}
 
   h1{font-size:15px;font-weight:600;letter-spacing:.3px;margin:0}
   .sub{font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:3px}
 
-  /* board */
-  #boardwrap{position:relative;width:576px;height:576px}
-  #board{width:576px;height:576px;display:grid;grid-template-columns:repeat(8,1fr);
+  /* board — capped at 640px but shrinks to keep the header, the board and the
+     toggle button under it all inside the viewport (the page never scrolls) */
+  #boardwrap{position:relative;width:min(640px, calc(100vh - 148px));
+    height:min(640px, calc(100vh - 148px))}
+  #board{width:100%;height:100%;display:grid;grid-template-columns:repeat(8,1fr);
     grid-template-rows:repeat(8,1fr);border-radius:8px;overflow:hidden;
     box-shadow:0 10px 40px rgba(0,0,0,.45);user-select:none}
-  #arrowsvg{position:absolute;inset:0;z-index:6;pointer-events:none}
+  #arrowsvg{position:absolute;inset:0;width:100%;height:100%;z-index:6;pointer-events:none}
   .sq{position:relative;display:flex;align-items:center;justify-content:center;cursor:default}
   .sq.light{background:var(--sq-light)} .sq.dark{background:var(--sq-dark)}
   .sq.lastmove::after{content:"";position:absolute;inset:0;background:var(--hl)}
@@ -151,21 +153,59 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .fenbox{flex:1;min-width:0;background:#0f131a;border:1px solid var(--line);border-radius:6px;
     color:var(--text);font-family:var(--mono);font-size:10px;padding:5px 7px}
   #fenload{padding:5px 10px;font-size:11px}
+  /* side-by-side board pairs (content vs geometry) */
+  .attpair{display:flex;gap:10px}
+  .attpair>div{flex:1;min-width:0}
+  .attpair .attboard{max-width:none}
+  /* smolgen mixture: readout + coefficient strip + template gallery */
+  .smoltitle{margin:16px 0 8px;font-size:12px;font-weight:600;color:var(--muted);
+    text-transform:uppercase;letter-spacing:.6px}
+  .gabreadout{font-family:var(--mono);font-size:10px;line-height:1.7;background:#0f131a;
+    border:1px solid var(--line);border-radius:6px;padding:6px 8px;margin:6px 0 10px;min-height:30px}
+  .gabreadout b{color:var(--text)}
+  .gabreadout .pos{color:#f0a35e} .gabreadout .neg{color:#6fb3ff}
+  .gabreadout .tref{color:var(--accent);cursor:pointer}
+  .gabreadout .tref:hover{text-decoration:underline}
+  .coeffstrip{display:flex;align-items:stretch;gap:1px;height:44px;border:1px solid var(--line);
+    border-radius:6px;padding:2px;margin-bottom:12px;
+    background:linear-gradient(#0f131a 49%,#262c37 49%,#262c37 51%,#0f131a 51%)}
+  .cbar{flex:1;min-width:1px;position:relative;cursor:pointer}
+  .cbar span{position:absolute;left:0;right:0;border-radius:1px}
+  .cbar:hover{background:rgba(110,168,254,.15)}
+  .cbar.selt{background:rgba(110,168,254,.3)}
+  .gallery{display:grid;grid-template-columns:repeat(8,1fr);gap:4px}
+  .gtile{cursor:pointer;text-align:center;min-width:0}
+  .gtile canvas{display:block;width:100%;aspect-ratio:1/1;image-rendering:pixelated;
+    border:1px solid var(--line);border-radius:3px;background:#10141b}
+  .gtile:hover canvas{border-color:var(--accent)}
+  .gtile.selt canvas{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+  .gtlbl{font-size:7px;font-family:var(--mono);color:var(--muted);margin-top:1px;
+    white-space:nowrap;overflow:hidden}
+  .gtlbl b{font-weight:600}
+  .gabdetail{border:1px solid var(--line);border-radius:8px;background:var(--panel2);
+    padding:10px;margin-bottom:12px}
+  .gabdetail.hidden{display:none}
+  .gdrow{display:flex;gap:12px;align-items:flex-start;justify-content:center}
+  .gdrow canvas{display:block;width:140px;height:140px;image-rendering:pixelated;
+    border:1px solid var(--line);border-radius:4px;background:#10141b}
+  .gdboard{width:140px;flex:0 0 140px}
+  .gdboard .attboard{max-width:140px}
+  .gdinfo{font-family:var(--mono);font-size:10px;line-height:1.7;color:var(--muted);margin-top:8px}
+  .gdinfo b{color:var(--text)}
+  .gdclose{float:right;padding:2px 8px;font-size:10px}
   .attlegend{display:flex;align-items:center;gap:6px;margin-top:10px;font-size:9px;color:var(--muted);font-family:var(--mono)}
   .legbar{flex:1;height:8px;border-radius:4px;border:1px solid var(--line);
     background:linear-gradient(90deg, rgb(68,1,84), rgb(59,82,139), rgb(33,144,141), rgb(93,200,99), rgb(253,231,37))}
   .legbar.div{background:linear-gradient(90deg, rgb(64,132,234), rgb(24,28,36), rgb(244,134,58))}
+  .legbar.pos{background:linear-gradient(90deg, rgb(24,28,36), rgb(244,134,58))}
   .leghint{font-size:8px;color:var(--muted);margin-top:3px;font-family:var(--mono)}
 
-  /* residual-stream filmstrip */
-  .resid{padding:12px 14px}
-  .residctrls{display:flex;gap:6px;margin-bottom:10px}
-  .rbtn{padding:4px 9px;font-size:11px}
-  .rbtn.active{background:var(--accent);color:#0a1220;border-color:var(--accent);font-weight:600}
-  .film{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px}
-  .filmcol{flex:0 0 52px;display:flex;flex-direction:column;align-items:center;gap:4px;min-width:0}
+  /* residual-stream filmstrip (lives in the bottom drawer) — sized so the
+     board and pieces are actually legible, not a strip of colored dots */
+  .film{display:flex;gap:12px;overflow-x:auto;padding-bottom:6px}
+  .filmcol{flex:0 0 150px;display:flex;flex-direction:column;align-items:center;gap:6px;min-width:0}
   .miniboard{width:100%;aspect-ratio:1/1;display:grid;grid-template-columns:repeat(8,1fr);
-    grid-template-rows:repeat(8,1fr);border:1px solid var(--line);border-radius:3px;overflow:hidden;background:#10141b}
+    grid-template-rows:repeat(8,1fr);border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#10141b}
   .miniboard>div{position:relative;display:flex;align-items:center;justify-content:center;line-height:1}
   /* faint checkerboard under the heat / move markers */
   .miniboard>div.dk::after,.miniboard>div.lt::after{content:"";position:absolute;inset:0;pointer-events:none}
@@ -173,12 +213,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .miniboard>div.lt::after{background:rgba(255,255,255,.05)}
   /* moving piece drawn on the from-square of the logit-lens move */
   .miniboard img.pc{width:88%;height:88%;position:relative;z-index:3;pointer-events:none}
-  .filmlbl{font-size:8px;color:var(--muted);font-family:var(--mono);text-align:center}
+  .filmlbl{font-size:11px;color:var(--muted);font-family:var(--mono);text-align:center}
   /* structure tags: which module wrote this column of the stream */
-  .filmcol.emb  .miniboard{border-top:2px solid #8a93a3}
-  .filmcol.attn .miniboard{border-top:2px solid #f0a35e}   /* attention add */
-  .filmcol.mlp  .miniboard{border-top:2px solid #6fb3ff}   /* MLP add */
-  .filmcol.enc  .miniboard{border-top:2px solid #5ac878}   /* final norm = real output */
+  .filmcol.emb  .miniboard{border-top:3px solid #8a93a3}
+  .filmcol.attn .miniboard{border-top:3px solid #f0a35e}   /* attention add */
+  .filmcol.mlp  .miniboard{border-top:3px solid #6fb3ff}   /* MLP add */
+  .filmcol.enc  .miniboard{border-top:3px solid #5ac878}   /* final norm = real output */
   .filmcol.emb  .filmlbl{color:#8a93a3}
   .filmcol.attn .filmlbl{color:#f0a35e}
   .filmcol.mlp  .filmlbl{color:#6fb3ff}
@@ -188,8 +228,42 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .residlegend .lg-attn::before{background:#f0a35e}
   .residlegend .lg-mlp::before{background:#6fb3ff}
   .residlegend .lg-emb::before{background:#8a93a3}
-  .residlegend.hidden{display:none}
-  .resid.hidden{display:none}
+  .residlegend .lg-enc::before{background:#5ac878}
+
+  /* medium toggle button under the board */
+  .boardctrls{margin-top:12px;display:flex;justify-content:center}
+  .medbtn{padding:10px 22px;font-size:13px;font-weight:600;border-radius:9px}
+  .medbtn.active{background:var(--accent);color:#0a1220;border-color:var(--accent)}
+
+  /* slide-up drawers from the bottom (move microscope + residual film) */
+  .drawer{position:fixed;left:0;right:0;bottom:0;z-index:40;background:var(--panel);
+    border-top:1px solid var(--line);box-shadow:0 -12px 44px rgba(0,0,0,.55);
+    transform:translateY(105%);transition:transform .25s ease;padding:10px 20px 14px}
+  .drawer.open{transform:translateY(0)}
+  .mlhead{display:flex;align-items:center;gap:12px;margin-bottom:8px}
+  .mltitle{font-size:13px;font-weight:600}
+  .mltitle b{color:var(--accent2)}
+  .mlhint{font-size:10px;color:var(--muted);font-family:var(--mono);flex:1;min-width:0}
+  #mlclose{padding:3px 10px;font-size:11px}
+  .mlbody{display:flex;gap:24px;align-items:flex-start}
+  .mlchart{flex:1;min-width:0}
+  #mlsvg{width:100%;height:auto;display:block;background:#0f131a;
+    border:1px solid var(--line);border-radius:8px}
+  .mlgridbox{flex:0 0 250px}
+  #ablgrid{display:grid;grid-template-columns:18px repeat(8,1fr);grid-template-rows:14px repeat(8,1fr);
+    gap:1px;width:250px;margin-top:4px}
+  #ablgrid .agc{aspect-ratio:1/1;border-radius:2px;position:relative}
+  #ablgrid .agc.cell{cursor:pointer}
+  #ablgrid .agc.cell:hover{outline:1px solid var(--accent)}
+  #ablgrid .agc.strong{outline:2px solid #ff5d6c;z-index:1}
+  #ablgrid .agl{display:flex;align-items:center;justify-content:center;aspect-ratio:auto;
+    font-size:8px;font-family:var(--mono);color:var(--muted)}
+  .mlnote{font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:6px;line-height:1.5}
+  /* policy rows are now clickable (open the microscope) */
+  .prow{cursor:pointer;border-radius:6px}
+  .prow:hover{background:rgba(110,168,254,.07)}
+  .prow.lensed{background:rgba(110,168,254,.12)}
+  .prow.lensed .san{color:var(--accent)}
 
   .status{font-size:12px;color:var(--muted);min-height:16px}
   .status b{color:var(--text)}
@@ -219,30 +293,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
     <div id="boardwrap">
       <div id="board"></div>
-      <svg id="arrowsvg" viewBox="0 0 576 576" width="576" height="576"></svg>
+      <svg id="arrowsvg" viewBox="0 0 640 640" width="640" height="640"></svg>
     </div>
-    <div class="controls">
-      <button class="primary" id="newbtn">New game</button>
-      <button id="undobtn">← Back</button>
-      <label class="lbl">You play</label>
-      <select id="color"><option value="white">White</option><option value="black">Black</option><option value="setup">Set up position</option></select>
-      <label class="lbl"><input type="checkbox" id="showresid" checked> residual</label>
-      <span class="status" id="status" style="margin-left:auto"></span>
-    </div>
-
-    <div class="card resid">
-      <h2>Residual stream across depth · this position</h2>
-      <div class="residctrls">
-        <button class="rbtn active" data-m="delta">Δ structure writes</button>
-        <button class="rbtn" data-m="move">→ move logit-lens</button>
-      </div>
-      <div class="residlegend" id="residlegend">
-        <span class="lg-emb">emb (input)</span>
-        <span class="lg-attn">attn add</span>
-        <span class="lg-mlp">MLP add</span>
-      </div>
-      <div class="film" id="film"></div>
-      <div class="act" id="residinfo" style="margin-top:6px"></div>
+    <div class="boardctrls">
+      <button id="rlbtn" class="medbtn">Residual film</button>
     </div>
   </div>
 
@@ -269,13 +323,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:0">
       <h2 id="poltitle">Policy over legal moves</h2>
       <div id="policy"></div>
-      <div class="act" id="actfile" style="margin-top:8px"></div>
+      <div class="leghint" style="margin-top:5px">click a move to open the move microscope (depth curve + carrier heads)</div>
+      <div class="act" id="actfile" style="margin-top:4px"></div>
     </div>
 
     <div class="card">
       <h2>Moves</h2>
       <div class="moves" id="moves">—</div>
       <div class="fenrow"><input id="fenin" class="fenbox" spellcheck="false" placeholder="paste a FEN to load"><button id="fenload">Load</button></div>
+      <div class="controls" style="margin-top:10px">
+        <button class="primary" id="newbtn">New game</button>
+        <button id="undobtn">← Back</button>
+        <select id="color"><option value="white">You play White</option><option value="black">You play Black</option><option value="setup">Set up position</option></select>
+        <span class="status" id="status"></span>
+      </div>
     </div>
   </div>
 
@@ -288,16 +349,66 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <div class="ablrow"><button id="ablbtn">Ablate this head</button><span class="ablnote">removes its exact residual write</span></div>
       </div>
       <div id="ablout"></div>
-      <div class="attcap">Click any square to set the query. Top two boards are the selected head; the bottom is the whole layer.</div>
+      <div class="attcap">Click any square to set the query; hover a heat cell to decompose its geometry below. Top four boards are the selected head; the bottom is the whole layer.</div>
       <div class="attset">
-        <div><div class="attlabel">Semantic (regular dot product attention):</div><div class="attboard" id="att_qk"></div></div>
-        <div><div class="attlabel">GAB (geometrically biased attention):</div><div class="attboard" id="att_gab"></div></div>
+        <div class="attpair">
+          <div><div class="attlabel">QKᵀ content logits (semantic):</div><div class="attboard" id="att_qk"></div></div>
+          <div><div class="attlabel">GAB bias logits (geometry):</div><div class="attboard" id="att_gab"></div></div>
+        </div>
+        <div class="attpair">
+          <div><div class="attlabel">softmax(QKᵀ) — content only:</div><div class="attboard" id="att_sm_qk"></div></div>
+          <div><div class="attlabel">softmax(QKᵀ+GAB) — the head:</div><div class="attboard" id="att_sm_full"></div></div>
+        </div>
         <div><div class="attlabel">Whole-layer attention (mean softmax over all heads):</div><div class="attboard" id="att_attn"></div></div>
       </div>
       <div class="attlegend"><span>−</span><div class="legbar div"></div><span>+</span></div>
       <div class="leghint">logit boards: diverging scale, blue = negative · orange = positive (symmetric per board)</div>
       <div class="attlegend"><span>low</span><div class="legbar"></div><span>high</span></div>
-      <div class="leghint">whole-layer board: attention strength, scaled per board</div>
+      <div class="leghint">softmax boards: attention strength — the content-only / with-GAB pair shares one scale, so what the geometry adds or removes is directly visible</div>
+
+      <div class="smoltitle">Smolgen mixture · how this head's GAB is generated</div>
+      <div class="attcap">GAB isn't a stored table — a tiny generator reads this position and emits, per head, 64 mixing coefficients over a static bank of 64×64 square-pair templates shared by every layer &amp; head. The bias above is exactly that weighted sum.</div>
+      <div class="gabreadout" id="gabreadout">—</div>
+      <div class="attlabel">generated mixing coefficients · template #0–63 · click to inspect</div>
+      <div class="coeffstrip" id="coeffstrip"></div>
+      <div class="gabdetail hidden" id="gabdetail"></div>
+      <div class="attlabel">template vocabulary · the 64 static stencils (row = query sq, col = key sq)</div>
+      <div class="gallery" id="gallery"></div>
+    </div>
+  </div>
+</div>
+
+<div id="rlens" class="drawer">
+  <div class="mlhead">
+    <span class="mltitle">Residual stream across depth · this position</span>
+    <span class="mlhint">per-square ‖Δ‖ each structure writes into the stream (viridis) with the logit-lens top move at that point on top — the moving piece sits on its from-square, green ring = destination · side-to-move frame</span>
+    <button id="rlclose">✕ close</button>
+  </div>
+  <div class="residlegend">
+    <span class="lg-emb">emb (input)</span>
+    <span class="lg-attn">attn add</span>
+    <span class="lg-mlp">MLP add</span>
+    <span class="lg-enc">enc (final norm — no write, lens only)</span>
+  </div>
+  <div class="film" id="film"></div>
+  <div class="act" id="residinfo" style="margin-top:6px"></div>
+</div>
+
+<div id="mlens" class="drawer">
+  <div class="mlhead">
+    <span class="mltitle" id="mltitle">Move microscope</span>
+    <span class="mlhint" id="mlhint">the chosen move's logit at all 18 readout points — where it snaps into the plan — and the heads that carry it</span>
+    <button id="mlclose">✕ close</button>
+  </div>
+  <div class="mlbody">
+    <div class="mlchart">
+      <div class="attlabel" id="mlchartlab">depth curve · move logit after every sub-layer</div>
+      <svg id="mlsvg" viewBox="0 0 660 190"></svg>
+    </div>
+    <div class="mlgridbox">
+      <div class="attlabel">carrier heads · Δlogit = ablated − clean</div>
+      <div id="ablgrid"></div>
+      <div class="mlnote" id="mlnote"></div>
     </div>
   </div>
 </div>
@@ -315,7 +426,7 @@ function pieceImg(sym){ const i=document.createElement('img');
 let API=null, cur=null, orient='white', sel=null, busy=false;
 let elo=1500, temp=1, pendingPromo=null, MODEL_INFO=null, setupMode=false;
 let cmpOn=false, cmpElo=1100;
-const MAXPOL=14;
+const MAXPOL=8;
 
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
@@ -350,6 +461,7 @@ async function boot(){
     MODEL_INFO = info;
     setModelInfo();
     ensureAttUi(info);
+    loadTemplates();   // static GAB vocabulary — fetched once, in the background
     console.log('[maia] bridge ready', info);
     $('loading').style.display='none';
     booted=true;
@@ -418,7 +530,7 @@ async function probe(){
     if(d.error) return;
     cur = d; renderPolicy(d.policy, d.wdl, d.activation_file, null); renderBoard();
   }
-  updateAttention(); updateResidual();
+  updateAttention(); updateResidual(); updateMoveLens();
 }
 
 async function newGame(){
@@ -461,7 +573,7 @@ async function advance(){
   busy=false;
   setStatus();
   if(cmpOn && !cur.game_over && cur.human_to_move) await refreshCompare();
-  updateAttention(); updateResidual();
+  updateAttention(); updateResidual(); updateMoveLens();
   if(cur.game_over) finishUI();
 }
 
@@ -519,7 +631,7 @@ function sqCenter(name){
   const f=FILES.indexOf(name[0]), r=+name[1];
   const col = orient==='white' ? f : 7-f;
   const row = orient==='white' ? 8-r : r-1;
-  return [(col+.5)*72,(row+.5)*72];
+  return [(col+.5)*80,(row+.5)*80];   // 640px board, 80px squares
 }
 function drawArrow(){
   const svg=$('arrowsvg'); if(!svg) return;
@@ -612,7 +724,10 @@ function renderPolicy(pol, wdl, actfile, playedUci){
   if(pol && pol.length){
     pol.slice(0,MAXPOL).forEach((m,i)=>{
       const row=document.createElement('div');
-      row.className='prow'+(i===0?' top':'')+(playedUci&&m.uci===playedUci?' played':'');
+      row.className='prow'+(i===0?' top':'')+(playedUci&&m.uci===playedUci?' played':'')
+        +(mlMove&&m.uci===mlMove.uci?' lensed':'');
+      row.dataset.uci=m.uci;
+      row.onclick=()=>openMoveLens(m.uci, m.san);
       // bar width = the move's actual probability mass (0–100%), so the track reads as a true slider
       row.innerHTML=`<span class="san">${m.san}</span>`+
         `<span class="barwrap"><span class="bar" style="width:${Math.max(1.5,(m.p*100)).toFixed(1)}%"></span></span>`+
@@ -638,15 +753,16 @@ function renderMoves(){
 }
 function setStatus(msg){
   if(msg){ $('status').innerHTML=msg; return; }
-  if(!cur){ $('status').textContent=''; return; }
-  if(cur.game_over){ $('status').innerHTML=`<b>Game over</b> · ${cur.result} (${cur.termination||''})`; return; }
-  const who = cur.human_to_move ? 'Your move' : 'Maia to move';
-  $('status').innerHTML = `<b>${who}</b>`+(cur.in_check?' · check':'')+` · move ${cur.move_number}`;
+  if(cur && cur.game_over){ $('status').innerHTML=`<b>Game over</b> · ${cur.result} (${cur.termination||''})`; return; }
+  $('status').textContent='';
 }
 function finishUI(){ sel=null; renderBoard(); setStatus(); }
 
 /* ---- live attention panel (real QKᵀ / GAB / softmax for the current board) ---- */
 let attLayer=0, attHead=0, attQueryReal='d4', lastAtt=null;
+let GABT=null, gabtMaxAbs=null;        // static template bank (fetched once) + per-template |max|
+let gabTargetReal=null, selTemplate=null;   // decomposition target sq + inspected template
+const ATT_IDS=['att_qk','att_gab','att_sm_qk','att_sm_full','att_attn'];
 
 function viridis(t){
   t=Math.max(0,Math.min(1,t));
@@ -659,23 +775,27 @@ function viridis(t){
 function lerp3(a,b,t){return `rgb(${Math.round(a[0]+(b[0]-a[0])*t)},${Math.round(a[1]+(b[1]-a[1])*t)},${Math.round(a[2]+(b[2]-a[2])*t)})`;}
 function divmap(v){ const mid=[24,28,36], blue=[64,132,234], orange=[244,134,58]; return lerp3(mid, v<0?blue:orange, Math.min(1,Math.abs(v))); }
 
+function fillAttCells(el){          // 64 heat cells; click = set query, hover = decompose pair
+  for(let idx=0;idx<64;idx++){
+    const r=Math.floor(idx/8), c=idx%8, name=sqName(r,c);
+    const d=document.createElement('div');
+    d.className='attcell '+((FILES.indexOf(name[0])+(+name[1]))%2===0?'lt':'dk');
+    d.dataset.idx=idx;
+    d.onclick=()=>{ attQueryReal=sqName(Math.floor(idx/8), idx%8); gabTargetReal=null; renderAttention(); renderBoard(); };
+    d.onmouseenter=()=>{ gabTargetReal=sqName(Math.floor(idx/8), idx%8); renderGabReadout(); };
+    if(c===0){ const sp=document.createElement('span'); sp.className='attcoord r'; sp.textContent=name[1]; d.appendChild(sp); }
+    if(r===7){ const sp=document.createElement('span'); sp.className='attcoord f'; sp.textContent=name[0]; d.appendChild(sp); }
+    el.appendChild(d);
+  }
+}
 function buildAttBoards(){
-  ['att_qk','att_gab','att_attn'].forEach(id=>{
+  ATT_IDS.forEach(id=>{
     const el=$(id); if(!el || el.children.length) return;
-    for(let idx=0;idx<64;idx++){
-      const r=Math.floor(idx/8), c=idx%8, name=sqName(r,c);
-      const d=document.createElement('div');
-      d.className='attcell '+((FILES.indexOf(name[0])+(+name[1]))%2===0?'lt':'dk');
-      d.dataset.idx=idx;
-      d.onclick=()=>{ attQueryReal=sqName(Math.floor(idx/8), idx%8); renderAttention(); renderBoard(); };
-      if(c===0){ const sp=document.createElement('span'); sp.className='attcoord r'; sp.textContent=name[1]; d.appendChild(sp); }
-      if(r===7){ const sp=document.createElement('span'); sp.className='attcoord f'; sp.textContent=name[0]; d.appendChild(sp); }
-      el.appendChild(d);
-    }
+    fillAttCells(el);
   });
 }
 function relabelAttCoords(){
-  ['att_qk','att_gab','att_attn'].forEach(id=>{
+  ATT_IDS.forEach(id=>{
     const el=$(id); if(!el) return;
     for(const cell of el.children){
       const idx=+cell.dataset.idx, name=sqName(Math.floor(idx/8), idx%8);
@@ -695,17 +815,178 @@ function paintRow(id, row, colf){
 function renderAttention(){
   if(!lastAtt || !cur) return;
   const q = realToCanon(attQueryReal, cur.turn);
-  const qk = lastAtt.qk[q], gab = lastAtt.gab[q], att = (lastAtt.attn_layer||lastAtt.attn)[q];
-  if(!qk || !gab || !att) return;
+  const qk = lastAtt.qk[q], gab = lastAtt.gab[q], attL = (lastAtt.attn_layer||lastAtt.attn)[q];
+  if(!qk || !gab || !attL) return;
   // semantic & GAB are pre-softmax logits: diverging scale centered on 0,
   // symmetric per row (blue = negative, orange = positive)
   const dv = row => { let m=0; for(const v of row){ const a=Math.abs(v); if(a>m)m=a; } m=m||1; return v=>divmap(v/m); };
   paintRow('att_qk',  qk,  dv(qk));
   paintRow('att_gab', gab, dv(gab));
-  // Bottom board = whole-layer mean softmax over heads (still a per-row distribution);
+  // Side-by-side: what the head would do on content alone vs what it actually
+  // does with the geometry added. ONE shared scale so mass shifts are visible;
   // gamma-lift so the secondary squares show, not just the single brightest one.
-  let mx=1e-9; for(const v of att) if(v>mx) mx=v;
-  paintRow('att_attn', att, v=>viridis(Math.pow(v/mx, 0.6)));
+  // softmax boards are unsigned magnitudes -> viridis (sequential). The signed
+  // logit boards above keep the diverging blue/orange map. The content-only and
+  // with-GAB pair shares ONE scale so mass shifts are directly comparable;
+  // gamma-lift so the secondary squares show, not just the brightest one.
+  const attC = lastAtt.attn_content ? lastAtt.attn_content[q] : null;
+  const attH = lastAtt.attn ? lastAtt.attn[q] : null;
+  if(attC && attH){
+    let ms=1e-9; for(const v of attC) if(v>ms) ms=v; for(const v of attH) if(v>ms) ms=v;
+    const cf=v=>viridis(Math.pow(v/ms, 0.6));
+    paintRow('att_sm_qk',  attC, cf);
+    paintRow('att_sm_full', attH, cf);
+  }
+  // Bottom board = whole-layer mean softmax over heads (still a per-row distribution)
+  let mx=1e-9; for(const v of attL) if(v>mx) mx=v;
+  paintRow('att_attn', attL, v=>viridis(Math.pow(v/mx, 0.6)));
+  renderSmolgen();
+}
+
+/* ---- smolgen mixture: coefficients, live decomposition, template vocabulary ---- */
+function canonToReal(idx, turn){
+  const file=idx%8; let rank0=Math.floor(idx/8);
+  if(turn==='black') rank0=7-rank0;   // undo the side-to-move board mirror
+  return FILES[file]+(rank0+1);
+}
+async function loadTemplates(){       // once per app run: the static vocabulary
+  if(GABT || !API) return;
+  try{
+    const d = await API.gab_templates();
+    if(!d || d.error){ console.warn('[maia] gab_templates:', d && d.error); return; }
+    GABT = d.templates;
+    gabtMaxAbs = GABT.map(t=>{ let m=1e-9; for(const row of t) for(const v of row){ const a=Math.abs(v); if(a>m)m=a; } return m; });
+    buildGallery();
+    renderSmolgen();
+  }catch(e){ console.warn('[maia] gab_templates failed', e); }
+}
+function paintTemplate(cv, t, scale){ // 64×64 pair-matrix -> one pixel per (query, key)
+  const ctx=cv.getContext('2d'), img=ctx.createImageData(64,64);
+  const mid=[24,28,36], blue=[64,132,234], orange=[244,134,58];
+  for(let q=0;q<64;q++) for(let k=0;k<64;k++){
+    const v=Math.max(-1,Math.min(1,t[q][k]/scale)), c=v<0?blue:orange, a=Math.abs(v);
+    const p=(q*64+k)*4;
+    img.data[p]  =Math.round(mid[0]+(c[0]-mid[0])*a);
+    img.data[p+1]=Math.round(mid[1]+(c[1]-mid[1])*a);
+    img.data[p+2]=Math.round(mid[2]+(c[2]-mid[2])*a);
+    img.data[p+3]=255;
+  }
+  ctx.putImageData(img,0,0);
+}
+function buildGallery(){
+  const g=$('gallery'); if(!g || !GABT || g.children.length) return;
+  GABT.forEach((t,i)=>{
+    const tile=document.createElement('div'); tile.className='gtile'; tile.dataset.i=i;
+    const cv=document.createElement('canvas'); cv.width=64; cv.height=64;
+    paintTemplate(cv, t, gabtMaxAbs[i]);
+    const lb=document.createElement('div'); lb.className='gtlbl'; lb.innerHTML='<b>#'+i+'</b>';
+    tile.appendChild(cv); tile.appendChild(lb);
+    tile.onclick=()=>toggleTemplate(i);
+    g.appendChild(tile);
+  });
+}
+function toggleTemplate(i){ selTemplate = (selTemplate===i) ? null : i; renderSmolgen(); }
+function buildCoeffStrip(n){
+  const s=$('coeffstrip'); if(!s || s.children.length===n) return;
+  s.innerHTML='';
+  for(let i=0;i<n;i++){
+    const b=document.createElement('div'); b.className='cbar'; b.dataset.i=i;
+    b.appendChild(document.createElement('span'));
+    b.onclick=()=>toggleTemplate(i);
+    s.appendChild(b);
+  }
+}
+function renderCoeffStrip(){
+  const s=$('coeffstrip'); if(!s) return;
+  const c=lastAtt && lastAtt.coeffs;
+  if(!c){ s.innerHTML=''; return; }
+  buildCoeffStrip(c.length);
+  let m=1e-9; for(const v of c){ const a=Math.abs(v); if(a>m)m=a; }
+  [...s.children].forEach((b,i)=>{
+    const v=c[i], sp=b.firstChild, h=Math.max(3, Math.abs(v)/m*48);   // % of strip height (half = 50)
+    sp.style.background = v>=0 ? '#f0a35e' : '#6fb3ff';
+    sp.style.height=h+'%';
+    if(v>=0){ sp.style.bottom='50%'; sp.style.top='auto'; }
+    else    { sp.style.top='50%';    sp.style.bottom='auto'; }
+    b.title='template #'+i+' · coeff '+v.toFixed(3);
+    b.classList.toggle('selt', selTemplate===i);
+  });
+}
+function defaultGabTarget(){          // strongest |GAB| target for the current query
+  if(!lastAtt || !cur) return null;
+  const row=lastAtt.gab[realToCanon(attQueryReal, cur.turn)]; if(!row) return null;
+  let bi=0, bv=-1;
+  for(let k=0;k<64;k++){ const a=Math.abs(row[k]); if(a>bv){ bv=a; bi=k; } }
+  return canonToReal(bi, cur.turn);
+}
+function renderGabReadout(){
+  const el=$('gabreadout'); if(!el) return;
+  if(!lastAtt || !lastAtt.coeffs || !cur){ el.textContent='—'; return; }
+  if(!GABT){ el.textContent='loading template bank…'; return; }
+  if(!gabTargetReal) gabTargetReal=defaultGabTarget();
+  if(!gabTargetReal){ el.textContent='—'; return; }
+  const q=realToCanon(attQueryReal, cur.turn), k=realToCanon(gabTargetReal, cur.turn);
+  const total=lastAtt.gab[q][k], c=lastAtt.coeffs;
+  const terms=c.map((v,i)=>({i, v:v*GABT[i][q][k]}));
+  terms.sort((a,b)=>Math.abs(b.v)-Math.abs(a.v));
+  const top=terms.slice(0,4);
+  let rest=total; for(const t of top) rest-=t.v;
+  const f=v=>(v>=0?'+':'−')+Math.abs(v).toFixed(2);
+  const cls=v=>v>=0?'pos':'neg';
+  let h=`GAB ${attQueryReal}→${gabTargetReal} = <b class="${cls(total)}">${f(total)}</b> &nbsp;=&nbsp; `;
+  h+=top.map(t=>`<span class="${cls(t.v)}">${f(t.v)}</span>·<span class="tref" data-i="${t.i}">#${t.i}</span>`).join(' ');
+  h+=` <span style="opacity:.6">${f(rest)} rest</span>`;
+  el.innerHTML=h;
+  el.querySelectorAll('.tref').forEach(x=>{ x.onclick=()=>toggleTemplate(+x.dataset.i); });
+}
+function renderGalleryBadges(){       // live coefficients on the static vocabulary
+  const g=$('gallery'); if(!g || !g.children.length) return;
+  const c=lastAtt && lastAtt.coeffs;
+  let m=1e-9; if(c) for(const v of c){ const a=Math.abs(v); if(a>m)m=a; }
+  [...g.children].forEach((tile,i)=>{
+    const lb=tile.querySelector('.gtlbl'), cv=tile.querySelector('canvas');
+    if(c && c[i]!==undefined){
+      const col=c[i]>=0?'#f0a35e':'#6fb3ff';
+      lb.innerHTML=`<b>#${i}</b> <span style="color:${col}">${c[i]>=0?'+':'−'}${Math.abs(c[i]).toFixed(2)}</span>`;
+      cv.style.borderColor=divmap(c[i]/m);      // border glows with the live mixture
+    } else {
+      lb.innerHTML=`<b>#${i}</b>`; cv.style.borderColor='';
+    }
+    tile.classList.toggle('selt', selTemplate===i);
+  });
+}
+function renderTemplateDetail(){
+  const box=$('gabdetail'); if(!box) return;
+  if(selTemplate===null || !GABT){ box.classList.add('hidden'); box.innerHTML=''; return; }
+  const i=selTemplate, t=GABT[i], c=lastAtt && lastAtt.coeffs ? lastAtt.coeffs[i] : null;
+  let rank=null;
+  if(c!==null){ rank=1; for(const v of lastAtt.coeffs) if(Math.abs(v)>Math.abs(c)) rank++; }
+  box.classList.remove('hidden');
+  box.innerHTML=
+    `<button class="gdclose" id="gdclose">close</button>`+
+    `<div class="gdrow">`+
+      `<div><canvas id="gdcv" width="64" height="64"></canvas><div class="gtlbl">full 64×64 · row = query, col = key</div></div>`+
+      `<div class="gdboard"><div class="attboard" id="gdrowboard"></div><div class="gtlbl">its row at query ${attQueryReal}</div></div>`+
+    `</div>`+
+    `<div class="gdinfo">template <b>#${i}</b> — static stencil, shared by every layer &amp; head.`+
+    (c===null ? '' :
+      ` In L${attLayer}·H${attHead} on this board (elo ${elo}) its coefficient is `+
+      `<b>${c>=0?'+':'−'}${Math.abs(c).toFixed(3)}</b> — #${rank} of ${lastAtt.coeffs.length} by |coeff|.`)+
+    `</div>`;
+  $('gdclose').onclick=()=>toggleTemplate(i);
+  paintTemplate($('gdcv'), t, gabtMaxAbs[i]);
+  const rb=$('gdrowboard'); fillAttCells(rb);
+  if(cur){
+    const row=t[realToCanon(attQueryReal, cur.turn)];
+    let m=1e-9; for(const v of row){ const a=Math.abs(v); if(a>m)m=a; }
+    paintRow('gdrowboard', row, v=>divmap(v/m));
+  }
+}
+function renderSmolgen(){
+  renderCoeffStrip();
+  renderGabReadout();
+  renderGalleryBadges();
+  renderTemplateDetail();
 }
 async function updateAttention(){
   if(!API || !cur || cur.game_over) return;
@@ -770,10 +1051,14 @@ function ensureAttUi(info){    // idempotent: builds the boards + chips once
   if(hc && !hc.children.length) buildChips('headChips', info.num_heads||8, attHead, i=>{ attHead=i; updateAttention(); });
 }
 
-/* ---- residual-stream filmstrip (live, per position + ELO) ---- */
-let residMetric='delta', lastRes=null;
+/* ---- residual-stream filmstrip: one combined view in a bottom drawer.
+   Each column = one readout point. Heat = per-square ||delta|| the structure
+   writes at that point (viridis; emb on its own scale, attn+mlp shared); on
+   top, the logit-lens move at that point: piece on from-square, green ring on
+   the destination. enc has no additive write, so it shows the lens only. ---- */
+let lastRes=null, residOpen=false;
 function buildFilm(cols){            // cols: [{label, kind}] — one mini-board each
-  const f=$('film'); f.innerHTML=''; f.dataset.mode=residMetric;
+  const f=$('film'); f.innerHTML='';
   cols.forEach((cd,li)=>{
     const col=document.createElement('div'); col.className='filmcol'+(cd.kind?(' '+cd.kind):'');
     const mb=document.createElement('div'); mb.className='miniboard'; mb.dataset.li=li;
@@ -788,51 +1073,44 @@ function buildFilm(cols){            // cols: [{label, kind}] — one mini-board
 }
 function renderResidual(){
   if(!lastRes) return;
-  const film=$('film'), isMove = residMetric==='move';
-  $('residlegend').classList.toggle('hidden', isMove);
-  const cols = isMove ? lastRes.moves.map(m=>({label:m.label,kind:m.kind}))
-                      : lastRes.delta.map(d=>({label:d.label,kind:d.kind}));
-  if(film.dataset.mode!==residMetric || film.children.length!==cols.length) buildFilm(cols);
-  if(isMove){
-    [...film.children].forEach((col,li)=>{
-      const mv=lastRes.moves[li], cells=col.querySelector('.miniboard').children;
-      for(const cell of cells){ const sq=+cell.dataset.sq;
-        cell.innerHTML='';                                          // clear stale glyph
-        if(sq===mv.to){ cell.style.background='rgba(90,200,120,.9)'; }  // to = green
-        else { cell.style.background='transparent'; }
-        if(sq===mv.from && mv.piece){                               // from = the moving piece
-          cell.appendChild(pieceImg(mv.piece));
-        }
-      }
-      col.querySelector('.filmlbl').textContent = mv.label+(mv.san?' '+mv.san:'');
-    });
-    $('residinfo').textContent='logit-lens top move after every sub-layer: decode the running residual through the policy head, argmax over legal moves — the moving piece sits on its from-square, green = destination · side-to-move frame · elo '+elo;
-  } else {
-    // ||Δ|| each structure writes. attn+mlp adds share one scale (compare across
-    // depth); emb (the input write) is much larger, so it gets its own scale.
-    const cs=lastRes.delta;
-    let lo=Infinity,hi=-Infinity,eLo=Infinity,eHi=-Infinity;
-    for(const c of cs){ const isE=(c.kind==='emb');
-      for(const v of c.norm){ if(isE){ if(v<eLo)eLo=v; if(v>eHi)eHi=v; } else { if(v<lo)lo=v; if(v>hi)hi=v; } } }
-    const span=(hi-lo)||1, eSpan=(eHi-eLo)||1;
-    [...film.children].forEach((col,li)=>{
-      const c=cs[li], isE=(c.kind==='emb'), cells=col.querySelector('.miniboard').children;
-      for(const cell of cells){ const sq=+cell.dataset.sq;
-        const t = isE ? (c.norm[sq]-eLo)/eSpan : (c.norm[sq]-lo)/span;
-        cell.style.background=viridis(t); }
-      col.querySelector('.filmlbl').textContent=c.label;
-    });
-    $('residinfo').textContent='‖Δ‖ the vector each structure adds per square — Post-LN block writes the attention add then the MLP add. attn+mlp share one viridis scale (bright = bigger edit, comparable across depth); emb scaled on its own · side-to-move frame · elo '+elo;
-  }
+  const film=$('film'), mvs=lastRes.moves, dl=lastRes.delta;   // 18 lens points / 17 writes
+  if(film.children.length!==mvs.length) buildFilm(mvs.map(m=>({label:m.label,kind:m.kind})));
+  let lo=Infinity,hi=-Infinity,eLo=Infinity,eHi=-Infinity;
+  for(const c of dl){ const isE=(c.kind==='emb');
+    for(const v of c.norm){ if(isE){ if(v<eLo)eLo=v; if(v>eHi)eHi=v; } else { if(v<lo)lo=v; if(v>hi)hi=v; } } }
+  const span=(hi-lo)||1, eSpan=(eHi-eLo)||1;
+  [...film.children].forEach((col,li)=>{
+    const mv=mvs[li], d=dl[li]||null, cells=col.querySelector('.miniboard').children;
+    for(const cell of cells){ const sq=+cell.dataset.sq;
+      cell.innerHTML=''; cell.style.boxShadow='';
+      if(d){ const isE=(d.kind==='emb');
+        cell.style.background=viridis(isE ? (d.norm[sq]-eLo)/eSpan : (d.norm[sq]-lo)/span);
+      } else cell.style.background='transparent';                  // enc: lens only
+      if(sq===mv.to) cell.style.boxShadow='inset 0 0 0 2px rgba(90,200,120,.95)';
+      if(sq===mv.from && mv.piece) cell.appendChild(pieceImg(mv.piece));
+    }
+    col.querySelector('.filmlbl').textContent = mv.label+(mv.san?' '+mv.san:'');
+    col.title = mv.san ? mv.label+' · lens move '+mv.san : mv.label;
+  });
+  $('residinfo').textContent='heat = ||delta|| the structure writes per square (attn+mlp share one viridis scale, emb scaled on its own) · overlay = logit-lens top legal move of the running stream at that point · elo '+elo;
 }
 async function updateResidual(){
-  if(!API || !cur || cur.game_over) return;
-  if(!$('showresid').checked) return;
+  if(!API || !cur || cur.game_over || !residOpen) return;
   try{
     const d=await API.residual(elo);
     if(d && !d.error){ lastRes=d; renderResidual(); }
   }catch(e){ console.warn('[maia] residual update failed', e); }
 }
+function toggleResid(force){
+  residOpen = (force!==undefined) ? force : !residOpen;
+  if(residOpen && typeof closeMoveLens==='function' && mlMove) closeMoveLens();  // one drawer at a time
+  $('rlens').classList.toggle('open', residOpen);
+  $('rlbtn').classList.toggle('active', residOpen);
+  if(residOpen) updateResidual();
+}
+$('rlbtn').onclick=()=>toggleResid();
+$('rlclose').onclick=()=>toggleResid(false);
+
 /* ---- skill comparison: policy at two ratings, same position ---- */
 $('cmpchk').onchange=e=>{
   cmpOn=e.target.checked;
@@ -863,7 +1141,9 @@ function renderCompare(d){
   rows.slice(0,MAXPOL).forEach(r=>{
     const dlt=(r.p_b-r.p_a)*100, cls=dlt>=0?'up':'down';
     const row=document.createElement('div');
-    row.className='prow cmp';
+    row.className='prow cmp'+(mlMove&&r.uci===mlMove.uci?' lensed':'');
+    row.dataset.uci=r.uci;
+    row.onclick=()=>openMoveLens(r.uci, r.san);
     row.title=`${d.elo_a}: ${(r.p_a*100).toFixed(1)}% · ${d.elo_b}: ${(r.p_b*100).toFixed(1)}%`;
     row.innerHTML=`<span class="san">${r.san}</span>`+
       `<span class="dualbar"><span class="bar a" style="width:${Math.max(1,r.p_a*100).toFixed(1)}%"></span>`+
@@ -878,12 +1158,136 @@ function renderCompare(d){
   $('actfile').textContent='';
 }
 
-document.querySelectorAll('.rbtn').forEach(b=>{ b.onclick=()=>{
-  document.querySelectorAll('.rbtn').forEach(x=>x.classList.remove('active'));
-  b.classList.add('active'); residMetric=b.dataset.m; renderResidual();
-};});
-const _rc=$('showresid');
-if(_rc) _rc.onchange=e=>{ document.querySelector('.resid').classList.toggle('hidden', !e.target.checked); if(e.target.checked) updateResidual(); };
+/* ---- move microscope: one move's 18-point depth curve + carrier-head grid ----
+   Opens as a drawer from the bottom when a policy row is clicked. Curve = the
+   move's logit after every sub-layer (the "snap"); grid = Δlogit from ablating
+   every head, sign = ablated − clean (the app-wide convention: what the
+   intervention did — negative means the head was supporting the move). */
+const KIND_COL={emb:'#8a93a3',attn:'#f0a35e',mlp:'#6fb3ff',enc:'#5ac878'};
+let mlMove=null, mlData=null, mlDataB=null, mlGrid=null, mlGridKey=null, mlBusy=false;
+
+function markLensedRows(){
+  document.querySelectorAll('#policy .prow').forEach(r=>{
+    r.classList.toggle('lensed', !!(mlMove && r.dataset.uci===mlMove.uci));
+  });
+}
+function openMoveLens(uci, san){
+  mlMove={uci, san};
+  toggleResid(false);                 // one drawer at a time
+  $('mlens').classList.add('open');
+  markLensedRows();
+  updateMoveLens();
+}
+function closeMoveLens(){ mlMove=null; $('mlens').classList.remove('open'); markLensedRows(); }
+$('mlclose').onclick=closeMoveLens;
+document.addEventListener('keydown', e=>{
+  if(e.key!=='Escape') return;
+  if(mlMove) closeMoveLens();
+  else if(residOpen) toggleResid(false);
+});
+
+async function updateMoveLens(){
+  if(!API || !mlMove || !cur) return;
+  if(cur.game_over || !cur.legal_moves.includes(mlMove.uci)){ closeMoveLens(); return; }
+  if(mlBusy) return;
+  mlBusy=true;
+  try{
+    const d = await API.move_lens(elo, mlMove.uci);
+    if(!d || d.error){ console.warn('[maia] move_lens', d && d.error); return; }
+    mlData=d;
+    mlDataB=null;
+    if(cmpOn){
+      const b = await API.move_lens(cmpElo, mlMove.uci);
+      if(b && !b.error) mlDataB=b;
+    }
+    drawMlChart();
+    const key=`${cur.fen}|${elo}|${mlMove.uci}`;
+    if(mlGridKey!==key){
+      $('mlnote').textContent='running the 64-head ablation sweep…';
+      renderAblGrid(null);
+      const g = await API.ablate_grid(elo, mlMove.uci);
+      if(g && !g.error){ mlGrid=g; mlGridKey=key; renderAblGrid(g); }
+      else $('mlnote').textContent='sweep failed: '+((g && g.error)||'?');
+    } else renderAblGrid(mlGrid);
+  }catch(e){ console.warn('[maia] move microscope failed', e); }
+  finally{ mlBusy=false; }
+  markLensedRows();
+}
+
+function drawMlChart(){
+  const svg=$('mlsvg'); if(!svg || !mlData) return;
+  const A=mlData.steps, B=mlDataB ? mlDataB.steps : null;
+  const W=660, HH=190, ML=38, MR=12, MT=16, MB=30, iw=W-ML-MR, ih=HH-MT-MB;
+  let lo=Infinity, hi=-Infinity;
+  for(const s of A){ if(s.logit<lo)lo=s.logit; if(s.logit>hi)hi=s.logit; }
+  if(B) for(const s of B){ if(s.logit<lo)lo=s.logit; if(s.logit>hi)hi=s.logit; }
+  const pad=(hi-lo)*0.08||1; lo-=pad; hi+=pad;
+  const X=i=>ML+iw*i/(A.length-1), Y=v=>MT+ih*(1-(v-lo)/(hi-lo));
+  const tip=(s,n,pre)=>`${pre}${s.label} · logit ${s.logit.toFixed(2)} · p ${s.prob!=null?(s.prob*100).toFixed(1)+'%':'—'} · rank ${s.rank!=null?s.rank+'/'+n:'—'}`;
+  let h='';
+  for(const v of [lo+pad, (lo+hi)/2, hi-pad]){
+    h+=`<line x1="${ML}" y1="${Y(v)}" x2="${W-MR}" y2="${Y(v)}" stroke="#262c37"/>`+
+       `<text x="${ML-4}" y="${Y(v)+3}" fill="#8b93a3" font-size="9" text-anchor="end" font-family="monospace">${v.toFixed(1)}</text>`;
+  }
+  // the snap: first point of the final rank-1 run (where the move becomes top for good)
+  let snap=-1;
+  if(A[A.length-1].rank===1){ snap=A.length-1; while(snap>0 && A[snap-1].rank===1) snap--; }
+  if(snap>0){
+    h+=`<line x1="${X(snap)}" y1="${MT}" x2="${X(snap)}" y2="${MT+ih}" stroke="#ff5d6c" stroke-dasharray="4 3"/>`+
+       `<text x="${Math.min(X(snap)+4, W-110)}" y="${MT+10}" fill="#ff5d6c" font-size="9" font-family="monospace">top from ${A[snap].label}</text>`;
+  }
+  const line=(S,color,wd)=>`<polyline fill="none" stroke="${color}" stroke-width="${wd}" points="${S.map((s,i)=>X(i)+','+Y(s.logit)).join(' ')}"/>`;
+  if(B) h+=line(B,'#7bd88f',1.4);
+  h+=line(A,'#6ea8fe',2);
+  A.forEach((s,i)=>{ h+=`<circle cx="${X(i)}" cy="${Y(s.logit)}" r="3.2" fill="${KIND_COL[s.kind]||'#fff'}"><title>${tip(s,mlData.n_legal,'')}</title></circle>`; });
+  if(B) B.forEach((s,i)=>{ h+=`<circle cx="${X(i)}" cy="${Y(s.logit)}" r="2" fill="#7bd88f" opacity="0.85"><title>${tip(s,mlDataB.n_legal,'elo '+cmpElo+' · ')}</title></circle>`; });
+  A.forEach((s,i)=>{
+    if(s.kind==='emb'||s.kind==='enc'||s.kind==='mlp'){
+      const t = s.kind==='mlp' ? s.label.replace(' mlp','') : s.label;
+      h+=`<text x="${X(i)}" y="${HH-10}" fill="#8b93a3" font-size="9" text-anchor="middle" font-family="monospace">${t}</text>`;
+    }
+  });
+  if(B) h+=`<text x="${W-MR}" y="${MT-4}" font-size="9" text-anchor="end" font-family="monospace"><tspan fill="#6ea8fe">━ ${elo}</tspan> <tspan fill="#7bd88f">━ ${cmpElo}</tspan></text>`;
+  svg.innerHTML=h;
+  $('mltitle').innerHTML=`Move microscope · <b>${mlData.san}</b> <span style="color:var(--muted);font-family:var(--mono);font-size:11px">${mlData.uci} · elo ${elo}${B?' vs '+cmpElo:''}</span>`;
+  $('mlchartlab').textContent='depth curve · '+mlData.san+"'s logit after every sub-layer — dots colored by writer (grey emb, orange attn, blue MLP, green final norm); hover for logit / prob / rank";
+}
+
+function renderAblGrid(g){
+  const el=$('ablgrid'); if(!el) return;
+  el.innerHTML='';
+  const nb=g ? g.deltas.length : 8, nh=g ? g.deltas[0].length : 8;
+  let m=1e-9, sL=-1, sH=-1;
+  if(g) g.deltas.forEach((row,L)=>row.forEach((v,hh)=>{ const a=Math.abs(v); if(a>m){ m=a; sL=L; sH=hh; } }));
+  el.appendChild(Object.assign(document.createElement('div'),{className:'agc agl'}));
+  for(let hh=0;hh<nh;hh++){ const d=document.createElement('div'); d.className='agc agl'; d.textContent='h'+hh; el.appendChild(d); }
+  for(let L=0;L<nb;L++){
+    const lb=document.createElement('div'); lb.className='agc agl'; lb.textContent='b'+L; el.appendChild(lb);
+    for(let hh=0;hh<nh;hh++){
+      const d=document.createElement('div'); d.className='agc cell';
+      if(g){
+        const v=g.deltas[L][hh];
+        d.style.background=divmap(v/m);
+        d.title=`b${L}·h${hh}  Δ ${v>=0?'+':''}${v.toFixed(2)} — ${v<0?'supports':'suppresses'} ${g.san}`;
+        if(L===sL && hh===sH) d.classList.add('strong');
+        d.onclick=((L2,H2)=>()=>{             // jump the attention panel to this head
+          attLayer=L2; attHead=H2;
+          const info=MODEL_INFO||{};
+          buildChips('layerChips', info.num_blocks||8, L2, i=>{ attLayer=i; updateAttention(); });
+          buildChips('headChips',  info.num_heads ||8, H2, i=>{ attHead=i; updateAttention(); });
+          updateAttention();
+        })(L,hh);
+      } else d.style.background='#10141b';
+      el.appendChild(d);
+    }
+  }
+  if(g) $('mlnote').innerHTML=
+    `base logit ${g.base_logit.toFixed(2)} · strongest b${sL}·h${sH} `+
+    `${g.deltas[sL][sH]>=0?'+':''}${g.deltas[sL][sH].toFixed(2)} · `+
+    `blue = ablating the head drops ${g.san}'s logit (carrier) · orange = raises it (suppressor) · `+
+    `Δ = ablated − clean · click a cell to open that head in the attention panel`;
+}
+
 </script>
 </body>
 </html>

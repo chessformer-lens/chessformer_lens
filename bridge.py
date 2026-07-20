@@ -234,6 +234,71 @@ class MaiaApi:
             return self.engine.attention(b, self_elo=int(elo),
                                          layer=int(layer), head=int(head))
 
+    # ----- GAB / smolgen decomposition (see engine.py) ----------------------
+    def gab_templates(self):
+        """The 64 static square-pair stencils shared by every layer & head —
+        the model's whole geometric vocabulary. Position-independent, so the UI
+        fetches this exactly once. Rounded to 4 decimals to keep the one-time
+        payload small."""
+        if not self.ready:
+            return {"error": self.error or "model still loading"}
+        try:
+            t = self.engine.gab_templates()
+        except RuntimeError as exc:
+            return {"error": str(exc)}
+        return {
+            "gen_size": int(t.shape[0]),
+            "templates": [[[round(float(v), 4) for v in row] for row in tmpl]
+                          for tmpl in t.tolist()],
+        }
+
+    def gab_coeffs(self, elo=1500, layer=0):
+        """The smolgen mixing coefficients (all heads) generated for the CURRENT
+        position: coeffs[h][i] is how much of template i head h mixes into its
+        GAB bias. (attention() also returns the selected head's row, so the UI
+        normally doesn't need this extra call.)"""
+        if not self.ready:
+            return {"error": self.error or "model still loading"}
+        b = self.board
+        if b.is_game_over():
+            return {"error": "game over"}
+        try:
+            with self._lock:
+                c = self.engine.gab_coeffs(b, self_elo=int(elo), layer=int(layer))
+        except (RuntimeError, AssertionError) as exc:
+            return {"error": str(exc)}
+        return {"layer": int(layer), "num_heads": int(c.shape[0]),
+                "gen_size": int(c.shape[1]), "coeffs": c.tolist()}
+
+    def gab_bias(self, elo=1500, layer=0, head=0):
+        """One head's generated 64×64 geometric attention bias for the CURRENT
+        position (the matrix added to QKᵀ before the softmax)."""
+        if not self.ready:
+            return {"error": self.error or "model still loading"}
+        b = self.board
+        if b.is_game_over():
+            return {"error": "game over"}
+        try:
+            with self._lock:
+                g = self.engine.gab_bias(b, self_elo=int(elo),
+                                         layer=int(layer), head=int(head))
+        except RuntimeError as exc:
+            return {"error": str(exc)}
+        return {"layer": int(layer), "head": int(head), "gab": g.tolist()}
+
+    def qk_scores(self, elo=1500, layer=0, head=0):
+        """One head's raw content logits (scaled QKᵀ) for the CURRENT position —
+        the semantic half of attention, before GAB is added."""
+        if not self.ready:
+            return {"error": self.error or "model still loading"}
+        b = self.board
+        if b.is_game_over():
+            return {"error": "game over"}
+        with self._lock:
+            q = self.engine.qk_scores(b, self_elo=int(elo),
+                                      layer=int(layer), head=int(head))
+        return {"layer": int(layer), "head": int(head), "qk": q.tolist()}
+
     def residual(self, elo=1500):
         if not self.ready:
             return {"error": self.error or "model still loading"}
@@ -243,11 +308,59 @@ class MaiaApi:
         with self._lock:
             return self.engine.residual_stream(b, self_elo=int(elo))
 
+    def compare_residual(self, elo_a=1500, elo_b=1100):
+        """Skill diff on internals: per-square ||x_A − x_B|| of the running
+        residual stream at every readout point, plus each run's logit-lens
+        move, for the CURRENT position (see engine.compare_residual)."""
+        if not self.ready:
+            return {"error": self.error or "model still loading"}
+        b = self.board
+        if b.is_game_over():
+            return {"error": "game over"}
+        with self._lock:
+            return self.engine.compare_residual(b, elo_a=int(elo_a), elo_b=int(elo_b))
+
+    def move_lens(self, elo=1500, uci=None):
+        """One move's 18-point depth curve (logit / prob / rank at every
+        readout point) for the CURRENT position — the "snap" view."""
+        if not self.ready:
+            return {"error": self.error or "model still loading"}
+        b = self.board
+        if b.is_game_over():
+            return {"error": "game over"}
+        if not self._is_legal(uci):
+            return {"error": f"not a legal move here: {uci}"}
+        with self._lock:
+            return self.engine.move_logit_lens(b, self_elo=int(elo), uci=uci)
+
+    def ablate_grid(self, elo=1500, uci=None):
+        """The carrier heatmap of one move: every head ablated in turn,
+        delta = ablated − clean logit (the app-wide sign: negative = the head
+        supports the move). Slow-ish: ~72 forward passes."""
+        if not self.ready:
+            return {"error": self.error or "model still loading"}
+        b = self.board
+        if b.is_game_over():
+            return {"error": "game over"}
+        if not self._is_legal(uci):
+            return {"error": f"not a legal move here: {uci}"}
+        try:
+            with self._lock:
+                return self.engine.ablate_grid(b, self_elo=int(elo), uci=uci)
+        except Exception as exc:  # e.g. the head-write reconstruction assert
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
     def _san(self, uci):
         try:
             return self.board.san(chess.Move.from_uci(uci))
         except Exception:
             return uci
+
+    def _is_legal(self, uci):
+        try:
+            return uci and chess.Move.from_uci(uci) in self.board.legal_moves
+        except ValueError:
+            return False
 
     def compare_policy(self, elo_a=1500, elo_b=1100):
         """Evaluate the CURRENT position at two ratings (no move, no activation
