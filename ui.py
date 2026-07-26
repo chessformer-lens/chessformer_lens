@@ -19,11 +19,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
     --sq-light:#c9d1dc; --sq-dark:#6b7686;
     --hl:rgba(245,213,107,.28); --sel:#7bd88f; --win:#5fb878; --draw:#6b7480; --loss:#d9606a;
     --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --dock:112px;   /* height of the always-visible bottom drawer previews */
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;}
-  .wrap{display:flex;gap:18px;padding:16px 20px;height:100%;align-items:flex-start;overflow:hidden}
+  .wrap{display:flex;gap:18px;padding:16px 20px calc(var(--dock) + 8px);height:100%;align-items:flex-start;overflow:hidden}
   .left{display:flex;flex-direction:column;gap:10px}
   .right{flex:1;display:flex;flex-direction:column;gap:12px;min-width:260px;max-width:340px;height:100%}
   .arch{flex:0 0 384px;display:flex;flex-direction:column;height:100%}
@@ -33,8 +34,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   /* board — capped at 640px but shrinks to keep the header, the board and the
      toggle button under it all inside the viewport (the page never scrolls) */
-  #boardwrap{position:relative;width:min(640px, calc(100vh - 148px));
-    height:min(640px, calc(100vh - 148px))}
+  #boardwrap{position:relative;width:min(640px, calc(100vh - 148px - var(--dock)));
+    height:min(640px, calc(100vh - 148px - var(--dock)))}
   #board{width:100%;height:100%;display:grid;grid-template-columns:repeat(8,1fr);
     grid-template-rows:repeat(8,1fr);border-radius:8px;overflow:hidden;
     box-shadow:0 10px 40px rgba(0,0,0,.45);user-select:none}
@@ -158,8 +159,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .attpair>div{flex:1;min-width:0}
   .attpair .attboard{max-width:none}
   /* smolgen mixture: readout + coefficient strip + template gallery */
-  .smoltitle{margin:16px 0 8px;font-size:12px;font-weight:600;color:var(--muted);
-    text-transform:uppercase;letter-spacing:.6px}
   .gabreadout{font-family:var(--mono);font-size:10px;line-height:1.7;background:#0f131a;
     border:1px solid var(--line);border-radius:6px;padding:6px 8px;margin:6px 0 10px;min-height:30px}
   .gabreadout b{color:var(--text)}
@@ -193,6 +192,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .gdinfo{font-family:var(--mono);font-size:10px;line-height:1.7;color:var(--muted);margin-top:8px}
   .gdinfo b{color:var(--text)}
   .gdclose{float:right;padding:2px 8px;font-size:10px}
+  .polhint{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.45}
   .attlegend{display:flex;align-items:center;gap:6px;margin-top:10px;font-size:9px;color:var(--muted);font-family:var(--mono)}
   .legbar{flex:1;height:8px;border-radius:4px;border:1px solid var(--line);
     background:linear-gradient(90deg, rgb(68,1,84), rgb(59,82,139), rgb(33,144,141), rgb(93,200,99), rgb(253,231,37))}
@@ -230,16 +230,37 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .residlegend .lg-emb::before{background:#8a93a3}
   .residlegend .lg-enc::before{background:#5ac878}
 
-  /* medium toggle button under the board */
-  .boardctrls{margin-top:12px;display:flex;justify-content:center}
+  /* medium toggle buttons under the board */
+  .boardctrls{margin-top:12px;display:flex;justify-content:center;gap:10px}
   .medbtn{padding:10px 22px;font-size:13px;font-weight:600;border-radius:9px}
   .medbtn.active{background:var(--accent);color:#0a1220;border-color:var(--accent)}
 
-  /* slide-up drawers from the bottom (move microscope + residual film) */
-  .drawer{position:fixed;left:0;right:0;bottom:0;z-index:40;background:var(--panel);
-    border-top:1px solid var(--line);box-shadow:0 -12px 44px rgba(0,0,0,.55);
-    transform:translateY(105%);transition:transform .25s ease;padding:10px 20px 14px}
-  .drawer.open{transform:translateY(0)}
+  /* three bottom-docked drawers — residual stream · move microscope · GAB generator.
+     Each sits in its own third and peeks up by --dock at all times; click it to pull
+     the whole window up full-width over everything. */
+  .drawer{position:fixed;bottom:0;z-index:40;background:var(--panel);
+    border:1px solid var(--line);border-bottom:none;border-radius:14px 14px 0 0;
+    box-shadow:0 -12px 40px rgba(0,0,0,.45);padding:14px 18px;
+    transition:transform .24s ease, left .24s ease, width .24s ease;
+    transform:translateY(calc(100% - var(--dock)))}
+  .drawer.d0{left:0;width:33.34%}
+  .drawer.d1{left:33.33%;width:33.34%}
+  .drawer.d2{left:66.66%;width:33.34%}
+  .drawer.open{left:0;width:100%;transform:translateY(0);z-index:41;cursor:default}
+  /* grip + "pull up" affordance on each peeking window */
+  .drawer::before{content:"";position:absolute;top:6px;left:50%;transform:translateX(-50%);
+    width:44px;height:4px;border-radius:2px;background:var(--line)}
+  .drawer:not(.open){cursor:pointer}
+  .drawer:not(.open):hover{background:var(--panel2)}
+  .drawer:not(.open)::after{content:"▲ pull up";position:absolute;top:9px;right:14px;
+    font-size:9px;font-family:var(--mono);color:var(--muted)}
+  /* peek face: title + a clamped hint, no close button */
+  .drawer:not(.open) .mlhead{flex-wrap:wrap;gap:3px 10px;margin-bottom:0}
+  .drawer:not(.open) .mltitle{flex:1 1 100%;min-width:0;padding-right:54px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .drawer:not(.open) .mlhint{flex:1 1 100%;display:-webkit-box;-webkit-line-clamp:2;
+    -webkit-box-orient:vertical;overflow:hidden}
+  .drawer:not(.open) .mlhead>button{display:none}
   .mlhead{display:flex;align-items:center;gap:12px;margin-bottom:8px}
   .mltitle{font-size:13px;font-weight:600}
   .mltitle b{color:var(--accent2)}
@@ -256,6 +277,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #ablgrid .agc.cell{cursor:pointer}
   #ablgrid .agc.cell:hover{outline:1px solid var(--accent)}
   #ablgrid .agc.strong{outline:2px solid #ff5d6c;z-index:1}
+  /* final block: excluded from carrier attribution — dimmed, striped */
+  #ablgrid .agc.cell.excl{background:repeating-linear-gradient(45deg,#151a22,#151a22 3px,#1c222c 3px,#1c222c 6px);opacity:.5}
   #ablgrid .agl{display:flex;align-items:center;justify-content:center;aspect-ratio:auto;
     font-size:8px;font-family:var(--mono);color:var(--muted)}
   .mlnote{font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:6px;line-height:1.5}
@@ -264,6 +287,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .prow:hover{background:rgba(110,168,254,.07)}
   .prow.lensed{background:rgba(110,168,254,.12)}
   .prow.lensed .san{color:var(--accent)}
+  /* GAB generator drawer: keep it inside the viewport, tighter template grid at full width */
+  #gablens .gabwrap{max-height:62vh;overflow-y:auto;padding-right:4px}
+  #gablens .gallery{grid-template-columns:repeat(16,1fr)}
+  /* compared-move legend in the move microscope */
+  .mllegend{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 6px;min-height:0}
+  .mllegend:empty{display:none}
+  .mlchip{font-size:11px;font-family:var(--mono);padding:2px 8px;border-radius:10px;cursor:pointer;
+    border:1px solid var(--mlc,var(--line));color:var(--mlc,var(--text));background:transparent}
+  .mlchip.pri{background:var(--mlc,var(--accent));color:#0a1220;font-weight:600}
 
   .status{font-size:12px;color:var(--muted);min-height:16px}
   .status b{color:var(--text)}
@@ -296,7 +328,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <svg id="arrowsvg" viewBox="0 0 640 640" width="640" height="640"></svg>
     </div>
     <div class="boardctrls">
-      <button id="rlbtn" class="medbtn">Residual film</button>
+      <button id="rlbtn" class="medbtn">Watch residual stream</button>
     </div>
   </div>
 
@@ -323,7 +355,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:0">
       <h2 id="poltitle">Policy over legal moves</h2>
       <div id="policy"></div>
-      <div class="leghint" style="margin-top:5px">click a move to open the move microscope (depth curve + carrier heads)</div>
+      <div class="leghint" style="margin-top:5px">click moves to compare them in the move microscope</div>
       <div class="act" id="actfile" style="margin-top:4px"></div>
     </div>
 
@@ -349,39 +381,43 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <div class="ablrow"><button id="ablbtn">Ablate this head</button><span class="ablnote">removes its exact residual write</span></div>
       </div>
       <div id="ablout"></div>
-      <div class="attcap">Click any square to set the query; hover a heat cell to decompose its geometry below. Top four boards are the selected head; the bottom is the whole layer.</div>
+      <div class="attcap">Click a square to set the query.</div>
       <div class="attset">
         <div class="attpair">
-          <div><div class="attlabel">QKᵀ content logits (semantic):</div><div class="attboard" id="att_qk"></div></div>
-          <div><div class="attlabel">GAB bias logits (geometry):</div><div class="attboard" id="att_gab"></div></div>
+          <div><div class="attlabel">semantic · QKᵀ content logits</div><div class="attboard" id="att_qk"></div></div>
+          <div><div class="attlabel">geometric · GAB bias logits</div><div class="attboard" id="att_gab"></div></div>
         </div>
-        <div class="attpair">
-          <div><div class="attlabel">softmax(QKᵀ) — content only:</div><div class="attboard" id="att_sm_qk"></div></div>
-          <div><div class="attlabel">softmax(QKᵀ+GAB) — the head:</div><div class="attboard" id="att_sm_full"></div></div>
-        </div>
-        <div><div class="attlabel">Whole-layer attention (mean softmax over all heads):</div><div class="attboard" id="att_attn"></div></div>
+        <div><div class="attlabel">summed · QKᵀ + GAB — the head's logits</div><div class="attboard" id="att_sum"></div></div>
       </div>
       <div class="attlegend"><span>−</span><div class="legbar div"></div><span>+</span></div>
-      <div class="leghint">logit boards: diverging scale, blue = negative · orange = positive (symmetric per board)</div>
-      <div class="attlegend"><span>low</span><div class="legbar"></div><span>high</span></div>
-      <div class="leghint">softmax boards: attention strength — the content-only / with-GAB pair shares one scale, so what the geometry adds or removes is directly visible</div>
-
-      <div class="smoltitle">Smolgen mixture · how this head's GAB is generated</div>
-      <div class="attcap">GAB isn't a stored table — a tiny generator reads this position and emits, per head, 64 mixing coefficients over a static bank of 64×64 square-pair templates shared by every layer &amp; head. The bias above is exactly that weighted sum.</div>
-      <div class="gabreadout" id="gabreadout">—</div>
-      <div class="attlabel">generated mixing coefficients · template #0–63 · click to inspect</div>
-      <div class="coeffstrip" id="coeffstrip"></div>
-      <div class="gabdetail hidden" id="gabdetail"></div>
-      <div class="attlabel">template vocabulary · the 64 static stencils (row = query sq, col = key sq)</div>
-      <div class="gallery" id="gallery"></div>
+      <div class="leghint">diverging scale · blue = negative, orange = positive (symmetric per board)</div>
+      <div class="boardctrls" style="margin-top:16px">
+        <button id="gabbtn" class="medbtn">GAB generator</button>
+      </div>
     </div>
   </div>
 </div>
 
-<div id="rlens" class="drawer">
+<div id="gablens" class="drawer d2">
+  <div class="mlhead">
+    <span class="mltitle">Smolgen mixture · how <b id="gabhead">L0·H0</b>'s GAB is generated</span>
+    <span class="mlhint">a generator reads this position and emits, per head, 64 coefficients over a static bank of 64×64 square-pair templates shared by every layer &amp; head — the bias is that weighted sum</span>
+    <button id="gabclose">✕ close</button>
+  </div>
+  <div class="gabwrap">
+    <div class="gabreadout" id="gabreadout">—</div>
+    <div class="attlabel">generated mixing coefficients · template #0–63 · click to inspect</div>
+    <div class="coeffstrip" id="coeffstrip"></div>
+    <div class="gabdetail hidden" id="gabdetail"></div>
+    <div class="attlabel">template vocabulary · the 64 static stencils (row = query sq, col = key sq)</div>
+    <div class="gallery" id="gallery"></div>
+  </div>
+</div>
+
+<div id="rlens" class="drawer d0">
   <div class="mlhead">
     <span class="mltitle">Residual stream across depth · this position</span>
-    <span class="mlhint">per-square ‖Δ‖ each structure writes into the stream (viridis) with the logit-lens top move at that point on top — the moving piece sits on its from-square, green ring = destination · side-to-move frame</span>
+    <span class="mlhint">per-square ‖Δ‖ each structure writes into the stream (viridis) with the logit-lens top move on top · side-to-move frame</span>
     <button id="rlclose">✕ close</button>
   </div>
   <div class="residlegend">
@@ -394,15 +430,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div class="act" id="residinfo" style="margin-top:6px"></div>
 </div>
 
-<div id="mlens" class="drawer">
+<div id="mlens" class="drawer d1">
   <div class="mlhead">
     <span class="mltitle" id="mltitle">Move microscope</span>
-    <span class="mlhint" id="mlhint">the chosen move's logit at all 18 readout points — where it snaps into the plan — and the heads that carry it</span>
+    <span class="mlhint" id="mlhint">click policy moves to add or remove them · each move's logit through depth, and the heads that carry it</span>
     <button id="mlclose">✕ close</button>
   </div>
   <div class="mlbody">
     <div class="mlchart">
       <div class="attlabel" id="mlchartlab">depth curve · move logit after every sub-layer</div>
+      <div class="mllegend" id="mllegend"></div>
       <svg id="mlsvg" viewBox="0 0 660 190"></svg>
     </div>
     <div class="mlgridbox">
@@ -426,7 +463,7 @@ function pieceImg(sym){ const i=document.createElement('img');
 let API=null, cur=null, orient='white', sel=null, busy=false;
 let elo=1500, temp=1, pendingPromo=null, MODEL_INFO=null, setupMode=false;
 let cmpOn=false, cmpElo=1100;
-const MAXPOL=8;
+const MAXPOL=40;   // policy list is scrollable — show essentially every legal move
 
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
@@ -724,8 +761,7 @@ function renderPolicy(pol, wdl, actfile, playedUci){
   if(pol && pol.length){
     pol.slice(0,MAXPOL).forEach((m,i)=>{
       const row=document.createElement('div');
-      row.className='prow'+(i===0?' top':'')+(playedUci&&m.uci===playedUci?' played':'')
-        +(mlMove&&m.uci===mlMove.uci?' lensed':'');
+      row.className='prow'+(i===0?' top':'')+(playedUci&&m.uci===playedUci?' played':'');
       row.dataset.uci=m.uci;
       row.onclick=()=>openMoveLens(m.uci, m.san);
       // bar width = the move's actual probability mass (0–100%), so the track reads as a true slider
@@ -744,6 +780,7 @@ function renderPolicy(pol, wdl, actfile, playedUci){
       `<div class="l" style="width:${l}%">${l>8?l+'%':''}</div>`;
   }
   $('actfile').textContent = actfile ? '↳ saved '+actfile.split('/').slice(-1)[0] : '';
+  markLensedRows();
 }
 function renderMoves(){
   const h=cur && cur.san_history ? cur.san_history : [];
@@ -762,7 +799,7 @@ function finishUI(){ sel=null; renderBoard(); setStatus(); }
 let attLayer=0, attHead=0, attQueryReal='d4', lastAtt=null;
 let GABT=null, gabtMaxAbs=null;        // static template bank (fetched once) + per-template |max|
 let gabTargetReal=null, selTemplate=null;   // decomposition target sq + inspected template
-const ATT_IDS=['att_qk','att_gab','att_sm_qk','att_sm_full','att_attn'];
+const ATT_IDS=['att_qk','att_gab','att_sum'];
 
 function viridis(t){
   t=Math.max(0,Math.min(1,t));
@@ -815,31 +852,15 @@ function paintRow(id, row, colf){
 function renderAttention(){
   if(!lastAtt || !cur) return;
   const q = realToCanon(attQueryReal, cur.turn);
-  const qk = lastAtt.qk[q], gab = lastAtt.gab[q], attL = (lastAtt.attn_layer||lastAtt.attn)[q];
-  if(!qk || !gab || !attL) return;
-  // semantic & GAB are pre-softmax logits: diverging scale centered on 0,
-  // symmetric per row (blue = negative, orange = positive)
+  const qk = lastAtt.qk[q], gab = lastAtt.gab[q];
+  if(!qk || !gab) return;
+  const sum = qk.map((v,i)=>v+gab[i]);   // the head's actual pre-softmax logits
+  // all three are pre-softmax logits: diverging scale centered on 0,
+  // symmetric per board (blue = negative, orange = positive)
   const dv = row => { let m=0; for(const v of row){ const a=Math.abs(v); if(a>m)m=a; } m=m||1; return v=>divmap(v/m); };
   paintRow('att_qk',  qk,  dv(qk));
   paintRow('att_gab', gab, dv(gab));
-  // Side-by-side: what the head would do on content alone vs what it actually
-  // does with the geometry added. ONE shared scale so mass shifts are visible;
-  // gamma-lift so the secondary squares show, not just the single brightest one.
-  // softmax boards are unsigned magnitudes -> viridis (sequential). The signed
-  // logit boards above keep the diverging blue/orange map. The content-only and
-  // with-GAB pair shares ONE scale so mass shifts are directly comparable;
-  // gamma-lift so the secondary squares show, not just the brightest one.
-  const attC = lastAtt.attn_content ? lastAtt.attn_content[q] : null;
-  const attH = lastAtt.attn ? lastAtt.attn[q] : null;
-  if(attC && attH){
-    let ms=1e-9; for(const v of attC) if(v>ms) ms=v; for(const v of attH) if(v>ms) ms=v;
-    const cf=v=>viridis(Math.pow(v/ms, 0.6));
-    paintRow('att_sm_qk',  attC, cf);
-    paintRow('att_sm_full', attH, cf);
-  }
-  // Bottom board = whole-layer mean softmax over heads (still a per-row distribution)
-  let mx=1e-9; for(const v of attL) if(v>mx) mx=v;
-  paintRow('att_attn', attL, v=>viridis(Math.pow(v/mx, 0.6)));
+  paintRow('att_sum', sum, dv(sum));
   renderSmolgen();
 }
 
@@ -983,6 +1004,7 @@ function renderTemplateDetail(){
   }
 }
 function renderSmolgen(){
+  const gh=$('gabhead'); if(gh) gh.textContent='L'+attLayer+'·H'+attHead;
   renderCoeffStrip();
   renderGabReadout();
   renderGalleryBadges();
@@ -1101,15 +1123,39 @@ async function updateResidual(){
     if(d && !d.error){ lastRes=d; renderResidual(); }
   }catch(e){ console.warn('[maia] residual update failed', e); }
 }
+let gabOpen=false;
+/* All three windows are always docked at the bottom as peeks. "Open" just pulls one
+   up full-width over everything; collapsing drops it back to its peek without losing
+   state (e.g. the microscope keeps its compared moves). One up at a time. */
+function collapseDrawers(){
+  ['rlens','mlens','gablens'].forEach(id=>$(id).classList.remove('open'));
+  residOpen=false; gabOpen=false;
+  $('rlbtn').classList.remove('active'); $('gabbtn').classList.remove('active');
+}
 function toggleResid(force){
-  residOpen = (force!==undefined) ? force : !residOpen;
-  if(residOpen && typeof closeMoveLens==='function' && mlMove) closeMoveLens();  // one drawer at a time
-  $('rlens').classList.toggle('open', residOpen);
-  $('rlbtn').classList.toggle('active', residOpen);
-  if(residOpen) updateResidual();
+  const open = (force!==undefined) ? force : !$('rlens').classList.contains('open');
+  collapseDrawers();
+  if(open){ residOpen=true; $('rlens').classList.add('open'); $('rlbtn').classList.add('active'); updateResidual(); }
+}
+function toggleGab(force){
+  const open = (force!==undefined) ? force : !$('gablens').classList.contains('open');
+  collapseDrawers();
+  if(open){ gabOpen=true; $('gablens').classList.add('open'); $('gabbtn').classList.add('active'); loadTemplates(); renderSmolgen(); }
 }
 $('rlbtn').onclick=()=>toggleResid();
 $('rlclose').onclick=()=>toggleResid(false);
+$('gabbtn').onclick=()=>toggleGab();
+$('gabclose').onclick=()=>toggleGab(false);
+
+/* clicking anywhere on a peeking window pulls it up; when it's already open, clicks
+   fall through to its controls */
+[['rlens',()=>toggleResid(true)], ['mlens',()=>openMicroscope()], ['gablens',()=>toggleGab(true)]].forEach(([id,open])=>{
+  $(id).addEventListener('click', e=>{
+    if($(id).classList.contains('open')) return;
+    if(e.target.closest('button')) return;
+    open();
+  });
+});
 
 /* ---- skill comparison: policy at two ratings, same position ---- */
 $('cmpchk').onchange=e=>{
@@ -1141,7 +1187,7 @@ function renderCompare(d){
   rows.slice(0,MAXPOL).forEach(r=>{
     const dlt=(r.p_b-r.p_a)*100, cls=dlt>=0?'up':'down';
     const row=document.createElement('div');
-    row.className='prow cmp'+(mlMove&&r.uci===mlMove.uci?' lensed':'');
+    row.className='prow cmp';
     row.dataset.uci=r.uci;
     row.onclick=()=>openMoveLens(r.uci, r.san);
     row.title=`${d.elo_a}: ${(r.p_a*100).toFixed(1)}% · ${d.elo_b}: ${(r.p_b*100).toFixed(1)}%`;
@@ -1156,6 +1202,7 @@ function renderCompare(d){
   const wdl=$('wdl'); wdl.classList.add('cmp');
   wdl.innerHTML = wdlRowHtml(d.elo_a, d.wdl_a) + wdlRowHtml(d.elo_b, d.wdl_b);
   $('actfile').textContent='';
+  markLensedRows();
 }
 
 /* ---- move microscope: one move's 18-point depth curve + carrier-head grid ----
@@ -1164,62 +1211,118 @@ function renderCompare(d){
    every head, sign = ablated − clean (the app-wide convention: what the
    intervention did — negative means the head was supporting the move). */
 const KIND_COL={emb:'#8a93a3',attn:'#f0a35e',mlp:'#6fb3ff',enc:'#5ac878'};
-let mlMove=null, mlData=null, mlDataB=null, mlGrid=null, mlGridKey=null, mlBusy=false;
+const NO_CARRIER_BLOCK=7;                          // final block — excluded from carrier attribution
+const MLMAX=4;                                     // how many moves you can overlay at once
+const MLCOLORS=['#6ea8fe','#7bd88f','#f0a35e','#c98bff'];
+let mlMoves=[];        // [{uci, san, color, steps, n_legal}] — the moves being compared
+let mlPrimary=null;    // uci whose carrier-head grid + title are shown
+let mlDataB=null;      // elo-B overlay (single-move mode only)
+let mlGrid=null, mlGridKey=null, mlBusy=false, mlDirty=false;
 
 function markLensedRows(){
+  const cmap={}; mlMoves.forEach(m=>cmap[m.uci]=m.color);
   document.querySelectorAll('#policy .prow').forEach(r=>{
-    r.classList.toggle('lensed', !!(mlMove && r.dataset.uci===mlMove.uci));
+    const on = r.dataset.uci in cmap;
+    r.classList.toggle('lensed', on);
+    r.style.boxShadow = on ? ('inset 3px 0 0 '+cmap[r.dataset.uci]) : '';
   });
 }
-function openMoveLens(uci, san){
-  mlMove={uci, san};
-  toggleResid(false);                 // one drawer at a time
+function openMoveLens(uci, san){       // click toggles a move in/out of the comparison
+  const i=mlMoves.findIndex(m=>m.uci===uci);
+  if(i>=0){                            // already compared -> drop it
+    mlMoves.splice(i,1);
+    if(!mlMoves.length){ closeMoveLens(); return; }
+    if(mlPrimary===uci) mlPrimary=mlMoves[0].uci;
+  } else {
+    if(mlMoves.length>=MLMAX) return;  // keep the chart readable
+    const used=mlMoves.map(m=>m.color);
+    const color=MLCOLORS.find(c=>!used.includes(c))||MLCOLORS[mlMoves.length%MLCOLORS.length];
+    mlMoves.push({uci, san, color, steps:null, n_legal:0});
+    if(!mlPrimary) mlPrimary=uci;
+  }
+  collapseDrawers();                   // pull the microscope up, drop the others to peek
   $('mlens').classList.add('open');
   markLensedRows();
   updateMoveLens();
 }
-function closeMoveLens(){ mlMove=null; $('mlens').classList.remove('open'); markLensedRows(); }
+function openMicroscope(){              // clicking the microscope's peek (no move needed)
+  collapseDrawers();
+  $('mlens').classList.add('open');
+  if(mlMoves.length) updateMoveLens(); else showMicroscopeEmpty();
+}
+function showMicroscopeEmpty(){
+  $('mltitle').innerHTML='Move microscope';
+  $('mlchartlab').textContent='pick a move to inspect';
+  $('mllegend').innerHTML='';
+  $('mlsvg').innerHTML='<text x="330" y="96" fill="#8b93a3" font-size="12" text-anchor="middle" '+
+    'font-family="monospace">click a move in the policy list to inspect its depth curve + carrier heads</text>';
+  $('ablgrid').innerHTML=''; $('mlnote').textContent='';
+}
+function closeMoveLens(){ mlMoves=[]; mlPrimary=null; mlDataB=null;
+  $('mlens').classList.remove('open'); markLensedRows(); }
 $('mlclose').onclick=closeMoveLens;
 document.addEventListener('keydown', e=>{
   if(e.key!=='Escape') return;
-  if(mlMove) closeMoveLens();
-  else if(residOpen) toggleResid(false);
+  if($('mlens').classList.contains('open')) closeMoveLens();
+  else if($('gablens').classList.contains('open')) toggleGab(false);
+  else if($('rlens').classList.contains('open')) toggleResid(false);
 });
 
 async function updateMoveLens(){
-  if(!API || !mlMove || !cur) return;
-  if(cur.game_over || !cur.legal_moves.includes(mlMove.uci)){ closeMoveLens(); return; }
-  if(mlBusy) return;
+  if(!API || !mlMoves.length || !cur) return;
+  if(mlBusy){ mlDirty=true; return; }   // a click landed mid-fetch -> pick it up when we finish
   mlBusy=true;
   try{
-    const d = await API.move_lens(elo, mlMove.uci);
-    if(!d || d.error){ console.warn('[maia] move_lens', d && d.error); return; }
-    mlData=d;
-    mlDataB=null;
-    if(cmpOn){
-      const b = await API.move_lens(cmpElo, mlMove.uci);
-      if(b && !b.error) mlDataB=b;
-    }
-    drawMlChart();
-    const key=`${cur.fen}|${elo}|${mlMove.uci}`;
-    if(mlGridKey!==key){
-      $('mlnote').textContent='running the 64-head ablation sweep…';
-      renderAblGrid(null);
-      const g = await API.ablate_grid(elo, mlMove.uci);
-      if(g && !g.error){ mlGrid=g; mlGridKey=key; renderAblGrid(g); }
-      else $('mlnote').textContent='sweep failed: '+((g && g.error)||'?');
-    } else renderAblGrid(mlGrid);
+    do{
+      mlDirty=false;
+      if(cur.game_over){ closeMoveLens(); return; }
+      mlMoves = mlMoves.filter(m=>cur.legal_moves.includes(m.uci));   // drop any now-illegal
+      if(!mlMoves.length){ closeMoveLens(); return; }
+      if(!mlMoves.some(m=>m.uci===mlPrimary)) mlPrimary=mlMoves[0].uci;
+      for(const m of mlMoves){                        // a depth curve for each compared move
+        const d = await API.move_lens(elo, m.uci);
+        if(d && !d.error){ m.steps=d.steps; m.n_legal=d.n_legal; if(d.san) m.san=d.san; }
+      }
+      mlDataB=null;                                   // elo-B overlay only for a lone move
+      if(cmpOn && mlMoves.length===1){
+        const b = await API.move_lens(cmpElo, mlMoves[0].uci);
+        if(b && !b.error) mlDataB=b;
+      }
+      drawMlChart();
+      const pm=mlMoves.find(m=>m.uci===mlPrimary)||mlMoves[0];   // carrier heads = primary move
+      const key=`${cur.fen}|${elo}|${pm.uci}`;
+      if(mlGridKey!==key){
+        $('mlnote').textContent='running the 64-head ablation sweep…';
+        renderAblGrid(null);
+        const g = await API.ablate_grid(elo, pm.uci);
+        if(g && !g.error){ mlGrid=g; mlGridKey=key; renderAblGrid(g); }
+        else $('mlnote').textContent='sweep failed: '+((g && g.error)||'?');
+      } else renderAblGrid(mlGrid);
+    } while(mlDirty);
   }catch(e){ console.warn('[maia] move microscope failed', e); }
   finally{ mlBusy=false; }
   markLensedRows();
 }
 
+function drawMlLegend(series){         // color key for the compared moves; click sets the grid
+  const el=$('mllegend'); if(!el) return;
+  if(series.length<2){ el.innerHTML=''; return; }
+  el.innerHTML=series.map(m=>
+    `<span class="mlchip${m.uci===mlPrimary?' pri':''}" data-uci="${m.uci}" style="--mlc:${m.color}">${m.san}</span>`).join('');
+  el.querySelectorAll('.mlchip').forEach(c=>{
+    c.onclick=()=>{ mlPrimary=c.dataset.uci; markLensedRows(); updateMoveLens(); };
+  });
+}
 function drawMlChart(){
-  const svg=$('mlsvg'); if(!svg || !mlData) return;
-  const A=mlData.steps, B=mlDataB ? mlDataB.steps : null;
+  const svg=$('mlsvg'); if(!svg) return;
+  const series=mlMoves.filter(m=>m.steps);
+  if(!series.length) return;
+  const single=(series.length===1);
+  const A=series[0].steps;                          // shared 18-point grid (x positions + labels)
+  const B=(single && mlDataB) ? mlDataB.steps : null;
   const W=660, HH=190, ML=38, MR=12, MT=16, MB=30, iw=W-ML-MR, ih=HH-MT-MB;
   let lo=Infinity, hi=-Infinity;
-  for(const s of A){ if(s.logit<lo)lo=s.logit; if(s.logit>hi)hi=s.logit; }
+  for(const m of series) for(const s of m.steps){ if(s.logit<lo)lo=s.logit; if(s.logit>hi)hi=s.logit; }
   if(B) for(const s of B){ if(s.logit<lo)lo=s.logit; if(s.logit>hi)hi=s.logit; }
   const pad=(hi-lo)*0.08||1; lo-=pad; hi+=pad;
   const X=i=>ML+iw*i/(A.length-1), Y=v=>MT+ih*(1-(v-lo)/(hi-lo));
@@ -1229,47 +1332,66 @@ function drawMlChart(){
     h+=`<line x1="${ML}" y1="${Y(v)}" x2="${W-MR}" y2="${Y(v)}" stroke="#262c37"/>`+
        `<text x="${ML-4}" y="${Y(v)+3}" fill="#8b93a3" font-size="9" text-anchor="end" font-family="monospace">${v.toFixed(1)}</text>`;
   }
-  // the snap: first point of the final rank-1 run (where the move becomes top for good)
-  let snap=-1;
-  if(A[A.length-1].rank===1){ snap=A.length-1; while(snap>0 && A[snap-1].rank===1) snap--; }
-  if(snap>0){
-    h+=`<line x1="${X(snap)}" y1="${MT}" x2="${X(snap)}" y2="${MT+ih}" stroke="#ff5d6c" stroke-dasharray="4 3"/>`+
-       `<text x="${Math.min(X(snap)+4, W-110)}" y="${MT+10}" fill="#ff5d6c" font-size="9" font-family="monospace">top from ${A[snap].label}</text>`;
+  // the snap (first point of the final rank-1 run) only makes sense for a single move
+  if(single){
+    let snap=-1;
+    if(A[A.length-1].rank===1){ snap=A.length-1; while(snap>0 && A[snap-1].rank===1) snap--; }
+    if(snap>0){
+      h+=`<line x1="${X(snap)}" y1="${MT}" x2="${X(snap)}" y2="${MT+ih}" stroke="#ff5d6c" stroke-dasharray="4 3"/>`+
+         `<text x="${Math.min(X(snap)+4, W-110)}" y="${MT+10}" fill="#ff5d6c" font-size="9" font-family="monospace">top from ${A[snap].label}</text>`;
+    }
   }
   const line=(S,color,wd)=>`<polyline fill="none" stroke="${color}" stroke-width="${wd}" points="${S.map((s,i)=>X(i)+','+Y(s.logit)).join(' ')}"/>`;
   if(B) h+=line(B,'#7bd88f',1.4);
-  h+=line(A,'#6ea8fe',2);
-  A.forEach((s,i)=>{ h+=`<circle cx="${X(i)}" cy="${Y(s.logit)}" r="3.2" fill="${KIND_COL[s.kind]||'#fff'}"><title>${tip(s,mlData.n_legal,'')}</title></circle>`; });
-  if(B) B.forEach((s,i)=>{ h+=`<circle cx="${X(i)}" cy="${Y(s.logit)}" r="2" fill="#7bd88f" opacity="0.85"><title>${tip(s,mlDataB.n_legal,'elo '+cmpElo+' · ')}</title></circle>`; });
+  for(const m of series) h+=line(m.steps, m.color, m.uci===mlPrimary?2.2:1.5);
+  if(single){                                       // writer-colored dots + hover detail
+    A.forEach((s,i)=>{ h+=`<circle cx="${X(i)}" cy="${Y(s.logit)}" r="3.2" fill="${KIND_COL[s.kind]||'#fff'}"><title>${tip(s,series[0].n_legal,'')}</title></circle>`; });
+    if(B) B.forEach((s,i)=>{ h+=`<circle cx="${X(i)}" cy="${Y(s.logit)}" r="2" fill="#7bd88f" opacity="0.85"><title>${tip(s,mlDataB.n_legal,'elo '+cmpElo+' · ')}</title></circle>`; });
+  } else {                                          // one color per move
+    for(const m of series) m.steps.forEach((s,i)=>{ h+=`<circle cx="${X(i)}" cy="${Y(s.logit)}" r="2.4" fill="${m.color}"><title>${tip(s,m.n_legal,m.san+' · ')}</title></circle>`; });
+  }
   A.forEach((s,i)=>{
     if(s.kind==='emb'||s.kind==='enc'||s.kind==='mlp'){
       const t = s.kind==='mlp' ? s.label.replace(' mlp','') : s.label;
       h+=`<text x="${X(i)}" y="${HH-10}" fill="#8b93a3" font-size="9" text-anchor="middle" font-family="monospace">${t}</text>`;
     }
   });
-  if(B) h+=`<text x="${W-MR}" y="${MT-4}" font-size="9" text-anchor="end" font-family="monospace"><tspan fill="#6ea8fe">━ ${elo}</tspan> <tspan fill="#7bd88f">━ ${cmpElo}</tspan></text>`;
+  if(single && B) h+=`<text x="${W-MR}" y="${MT-4}" font-size="9" text-anchor="end" font-family="monospace"><tspan fill="#6ea8fe">━ ${elo}</tspan> <tspan fill="#7bd88f">━ ${cmpElo}</tspan></text>`;
   svg.innerHTML=h;
-  $('mltitle').innerHTML=`Move microscope · <b>${mlData.san}</b> <span style="color:var(--muted);font-family:var(--mono);font-size:11px">${mlData.uci} · elo ${elo}${B?' vs '+cmpElo:''}</span>`;
-  $('mlchartlab').textContent='depth curve · '+mlData.san+"'s logit after every sub-layer — dots colored by writer (grey emb, orange attn, blue MLP, green final norm); hover for logit / prob / rank";
+  const pm=series.find(m=>m.uci===mlPrimary)||series[0];
+  $('mltitle').innerHTML=`Move microscope · <b>${pm.san}</b> <span style="color:var(--muted);font-family:var(--mono);font-size:11px">${pm.uci} · elo ${elo}${(single&&B)?' vs '+cmpElo:''}</span>`;
+  $('mlchartlab').innerHTML = single
+    ? "depth curve · "+pm.san+"'s logit after every sub-layer — dots by writer (grey emb, orange attn, blue MLP, green final norm)"
+    : "depth curves · each move's logit after every sub-layer · click a move to load its carrier heads";
+  drawMlLegend(series);
 }
 
 function renderAblGrid(g){
   const el=$('ablgrid'); if(!el) return;
   el.innerHTML='';
   const nb=g ? g.deltas.length : 8, nh=g ? g.deltas[0].length : 8;
+  // The final block writes straight into the logits, so ablating its heads always
+  // looks like a huge Δ and drowns out the earlier structure — leave it out of the
+  // carrier attribution (colour scale + "strongest" pick), just dim it in the grid.
+  const skip=L=>L===NO_CARRIER_BLOCK;
   let m=1e-9, sL=-1, sH=-1;
-  if(g) g.deltas.forEach((row,L)=>row.forEach((v,hh)=>{ const a=Math.abs(v); if(a>m){ m=a; sL=L; sH=hh; } }));
+  if(g) g.deltas.forEach((row,L)=>{ if(skip(L)) return;
+    row.forEach((v,hh)=>{ const a=Math.abs(v); if(a>m){ m=a; sL=L; sH=hh; } }); });
   el.appendChild(Object.assign(document.createElement('div'),{className:'agc agl'}));
   for(let hh=0;hh<nh;hh++){ const d=document.createElement('div'); d.className='agc agl'; d.textContent='h'+hh; el.appendChild(d); }
   for(let L=0;L<nb;L++){
     const lb=document.createElement('div'); lb.className='agc agl'; lb.textContent='b'+L; el.appendChild(lb);
     for(let hh=0;hh<nh;hh++){
-      const d=document.createElement('div'); d.className='agc cell';
+      const d=document.createElement('div'); d.className='agc cell'+(skip(L)?' excl':'');
       if(g){
         const v=g.deltas[L][hh];
-        d.style.background=divmap(v/m);
-        d.title=`b${L}·h${hh}  Δ ${v>=0?'+':''}${v.toFixed(2)} — ${v<0?'supports':'suppresses'} ${g.san}`;
-        if(L===sL && hh===sH) d.classList.add('strong');
+        if(skip(L)){
+          d.title=`b${L}·h${hh}  Δ ${v>=0?'+':''}${v.toFixed(2)} — excluded from carrier attribution`;
+        } else {
+          d.style.background=divmap(v/m);
+          d.title=`b${L}·h${hh}  Δ ${v>=0?'+':''}${v.toFixed(2)} — ${v<0?'supports':'suppresses'} ${g.san}`;
+          if(L===sL && hh===sH) d.classList.add('strong');
+        }
         d.onclick=((L2,H2)=>()=>{             // jump the attention panel to this head
           attLayer=L2; attHead=H2;
           const info=MODEL_INFO||{};
@@ -1281,11 +1403,11 @@ function renderAblGrid(g){
       el.appendChild(d);
     }
   }
-  if(g) $('mlnote').innerHTML=
+  if(g && sL>=0) $('mlnote').innerHTML=
     `base logit ${g.base_logit.toFixed(2)} · strongest b${sL}·h${sH} `+
     `${g.deltas[sL][sH]>=0?'+':''}${g.deltas[sL][sH].toFixed(2)} · `+
     `blue = ablating the head drops ${g.san}'s logit (carrier) · orange = raises it (suppressor) · `+
-    `Δ = ablated − clean · click a cell to open that head in the attention panel`;
+    `b${NO_CARRIER_BLOCK} excluded (writes straight to the logits) · click a cell to open that head`;
 }
 
 </script>
