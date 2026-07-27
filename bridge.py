@@ -1,12 +1,13 @@
 """
-bridge.py — the pywebview JS API (game state + the methods the UI calls).
+bridge.py — the pywebview JS API (game state + the JSON methods it exposes).
 
 `MaiaApi` is what gets exposed to the browser as `window.pywebview.api`: every
 method returns a plain JSON-able dict. It owns the chess.Board, drives new
 game / move / undo / analyze, and forwards the interp queries (policy, attention,
 residual) to a `MaiaEngine`. The model loads on a background thread so the window
-opens instantly. This file is the app's glue — for notebook work import
-`MaiaEngine` from engine.py directly instead.
+opens instantly. This file is the app's glue — for notebook work use
+interp_plot.py / interp_widget.py, or import `MaiaEngine` from engine.py
+directly; none of them go through here.
 """
 import os
 import sys
@@ -26,7 +27,11 @@ def side_name(turn):
 
 
 class MaiaApi:
-    """Everything JS can call. Methods return plain JSON-able dicts."""
+    """The JS-callable surface. Methods return plain JSON-able dicts.
+
+    `ui.py` drives most of these. `gab_coeffs`, `gab_bias`, `qk_scores` and
+    `compare_residual` are not wired to any control — they're kept as a stable
+    surface for poking at the model from the webview console."""
 
     def __init__(self, alias=None):
         self.engine = None
@@ -255,10 +260,11 @@ class MaiaApi:
 
     # ----- GAB / smolgen decomposition (see engine.py) ----------------------
     def gab_templates(self):
-        """The 64 static square-pair stencils shared by every layer & head —
-        the model's whole geometric vocabulary. Position-independent, so the UI
-        fetches this exactly once. Rounded to 4 decimals to keep the one-time
-        payload small."""
+        """The static square-pair stencils shared by every layer & head — the
+        model's whole geometric vocabulary. `gen_size` of them (64 on 3m/5m, 128
+        on 23m/79m), read off the tensor. Position-independent, so the UI fetches
+        this exactly once. Rounded to 4 decimals to keep the one-time payload
+        small."""
         if not self.ready:
             return {"error": self.error or "model still loading"}
         try:
@@ -330,7 +336,8 @@ class MaiaApi:
     def compare_residual(self, elo_a=1500, elo_b=1100):
         """Skill diff on internals: per-square ||x_A − x_B|| of the running
         residual stream at every readout point, plus each run's logit-lens
-        move, for the CURRENT position (see engine.compare_residual)."""
+        move, for the CURRENT position (see engine.compare_residual). Not
+        consumed by the UI — its skill comparison uses `compare_policy`."""
         if not self.ready:
             return {"error": self.error or "model still loading"}
         b = self.board
@@ -340,8 +347,9 @@ class MaiaApi:
             return self.engine.compare_residual(b, elo_a=int(elo_a), elo_b=int(elo_b))
 
     def move_lens(self, elo=1500, uci=None):
-        """One move's 18-point depth curve (logit / prob / rank at every
-        readout point) for the CURRENT position — the "snap" view."""
+        """One move's depth curve (logit / prob / rank at every readout point —
+        2·num_blocks + 2 of them, 18 on every current Maia-3 size) for the
+        CURRENT position: the "snap" view."""
         if not self.ready:
             return {"error": self.error or "model still loading"}
         b = self.board
@@ -355,7 +363,8 @@ class MaiaApi:
     def ablate_grid(self, elo=1500, uci=None):
         """The carrier heatmap of one move: every head ablated in turn,
         delta = ablated − clean logit (the app-wide sign: negative = the head
-        supports the move). Slow-ish: ~72 forward passes."""
+        supports the move). Slow-ish: ~num_blocks·(num_heads+1) forward passes
+        (72 on the 5M, 264 on the 79M)."""
         if not self.ready:
             return {"error": self.error or "model still loading"}
         b = self.board

@@ -1,22 +1,27 @@
 """
 Chessformer (Maia 3) interpretability app — launcher.
 
-Play a transformer-based chess bot (Maia-3) trained to mimic human play and watch
+Play a transformer-based chess bot (Maia 3) trained to mimic human play and watch
 its move policy, its attention (semantic QKᵀ, the unique geometric GAB, and
-their sum — the head's raw logits), and how its residual stream evolves with
+the head's raw logits), and how its residual stream evolves with
 depth. The GAB itself is taken apart live in its own drawer: the static
 square-pair template bank and the generated smolgen mixing coefficients that
 combine it into each head's bias. Drag the ELO slider to
 re-evaluate a position at different skill levels (e.g. at very low ELO, King and
 Queen vs King comes out to roughly 75% draw).
 
-The code is split into a few small, single-purpose modules:
+The app itself is four small, single-purpose modules:
 
   engine.py  — MaiaEngine: the interp core (model + hooks + analysis). No UI deps,
                so it imports cleanly into Colab/Jupyter. Start here for interp work.
-  bridge.py  — MaiaApi: game state + the methods the UI calls (window.pywebview.api).
+  bridge.py  — MaiaApi: the JSON API exposed as window.pywebview.api, plus game state.
   ui.py      — INDEX_HTML: the whole interface (HTML + CSS + JS) as one string.
   app.py     — this file: opens the native window.
+
+Alongside it, the same engine drives a notebook/figure layer that needs no UI:
+interp_plot.py (the read-once views as matplotlib figures), interp_widget.py (the
+two interactive panels as a notebook cell), and pieces.py / piece_art.py for the
+piece artwork both of them share with the app. See README.md.
 
 Run:  python app.py                 # default model (Maia3 5M)
       python app.py 23m             # any built-in alias: 3m / 5m / 23m / 79m
@@ -24,7 +29,7 @@ Run:  python app.py                 # default model (Maia3 5M)
       MAIA3_ALIAS=23m python app.py # env var still works
 
 The GUI adapts to whatever loads (block/head/dim counts, GAB template bank), so
-the same interface drives every model size. See README.md.
+the same interface drives every model size.
 """
 import argparse
 import os

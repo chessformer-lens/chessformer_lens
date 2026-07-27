@@ -3,6 +3,8 @@
 maia3 @ git+https://github.com/CSSLab/maia3
 torch
 numpy
+ipython
 python-chess
 huggingface-hub
 pywebview
+matplotlib          # interp_plot.py / piece_art.py only; the app itself doesn't need it

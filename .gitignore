@@ -3,3 +3,4 @@ __pycache__/
 *.pt
 .venv/
 .DS_Store
+tests.ipynb

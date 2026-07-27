@@ -2,15 +2,38 @@
 
 <img width="1440" height="900" alt="Screenshot 2026-07-09 at 6 09 56 PM" src="https://github.com/user-attachments/assets/42218edf-d8b2-4d89-81d3-c750837d3df3" />
 
-Play a transformer based chess bot (Maia 3) trained to mimic human play and watch its move policy, its attention (self attention vs unique geometric attention), 
-and how its residual stream evolves with depth LIVE. 
+Play a transformer based chess bot (Maia 3) trained to mimic human play and analyze its move policy, its attention (semantic QKᵀ, the unique geometric bias GAB, and their sum), 
+and how its residual stream evolves with depth or watch it LIVE through widgets or the dedicated app. 
 
-Visualize mechanistic interpretability tools like logit lens and head ablations.
+Use mechanistic interpretability tools like logit lens and head ablations.
 
-Take the geometric attention bias (GAB / "smolgen") apart live, see the 64 static templates
-every layer shares, and the linear combination of templates used for a pair of squares or go move centric with move microscope: one move's logit at all residual readout points. Ablate any head with a click and see the causal effects. Drag the ELO slider to re-evaluate a position at different skill levels.
+Take the geometric attention bias (GAB / "smolgen") apart live, see the static templates
+every layer shares (`gab_gen_size` of them — 64 on 3m/5m, 128 on 23m/79m), and the linear combination of templates used for a pair of squares or go move centric with move microscope: one move's logit at all residual readout points. Ablate any head with a click and see the causal effects. Drag the ELO slider to re-evaluate a position at different skill levels.
 
 
+
+## Try it in your own notebook
+
+To make the app's figures in a notebook or script:
+
+```python
+import chess
+from engine import MaiaEngine
+import interp_plot as ip
+
+eng = MaiaEngine()
+board = chess.Board("<your fen>")
+
+ip.plot_position(eng, board, 1500)            # board · policy · win/draw/loss
+ip.plot_residual_film(eng, board, 1500)       # residual stream across depth
+ip.plot_move_microscope(eng, board, 1500)     # one move's depth curve + carrier heads
+```
+
+The app's two interactive panels also run as self-contained notebook cells (or
+standalone HTML pages) via `interp_widget.attention_widget` / `gab_widget` —
+the app's own JS with the data injected instead of fetched. (GitHub's .ipynb
+viewer drops the iframe entirely, so on GitHub these cells look empty — the
+srcdoc fallback never renders. Open in Colab or Jupyter.)
 
 ## Run
 
@@ -57,30 +80,22 @@ Chess piece artwork is python-chess's built-in "cburnett" set
 ## Code layout
 
 - `engine.py` — `MaiaEngine`: the interp core (model + hooks + logit lens + head ablation). No UI deps; imports cleanly in a notebook.
+- `interp_plot.py` — the app's read-once views as matplotlib figures, same layouts and wording: `plot_position`, `plot_residual_film`, `plot_move_microscope`, `plot_carrier_heads`, `plot_attention`, `plot_gab_mixture`, `plot_gab_templates`, `plot_skill_diff`. Engine + matplotlib only.
+- `piece_art.py` — draws `pieces.py`'s cburnett pieces in matplotlib from PNGs rasterised offline into `piece_art/`, so figures use the app's actual artwork with no native dependency at runtime (`piece_art/regenerate.py` rebuilds them, and needs cairosvg).
+- `interp_widget.py` — the app's two interactive panels as a self-contained notebook cell or standalone HTML page: `attention_widget` (Live attention) and `gab_widget` (the GAB generator), plus their `*_html` twins; `ui.py`'s CSS, colormaps and interaction, reading injected data instead of the pywebview API. These are the sweep-a-space versions of `interp_plot`'s static `plot_attention` / `plot_gab_mixture` — take the figure for one frame, the widget to explore.
 - `bridge.py` — game state + the JSON API the UI calls.
 - `ui.py` — the whole interface (HTML/CSS/JS) as one string.
 - `pieces.py` — SVG piece set as data URIs.
 - `app.py` — launcher (native window via pywebview).
+- `requirements.txt` — everything the app needs (matplotlib is only for the figure/notebook layer).
 
 
 
-# Later will implement:
-Grouped by how much they'd help people form and test hypotheses. I'd start with the first three — they're the highest leverage for a shared community tool and mostly build on hooks you already have.
+## Future implementations:
 
-Reproducibility & sharing (do first)
-
-State in the URL — encode FEN + ELO + layer/head/query + open window + compared moves into a shareable link. Essential so someone can say "look at b3·h5 on this position" and others land on the exact view.
-Export the analysis — download the current attention matrices, residual deltas, ablation grid, and smolgen coefficients as JSON/NPY so people can continue in a notebook. You already persist activations; just surface a button.
-Causal experiments (the core of the field)
-
-Activation patching / causal tracing — patch a head's output or a residual position from a "corrupted" position into a "clean" one and watch the policy move. This is the gold-standard experiment and your hooks already support the ablation version; patching is the natural next step beyond zero-ablation.
-Direct logit attribution — decompose a move's logit into per-(head/MLP) contributions along the clean path, not just ablation deltas (the two disagree, and showing both is instructive).
-Concept discovery & aggregation
-
-Batch/dataset mode — run a probe over a PGN or a tactics/opening suite and aggregate: which heads consistently carry captures, checks, castling, pins? Turns single-position observations into testable claims.
-Max-activating positions per head — a "what does this head do?" dashboard: feed many boards, show the square-pairs/motifs that most excite the selected head (the attention analogue of a neuron feature card).
-Linear probes on the residual stream — train tiny probes for board-state features (is square X attacked? king safety? piece identity) and plot accuracy by depth — this is exactly how the "chess world-model" results were shown, and it pairs beautifully with your residual film.
-Unique-to-Maia angle (very publishable)
-
-Skill-delta view — you already condition on ELO; add a mode that highlights which heads/features shift most between, say, 600 and 2800 on the same position. Almost no other model lets you do interpretability across a skill axis — lean into it.
-Happy to implement any of these — the URL-state sharing and activation patching are the two I'd prioritize if you want maximum community traction. Want me to start on one?
+- Activation patching beyond zero-ablation.
+- Decompose a move's logit into per head/MLP layer contributions directly
+- Add batching plots
+- Max-activating positions per head: feed many boards, show what most excites the selected head.
+- Linear probes
+- Skill-acquisition plot highlight which heads shift most between 600 and 2800 on the same position and more interpretability across a skill axis experiments.

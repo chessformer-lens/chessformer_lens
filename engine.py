@@ -1,14 +1,16 @@
 """
 engine.py — the Maia-3 interpretability core (no UI, safe to import anywhere).
 
-`MaiaEngine` is a thin, hook-instrumented wrapper around a loaded MAIA3Model. It
-loads the checkpoint, runs forward passes, and captures the residual stream at
-every sub-layer. Everything the app's visuals show is computed here; nothing in
-this file imports pywebview or the UI, so it imports cleanly into a notebook.
+`MaiaEngine` loads a Maia-3 checkpoint, runs forward passes, and captures the
+residual stream at every sub-layer. Everything the app's visuals show is
+computed here, and nothing in this file imports pywebview or the UI, so it
+imports cleanly into a notebook. It is the compute layer for bridge.py/app.py
+(the native app), interp_plot.py (static figures) and interp_widget.py (the two
+interactive panels) — and it stands alone for any chessformer that treats the 64
+squares as tokens.
 
 Quick start (Colab / Jupyter / REPL):
 
-    import sys; sys.path.append("interp_app")     # if not already on the path
     import chess
     from engine import MaiaEngine
 
@@ -57,11 +59,11 @@ __all__ = ["MaiaEngine", "build_cfg", "pick_device"]
 
 
 def pick_device(explicit: str | None = None) -> str:
-    """cuda if present, else honor MAIA3_DEVICE, else cpu.
+    """Resolve a torch device: explicit argument > $MAIA3_DEVICE > cuda > cpu.
 
-    Default is CPU on purpose: the 5M model on a single position is instant on
-    CPU and avoids the occasional MPS op gap. Set MAIA3_DEVICE=mps to override.
-    """
+    MPS is never picked automatically — the 5M model on one position is instant
+    on CPU anyway, and this avoids the occasional MPS op gap. Set
+    MAIA3_DEVICE=mps to opt in."""
     if explicit:
         return explicit
     env = os.environ.get("MAIA3_DEVICE")
@@ -75,7 +77,10 @@ def pick_device(explicit: str | None = None) -> str:
 def build_cfg(alias="maia3-5m", device=None, checkpoint_path=None,
               trust_checkpoint=False):
     """Build the args-namespace the model + load_model expect, using the repo's
-    own model spec so dim_vit / num_heads / gab_* / history all match the weights."""
+    own model spec so dim_vit / num_heads / gab_* / history all match the weights.
+
+    `trust_checkpoint=True` becomes torch.load(weights_only=False) downstream,
+    i.e. it will execute pickled code from the checkpoint — see MaiaEngine."""
     cfg = types.SimpleNamespace()
     spec = resolve_model_spec(alias)
     apply_model_config(cfg, spec)          # copies the architecture preset onto cfg
@@ -87,10 +92,29 @@ def build_cfg(alias="maia3-5m", device=None, checkpoint_path=None,
 
 
 class MaiaEngine:
-    """Thin, hook-instrumented wrapper around a loaded MAIA3Model."""
+    """Hook-based interpretability engine for a Maia-3 checkpoint.
+
+    Loads the model itself (see __init__), then exposes read paths
+    (run_with_cache, logit_lens, residual_stream, attention, gab_*) and
+    intervention paths (run_with_hooks, ablate_head, ablate_grid). Every tensor
+    a read path returns is on CPU, in the model's canonical side-to-move frame
+    (square = rank*8 + file)."""
 
     def __init__(self, alias="maia3-5m", device=None, checkpoint_path=None,
                  activation_dir="activations", trust_checkpoint=False):
+        """Build the model and install the permanent capture hooks.
+
+        Side effects, in order: resolves the checkpoint, downloading it from
+        Hugging Face on first use if it isn't in the local HF cache (so this
+        touches the network); creates `activation_dir`; and registers
+        4·num_blocks + 2 forward hooks that copy every sub-layer's output to
+        CPU on EVERY forward. That copy is what makes the read paths work — it
+        also means each forward costs a handful of device->host transfers.
+
+        `device`: an explicit string wins; otherwise see `pick_device`.
+        `trust_checkpoint=True` loads with `weights_only=False`, i.e. it will
+        execute pickled code from the checkpoint file — only for checkpoints
+        you produced yourself."""
         self.cfg, self.spec = build_cfg(alias, device, checkpoint_path, trust_checkpoint)
 
         if self.cfg.checkpoint_path is None:
@@ -102,7 +126,7 @@ class MaiaEngine:
 
         self.device = self.cfg.device
         self.model = load_model(self.cfg)   # builds MAIA3Model(cfg), loads weights, .eval()
-        self.model.to(self.device)          # ensure placement (cuda/mps/cpu) for GPU runs
+        self.model.to(self.device)          # no-op if load_model already placed it; cheap insurance
 
         # exact index <-> UCI mapping used by the released engine
         self.all_moves = get_all_possible_moves()
@@ -120,12 +144,22 @@ class MaiaEngine:
 
     # ----- activation hooks -------------------------------------------------
     def _register_hooks(self):
-        """Capture the residual stream entering block 0, after every block
-        (post-LN), and after the final encoder norm. Overwritten each forward,
-        so the snapshot always corresponds to the most recent position.
+        """Install the permanent capture hooks: 4 per block plus 2, overwritten
+        on every forward, so the snapshot is always the most recent position.
 
-        Also records `hook_points`: a name -> module map covering exactly the
-        same points, so `run_with_hooks` can patch/ablate wherever you can read."""
+          embed_in      the stream entering block 0 (token_projection out)
+          attn_NN       block NN's attention WRITE (self_attn out, post out_proj)
+          postattn_NN   the running stream after attention (norm1 out)
+          mlp_NN        block NN's MLP write (linear2 out)
+          block_NN      the running stream after the whole block (post-LN)
+          encoder_out   after the final encoder norm
+
+        Writes vs stream: this is a Post-LN model, x = norm(x + sublayer(x)),
+        so attn_NN/mlp_NN are the vectors ADDED (dropout is identity in eval,
+        so they are exactly the summands), while the other four are the stream
+        itself. Every tensor is copied to CPU on the way out. `hook_points`
+        records name -> module for all of them, so `run_with_hooks` can patch
+        anywhere you can read."""
         def make_hook(name):
             def hook(_module, _inp, out):
                 t = out[0] if isinstance(out, tuple) else out
@@ -139,11 +173,9 @@ class MaiaEngine:
         add("embed_in", self.model.token_projection)
         for i, blk in enumerate(self.model.transformer.layers):
             add(f"block_{i:02d}", blk)
-            # Sub-layer writes: the actual vectors each structure ADDS to the
-            # residual stream inside a (Post-LN) block. self_attn returns
-            # (sa_out, weights) -> sa_out is the attention add; linear2's output
-            # is ff_out, the MLP add. (dropout is identity in eval, so these are
-            # exactly the vectors summed onto x before each norm.)
+            # Sub-layer writes (see the docstring): self_attn returns
+            # (sa_out, None) — MHA is called with need_weights=False — and
+            # sa_out is the attention add; linear2's output is the MLP add.
             add(f"attn_{i:02d}", blk.self_attn)
             add(f"mlp_{i:02d}", blk.linear2)
             # Running residual stream AFTER the attention sub-layer (norm1's
@@ -153,6 +185,12 @@ class MaiaEngine:
         add("encoder_out", self.model.transformer.norm)
 
     def remove_hooks(self):
+        """Detach the capture hooks — for a bare forward with no CPU copies.
+
+        `hook_points` is deliberately left populated, so `run_with_hooks`
+        (which registers its own temporary hooks) keeps working. Every READ
+        path breaks with KeyError instead, because `_activations` stops being
+        refreshed, and there is no public re-register: build a new MaiaEngine."""
         for h in self._hooks:
             h.remove()
         self._hooks = []
@@ -168,7 +206,10 @@ class MaiaEngine:
         return toks.unsqueeze(0).to(self.device)
 
     def _idx_to_move(self, board: chess.Board, idx: int):
-        """Decode a policy index to a legal chess.Move, un-mirroring for Black."""
+        """Decode a policy index to a legal chess.Move, un-mirroring for Black.
+        Returns None if the index doesn't decode to a move that's legal here —
+        the branch every caller handles. (Not to be confused with the
+        `idx_to_move` attribute, which is the raw index -> uci-string table.)"""
         uci = self.idx_to_move[int(idx)]
         if board.turn == chess.BLACK:
             uci = mirror_move(uci)
@@ -234,6 +275,11 @@ class MaiaEngine:
                   copied so it survives the next forward. Keys are `hook_points`:
                   embed_in, then per block attn_NN / postattn_NN / mlp_NN /
                   block_NN, then encoder_out.
+
+          Cached tensors are always on CPU, whatever `self.device` is (the
+          capture hooks copy on the way out). Contrast `run_with_hooks`, whose
+          hook functions see activations on the LIVE device — move tensors
+          yourself when you feed a cached value into an intervention.
         """
         out = self.evaluate(board, self_elo, oppo_elo)
         cache = {k: v.squeeze(0).clone() for k, v in self._activations.items()}
@@ -257,6 +303,13 @@ class MaiaEngine:
         head. For a true per-head ablation use `ablate_head()` / `head_writes()`.
         Example — halve block 5's whole attention write:
             self.run_with_hooks(board, 1500, fwd_hooks=[("attn_05", lambda a: a * 0.5)])
+
+        Hook order: __init__'s capture hooks were registered first, so they
+        fire BEFORE your intervention on the same module. After a patched run,
+        `_activations[name]` — and any cache taken from it — holds the CLEAN
+        output of the patched module, while every downstream entry does reflect
+        the patch. This call also clobbers `_activations`, so take your clean
+        cache before you patch, not after.
         """
         def make(fn):
             def hook(_module, _inp, out):
@@ -287,7 +340,14 @@ class MaiaEngine:
         `activation` is (64, dim) or (1, 64, dim) — e.g. any value from a cache.
         With no `board`, returns the raw (4352,) move logits. With a `board`,
         returns the top move as a dict {idx, uci, san, from, to, piece, logit},
-        masked to legal moves when `legal_only` (None if no legal move decodes).
+        masked to legal moves when `legal_only` (`uci`/`san`/`piece` are None
+        if the argmax index doesn't decode to a legal move).
+
+        Caveat: this applies the trained head's proj_sq_from/to directly to an
+        intermediate residual, skipping `transformer.norm` — the final
+        LayerNorm the head was trained behind. Only `encoder_out` is read in
+        distribution; earlier points are a lens, not a prediction. Compare
+        readout points against each other rather than against the real policy.
         """
         x = activation.to(self.device)
         if x.dim() == 3:
@@ -352,7 +412,10 @@ class MaiaEngine:
           attn_layer   = mean over ALL heads of softmax(qk + gab) -- the whole layer's
                          aggregate attention pattern (head-independent)
           coeffs       = the smolgen mixing coefficients that generated this head's
-                         gab (see gab_coeffs()); None if the block has no GAB
+                         gab (see gab_coeffs())
+        Requires a GAB block: a block built with use_gab=False has no smolgen
+        submodules, so the _sq_bias call below raises AttributeError before any
+        of this returns (gab_bias()/gab_templates() raise a clean RuntimeError).
         Matrices are in the side-to-move (mirrored) frame; square = rank*8 + file.
         Computed directly from the residual stream entering the block, using that
         block's own projections and GAB generator -- no model re-implementation."""
@@ -388,8 +451,9 @@ class MaiaEngine:
     @staticmethod
     def _smolgen_coeffs(blk, x):
         """Replicate one block's smolgen generator up to the mixing coefficients:
-        (1, H, gen_size). Verified on the spot: mixing the shared templates with
-        these coefficients must reproduce the block's own _sq_bias() exactly."""
+        (1, H, gen_size). Checked on the spot: mixing the shared templates with
+        these coefficients must reproduce the block's own _sq_bias() to
+        atol=rtol=1e-4, asserted (so the check disappears under python -O)."""
         B = x.size(0)
         if blk.sm1 is not None:                                # per-square path
             y = blk.sm1(x).reshape(B, -1)                      # (B, 64*p)
@@ -414,7 +478,8 @@ class MaiaEngine:
         is its contribution to query square q attending to key square k (canonical
         side-to-move frame, square = rank*8 + file). Position-independent and
         shared across all layers and heads — this is the model's entire geometric
-        vocabulary. Computed once and cached."""
+        vocabulary. Computed once and cached — the same tensor is returned each
+        call, so `.clone()` before mutating."""
         if self.model.gab_shared_weight is None:
             raise RuntimeError("this model was built without GAB (use_gab=False)")
         if self._gab_templates is None:
@@ -428,7 +493,8 @@ class MaiaEngine:
         position: (H, gen_size). Row h are the weights with which head h mixes
         the static `gab_templates()` into its 64x64 bias:
             gab_bias(layer, h) == (coeffs[h, :, None, None] * gab_templates()).sum(0)
-        (exact — verified inside). This is the model *choosing geometry* live."""
+        (checked inside to atol=rtol=1e-4, asserted — so the check disappears
+        under python -O). This is the model *choosing geometry* live."""
         L = int(layer)
         x = self._block_input(board, self_elo, oppo_elo, L)
         blk = self.model.transformer.layers[L].self_attn
@@ -470,8 +536,9 @@ class MaiaEngine:
         true head ablation must subtract: the hooked attn_NN activation is post-out_proj,
         where the heads are already mixed across every channel, so slicing attn_NN
         channels does not correspond to heads. Recomputed from the block's own weights
-        (same approach as `attention()`); verified on the spot — the writes must sum
-        (plus the out_proj bias) back to the attn_NN activation of this forward."""
+        (same approach as `attention()`); checked on the spot — the writes must sum
+        (plus the out_proj bias) back to the attn_NN activation of this forward, to
+        atol=rtol=1e-4, asserted (so the check disappears under python -O)."""
         L = int(layer)
         x = self._block_input(board, self_elo, oppo_elo, L)    # (1, 64, dim) into block L
         blk = self.model.transformer.layers[L].self_attn
@@ -506,7 +573,13 @@ class MaiaEngine:
         Upstream of `layer` is untouched by the ablation, so the write computed from a
         clean pass is exactly the write the ablated pass would have produced — we
         subtract it from attn_NN via run_with_hooks. Downstream layers then react to
-        the head's absence normally."""
+        the head's absence normally.
+
+        `return_type` is passed straight to run_with_hooks ('policy' -> the
+        evaluate() dict, 'logits' -> the raw tensors). Note the argument order:
+        `layer`/`head` come BEFORE `oppo_elo` here, unlike every other method in
+        this file — pass them by keyword if you call positionally elsewhere.
+        Costs two forward-pass groups: head_writes plus the ablated run."""
         w = self.head_writes(board, self_elo, oppo_elo, layer)[int(head)]
 
         def sub(act):
@@ -530,7 +603,11 @@ class MaiaEngine:
 
     def _move_logits(self, x):
         """Full (4352,) move logits from one position's residual x (64, dim),
-        replicating MAIA3Model.forward's policy head (64*64 moves + 256 promotions)."""
+        replicating MAIA3Model.forward's policy head (64*64 moves + 256 promotions).
+
+        `x` must be exactly (64, dim) with no batch dim — a (1, 64, dim) input
+        produces garbage shapes silently. Callers that accept both strip it
+        first (see `logit_lens`)."""
         hid = self.cfg.head_hid_dim
         sq_from = self.model.proj_sq_from(x)                  # (64, hid)
         sq_to = self.model.proj_sq_to(x)                      # (64, hid)
@@ -554,12 +631,17 @@ class MaiaEngine:
                   tagged with its `kind` ('emb'/'attn'/'mlp') so the UI can mark
                   *what* is writing at each point. This is the residual-stream
                   evolution decomposed by contributing module, not just norms.
+                  1 + 2·num_blocks entries (17 on the 5M).
 
-          moves = per-SUB-LAYER logit lens on the running residual stream, same
-                  resolution as `delta`: emb, then for every block the post-
-                  attention point (norm1 out) and the post-MLP point (block out),
-                  then enc. Decode each through the policy head, take the top
-                  *legal* move. Watch the prediction form sub-layer by sub-layer.
+          moves = per-SUB-LAYER logit lens on the running residual stream, at the
+                  same points as `delta` plus a final `enc` readout — one more
+                  entry: emb, then for every block the post-attention point
+                  (norm1 out) and the post-MLP point (block out), then enc (see
+                  `_lens_steps`). `kind` is 'emb'/'attn'/'mlp'/'enc'. Decode each
+                  through the policy head, take the top *legal* move, and watch
+                  the prediction form sub-layer by sub-layer. Read the caveat on
+                  `logit_lens`: every point but `enc` skips the head's final
+                  LayerNorm.
 
         `delta` is a list of {label, kind, norm:[64]}; `moves` is a list of
         {label, kind, from, to, uci, san, piece} (from/to canonical squares;
@@ -590,8 +672,9 @@ class MaiaEngine:
 
     # ----- skill diff on internals ------------------------------------------
     def _lens_steps(self):
-        """The 18 readout points of the running residual stream, in order:
-        emb, then per block the post-attention and post-MLP points, then enc."""
+        """The readout points of the running residual stream, in order: emb, then
+        per block the post-attention and post-MLP points, then enc — so
+        2·num_blocks + 2 of them (18 on every current Maia-3 size)."""
         steps = [("embed_in", "emb", "emb")]
         for i in range(self.cfg.num_blocks):
             steps.append((f"postattn_{i:02d}", f"b{i} attn", "attn"))
@@ -615,8 +698,8 @@ class MaiaEngine:
     @torch.no_grad()
     def compare_residual(self, board, elo_a, elo_b):
         """Skill diff on INTERNALS, not just outputs: run the same position at
-        two ratings and, at each of the 18 readout points of the running
-        residual stream, report
+        two ratings and, at each readout point of the running residual stream
+        (2·num_blocks + 2 of them — 18 on every current Maia-3 size), report
 
           norm    = per-square ||x_A − x_B||  (where on the board, and at what
                     depth, the two skill levels diverge)
@@ -626,7 +709,11 @@ class MaiaEngine:
         Elo enters as an embedding concatenated to EVERY square token before
         token_projection, so at `emb` the diff is one constant "skill vector"
         repeated on all 64 squares (flat heat) — the interesting structure is
-        how depth localizes it. Side-to-move frame; square = rank*8 + file."""
+        how depth localizes it. Both runs use oppo_elo == self_elo (run_with_cache's
+        default), so BOTH ratings' embeddings move — read the result as the diff
+        between two whole skill settings, not one player's. Side-to-move frame;
+        square = rank*8 + file. The lens caveat on `logit_lens` applies to
+        move_a/move_b at every point but `enc`."""
         _, cache_a = self.run_with_cache(board, int(elo_a))
         _, cache_b = self.run_with_cache(board, int(elo_b))
         legal = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
@@ -653,11 +740,14 @@ class MaiaEngine:
     @torch.no_grad()
     def move_logit_lens(self, board, self_elo, uci, oppo_elo=None):
         """ONE move's depth curve — the logit lens applied to a single chosen
-        move at all 18 readout points of the residual stream. This is where a
-        move "snaps" into the plan: watch its logit, its probability over legal
-        moves, and its rank cross the field (rank 1 = currently the top move).
+        move at every readout point of the residual stream (2·num_blocks + 2 of
+        them — 18 on every current Maia-3 size). This is where a move "snaps"
+        into the plan: watch its logit, its probability over legal moves, and
+        its rank cross the field (rank 1 = currently the top move).
 
-        Returns {uci, san, steps: [{label, kind, logit, prob, rank}], n_legal}."""
+        Returns {uci, san, steps: [{label, kind, logit, prob, rank}], n_legal}.
+        Read the caveat on `logit_lens`: every point but `enc` skips the head's
+        final LayerNorm, so compare points against each other."""
         self.evaluate(board, self_elo, oppo_elo)
         idx = self._move_index(board, uci)
         legal = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
@@ -682,11 +772,11 @@ class MaiaEngine:
         what the intervention did to the move's logit. Sign convention, used
         everywhere in this app:  delta = ablated − clean  — negative means the
         head was SUPPORTING the move (removing it hurts), positive means it
-        suppresses. (The fork-around-and-find-out notebooks report the negation,
-        drop = clean − ablated.)
+        suppresses.
 
         Returns {uci, san, base_logit, deltas: (num_blocks, num_heads) nested
-        list}. ~num_blocks·(num_heads+1) forward passes, so seconds, not ms."""
+        list}. ~num_blocks·(num_heads+1) forward passes (72 on the 5M, 264 on
+        the 79M), so seconds, not ms."""
         idx = self._move_index(board, uci)
         base_logits, _ = self._forward(board, self_elo, oppo_elo)
         base = float(base_logits[idx])
@@ -710,10 +800,9 @@ class MaiaEngine:
 
     # ----- activation dump --------------------------------------------------
     def save_activations(self, filename: str, meta: dict | None = None) -> str:
-        """Persist the most recent forward's residual-stream snapshot.
-        Each tensor is (64, dim_vit). Keys: embed_in, block_00..block_07,
-        encoder_out (post-block residual at each depth), plus attn_NN / mlp_NN
-        (the raw vector each sub-layer writes into the stream inside block NN)."""
+        """Persist the most recent forward's residual-stream snapshot, plus a
+        `meta` entry. Each tensor is (64, dim_vit), on CPU. Keys are every name
+        in `hook_points` — see `_register_hooks` for what each one is."""
         snap = {k: v.squeeze(0).clone() for k, v in self._activations.items()}
         snap["meta"] = meta or {}
         path = self.activation_dir / filename

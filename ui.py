@@ -321,7 +321,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="wrap">
   <div class="left">
     <div>
-      <h1>Chessformer (Maia 3) interpretability app <br> STOP PERFECTING THIS AND WORK ON THE ENGINE AND LIBRARY </h1>
+      <h1>Chessformer (Maia 3) interpretability app</h1>
       <div class="sub" id="modelinfo">loading model…</div>
     </div>
     <div id="boardwrap">
@@ -1224,7 +1224,7 @@ function renderCompare(d){
   markLensedRows();
 }
 
-/* ---- move microscope: one move's 18-point depth curve + carrier-head grid ----
+/* ---- move microscope: one move's depth curve + carrier-head grid ----
    Opens as a drawer from the bottom when a policy row is clicked. Curve = the
    move's logit after every sub-layer (the "snap"); grid = Δlogit from ablating
    every head, sign = ablated − clean (the app-wide convention: what the
@@ -1338,7 +1338,7 @@ function drawMlChart(){
   const series=mlMoves.filter(m=>m.steps);
   if(!series.length) return;
   const single=(series.length===1);
-  const A=series[0].steps;                          // shared 18-point grid (x positions + labels)
+  const A=series[0].steps;                          // shared readout grid (x positions + labels)
   const B=(single && mlDataB) ? mlDataB.steps : null;
   const W=660, HH=190, ML=38, MR=12, MT=16, MB=30, iw=W-ML-MR, ih=HH-MT-MB;
   let lo=Infinity, hi=-Infinity;
