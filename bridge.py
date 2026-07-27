@@ -28,24 +28,39 @@ def side_name(turn):
 class MaiaApi:
     """Everything JS can call. Methods return plain JSON-able dicts."""
 
-    def __init__(self):
+    def __init__(self, alias=None):
         self.engine = None
         self.ready = False
         self.error = None
+        # which model to load: explicit arg > env var > 5M default
+        self.alias = alias or os.environ.get("MAIA3_ALIAS", "maia3-5m")
+        self.target_name = self._display_name(self.alias)   # for the loading screen
         self.board = chess.Board()
         self.human = chess.WHITE
         self.human_both = False
         self.san_history = []
         self._lock = threading.Lock()
-        # load the (small) model off the UI thread so the window opens instantly
+        # load the model off the UI thread so the window opens instantly. Bigger
+        # models (23M/79M) just take longer here; the UI polls info() until ready.
         threading.Thread(target=self._load, daemon=True).start()
+
+    @staticmethod
+    def _display_name(alias):
+        """Friendly name for `alias` without loading weights (for the loading
+        screen). Falls back to the raw alias if it can't be resolved."""
+        try:
+            from maia3.model_registry import resolve_model_spec
+            return resolve_model_spec(alias).display_name
+        except Exception:
+            return str(alias)
 
     def _load(self):
         import traceback
         try:
-            print("[maia-app] loading model…", file=sys.stderr, flush=True)
+            print(f"[maia-app] loading {self.target_name} ({self.alias})…",
+                  file=sys.stderr, flush=True)
             self.engine = MaiaEngine(
-                alias=os.environ.get("MAIA3_ALIAS", "maia3-5m"),
+                alias=self.alias,
                 activation_dir=str(ACT_DIR),
             )
             self.ready = True
@@ -61,12 +76,16 @@ class MaiaApi:
         return {
             "ready": self.ready,
             "error": self.error,
+            # `target` is known immediately (before load) so the loading screen
+            # can name the model; `alias` is the confirmed name once ready.
+            "target": self.target_name,
             "alias": self.engine.spec.display_name if self.ready else None,
             "device": self.engine.device if self.ready else None,
             "checkpoint": self.engine.cfg.checkpoint_path if self.ready else None,
             "num_blocks": self.engine.cfg.num_blocks if self.ready else None,
             "num_heads": self.engine.cfg.num_heads if self.ready else None,
             "dim_vit": self.engine.cfg.dim_vit if self.ready else None,
+            "gen_size": self.engine.cfg.gab_gen_size if self.ready else None,
             "activation_dir": str(ACT_DIR),
         }
 

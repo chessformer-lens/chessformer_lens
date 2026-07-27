@@ -23,6 +23,23 @@ python app.py
 The first launch downloads the Maia3-5M transformer weights (~20 MB) from
 Hugging Face and a native window opens (no browser needed).
 
+### Choosing a model size
+
+The same interface drives every Maia-3 size — the GUI reads the loaded model's
+block / head / dimension / GAB-template counts and lays itself out to match, so
+`3m`, `5m`, `23m` and `79m` all just work. Pick one at launch:
+
+```bash
+python app.py 23m               # built-in alias: 3m / 5m / 23m / 79m
+python app.py --model maia3-79m # full alias, HF repo id, or HF URL
+MAIA3_ALIAS=23m python app.py   # env var (still supported)
+```
+
+Weights for the chosen size download on first use and are cached. Larger models
+are heavier per position — on CPU the 23M/79M attention and head-ablation views
+are noticeably slower than 5M; set `MAIA3_DEVICE=mps` (Apple Silicon) or run on
+CUDA to speed them up. Model weights: <https://huggingface.co/UofTCSSLab>
+
 Built on
  Chessformer / Maia-3 (Monroe et al., ICLR 2026).
 Model weights: <https://huggingface.co/UofTCSSLab/Maia3-5M>

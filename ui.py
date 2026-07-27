@@ -137,7 +137,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ablwdl{font-size:9px;color:var(--muted);margin-top:5px}
   .attcap{font-size:10px;color:var(--muted);margin-bottom:10px;line-height:1.45}
   .attset{display:flex;flex-direction:column;gap:12px}
-  .attlabel{font-size:10px;color:var(--muted);font-family:var(--mono);margin-bottom:4px}
+  .attlabel{font-size:10px;color:var(--muted);font-family:var(--mono);margin-bottom:4px;text-align:center;font-weight:600}
   .attboard{width:100%;max-width:202px;aspect-ratio:1/1;margin:0 auto;display:grid;
     grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr);
     border:1px solid var(--line);border-radius:5px;overflow:hidden;background:#10141b}
@@ -270,9 +270,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .mlchart{flex:1;min-width:0}
   #mlsvg{width:100%;height:auto;display:block;background:#0f131a;
     border:1px solid var(--line);border-radius:8px}
-  .mlgridbox{flex:0 0 250px}
-  #ablgrid{display:grid;grid-template-columns:18px repeat(8,1fr);grid-template-rows:14px repeat(8,1fr);
-    gap:1px;width:250px;margin-top:4px}
+  .mlgridbox{flex:0 0 auto;align-self:flex-start;overflow:auto}
+  /* grid-template-columns/rows + width are set per model in renderAblGrid so the
+     heatmap has exactly num_heads columns × num_blocks rows (6/8/16/32 heads). */
+  #ablgrid{display:grid;gap:1px;margin-top:4px}
   #ablgrid .agc{aspect-ratio:1/1;border-radius:2px;position:relative}
   #ablgrid .agc.cell{cursor:pointer}
   #ablgrid .agc.cell:hover{outline:1px solid var(--accent)}
@@ -320,7 +321,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="wrap">
   <div class="left">
     <div>
-      <h1>Chessformer (Maia 3) interpretability app</h1>
+      <h1>Chessformer (Maia 3) interpretability app <br> STOP PERFECTING THIS AND WORK ON THE ENGINE AND LIBRARY </h1>
       <div class="sub" id="modelinfo">loading model…</div>
     </div>
     <div id="boardwrap">
@@ -384,13 +385,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div class="attcap">Click a square to set the query.</div>
       <div class="attset">
         <div class="attpair">
-          <div><div class="attlabel">semantic · QKᵀ content logits</div><div class="attboard" id="att_qk"></div></div>
-          <div><div class="attlabel">geometric · GAB bias logits</div><div class="attboard" id="att_gab"></div></div>
+          <div><div class="attlabel">semantic attention (QKᵀ) </div><div class="attboard" id="att_qk"></div></div>
+          <div><div class="attlabel">geometric attention (GAB) </div><div class="attboard" id="att_gab"></div></div>
         </div>
-        <div><div class="attlabel">summed · QKᵀ + GAB — the head's logits</div><div class="attboard" id="att_sum"></div></div>
+        <div><div class="attlabel">final head attention matrix (scaled softmax(QKᵀ + GAB)) </div><div class="attboard" id="att_sum"></div></div>
+        <div>
+          <div class="attlegend" style="margin-top:0"><span>0</span><div class="legbar"></div><span>max</span></div>
+          <div class="leghint">query's 64 weights (one per key square) sum to 1</div>
+        </div>
       </div>
-      <div class="attlegend"><span>−</span><div class="legbar div"></div><span>+</span></div>
-      <div class="leghint">diverging scale · blue = negative, orange = positive (symmetric per board)</div>
       <div class="boardctrls" style="margin-top:16px">
         <button id="gabbtn" class="medbtn">GAB generator</button>
       </div>
@@ -400,16 +403,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <div id="gablens" class="drawer d2">
   <div class="mlhead">
-    <span class="mltitle">Smolgen mixture · how <b id="gabhead">L0·H0</b>'s GAB is generated</span>
-    <span class="mlhint">a generator reads this position and emits, per head, 64 coefficients over a static bank of 64×64 square-pair templates shared by every layer &amp; head — the bias is that weighted sum</span>
+    <span class="mltitle">How <b id="gabhead">L0·H0</b>'s GAB is generated</span>
+    <span class="mlhint">a generator reads this position and emits, per head, a bias of the <span id="gabNcoeff">64</span> coefficients over a static bank of <span id="gabNtmpl">64</span> 64×64 square-pair templates shared by every layer</span>
     <button id="gabclose">✕ close</button>
   </div>
   <div class="gabwrap">
     <div class="gabreadout" id="gabreadout">—</div>
-    <div class="attlabel">generated mixing coefficients · template #0–63 · click to inspect</div>
+    <div class="attlabel">generated mixing coefficients · template <span id="gabRange">#0–63</span> · click to inspect</div>
     <div class="coeffstrip" id="coeffstrip"></div>
     <div class="gabdetail hidden" id="gabdetail"></div>
-    <div class="attlabel">template vocabulary · the 64 static stencils (row = query sq, col = key sq)</div>
+    <div class="attlabel">template vocabulary · the <span id="gabNtmpl2">64</span> static stencils (row = query sq, col = key sq)</div>
     <div class="gallery" id="gallery"></div>
   </div>
 </div>
@@ -417,14 +420,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div id="rlens" class="drawer d0">
   <div class="mlhead">
     <span class="mltitle">Residual stream across depth · this position</span>
-    <span class="mlhint">per-square ‖Δ‖ each structure writes into the stream (viridis) with the logit-lens top move on top · side-to-move frame</span>
+    <span class="mlhint">per-square ‖Δ‖ each structure writes into the <strong>residual stream</strong> with the <strong>logit-lens</strong> top move on top</span>
     <button id="rlclose">✕ close</button>
   </div>
   <div class="residlegend">
     <span class="lg-emb">emb (input)</span>
     <span class="lg-attn">attn add</span>
     <span class="lg-mlp">MLP add</span>
-    <span class="lg-enc">enc (final norm — no write, lens only)</span>
+    <span class="lg-enc">enc (final norm)</span>
   </div>
   <div class="film" id="film"></div>
   <div class="act" id="residinfo" style="margin-top:6px"></div>
@@ -433,16 +436,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div id="mlens" class="drawer d1">
   <div class="mlhead">
     <span class="mltitle" id="mltitle">Move microscope</span>
-    <span class="mlhint" id="mlhint">click policy moves to add or remove them · each move's logit through depth, and the heads that carry it</span>
+    <span class="mlhint" id="mlhint">click policy move(s) to see its logits through depth, and the heads that carry it</span>
     <button id="mlclose">✕ close</button>
   </div>
   <div class="mlbody">
     <div class="mlchart">
-      <div class="attlabel" id="mlchartlab">depth curve · move logit after every sub-layer</div>
       <div class="mllegend" id="mllegend"></div>
       <svg id="mlsvg" viewBox="0 0 660 190"></svg>
     </div>
-    <div class="mlgridbox">
+    <div class="mlgridbox" id="mlgridbox">
       <div class="attlabel">carrier heads · Δlogit = ablated − clean</div>
       <div id="ablgrid"></div>
       <div class="mlnote" id="mlnote"></div>
@@ -450,7 +452,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<div id="loading"><div class="box"><div class="spinner"></div><div id="loadtext">Loading Maia3-5M…</div></div></div>
+<div id="loading"><div class="box"><div class="spinner"></div><div id="loadtext">Loading Maia model…</div></div></div>
 <div id="promo"><div class="box"><div>Promote to</div><div class="glyphs" id="promoglyphs"></div></div></div>
 
 <script>
@@ -481,16 +483,17 @@ function tryBoot(){
   if(waitN>120){ showLoading('Bridge not connecting — check the terminal for errors.'); return; }
   setTimeout(tryBoot,100);
 }
-showLoading('Loading Maia3-5M…');
+showLoading('Loading Maia model…');
 tryBoot();
 
 async function boot(){
   if(booted || booting) return;
   booting=true;
-  showLoading('Loading Maia3-5M…');
+  showLoading('Loading Maia model…');
   try{
     API = window.pywebview.api;
     let info = await API.info();
+    if(info.target) showLoading('Loading '+info.target+'…');   // name the real model
     let n=0;
     while(!info.ready && !info.error){ await sleep(400); info = await API.info(); if(++n>300) break; }
     if(info.error){ showLoading('Model failed to load:\n'+info.error); return; }
@@ -515,7 +518,9 @@ function setModelInfo(){
   if(!MODEL_INFO) return;
   const i=MODEL_INFO;
   $('modelinfo').textContent =
-    `${i.alias||'Maia3-5M'} · ${i.device||'cpu'} · ${i.num_blocks||8} blocks × ${i.dim_vit||256}d`;
+    `${i.alias||i.target||'Maia3'} · ${i.device||'cpu'} · `+
+    `${i.num_blocks||8} blocks × ${i.num_heads||8} heads × ${i.dim_vit||256}d`;
+  setGabLabels();
 }
 
 /* ---- controls ---- */
@@ -852,15 +857,23 @@ function paintRow(id, row, colf){
 function renderAttention(){
   if(!lastAtt || !cur) return;
   const q = realToCanon(attQueryReal, cur.turn);
-  const qk = lastAtt.qk[q], gab = lastAtt.gab[q];
+  const qk = lastAtt.qk[q], gab = lastAtt.gab[q], attn = lastAtt.attn && lastAtt.attn[q];
   if(!qk || !gab) return;
-  const sum = qk.map((v,i)=>v+gab[i]);   // the head's actual pre-softmax logits
-  // all three are pre-softmax logits: diverging scale centered on 0,
-  // symmetric per board (blue = negative, orange = positive)
+  // QKᵀ and GAB are pre-softmax logits: diverging scale centered on 0,
+  // symmetric per board (blue = negative, orange = positive).
   const dv = row => { let m=0; for(const v of row){ const a=Math.abs(v); if(a>m)m=a; } m=m||1; return v=>divmap(v/m); };
   paintRow('att_qk',  qk,  dv(qk));
   paintRow('att_gab', gab, dv(gab));
-  paintRow('att_sum', sum, dv(sum));
+  // Third board = the head's ACTUAL attention: softmax(qk + gab) straight from the
+  // engine. It's a probability distribution (this query's row sums to 1), so use a
+  // sequential viridis scale from 0 to the row's peak weight, not the logit scale.
+  if(attn){
+    let am=0; for(const v of attn){ if(v>am)am=v; } am=am||1;
+    paintRow('att_sum', attn, v=>viridis(v/am));
+  } else {
+    const sum = qk.map((v,i)=>v+gab[i]);   // fallback: pre-softmax logits
+    paintRow('att_sum', sum, dv(sum));
+  }
   renderSmolgen();
 }
 
@@ -877,6 +890,7 @@ async function loadTemplates(){       // once per app run: the static vocabulary
     if(!d || d.error){ console.warn('[maia] gab_templates:', d && d.error); return; }
     GABT = d.templates;
     gabtMaxAbs = GABT.map(t=>{ let m=1e-9; for(const row of t) for(const v of row){ const a=Math.abs(v); if(a>m)m=a; } return m; });
+    setGabLabels();
     buildGallery();
     renderSmolgen();
   }catch(e){ console.warn('[maia] gab_templates failed', e); }
@@ -893,6 +907,12 @@ function paintTemplate(cv, t, scale){ // 64×64 pair-matrix -> one pixel per (qu
     img.data[p+3]=255;
   }
   ctx.putImageData(img,0,0);
+}
+function setGabLabels(){   // fill the "N coefficients / N templates" spans for this model
+  const n = (GABT && GABT.length) || (MODEL_INFO && MODEL_INFO.gen_size) || 64;
+  const set=(id,txt)=>{ const e=$(id); if(e) e.textContent=txt; };
+  set('gabNcoeff', n); set('gabNtmpl', n); set('gabNtmpl2', n);
+  set('gabRange', '#0–'+(n-1));
 }
 function buildGallery(){
   const g=$('gallery'); if(!g || !GABT || g.children.length) return;
@@ -1114,7 +1134,6 @@ function renderResidual(){
     col.querySelector('.filmlbl').textContent = mv.label+(mv.san?' '+mv.san:'');
     col.title = mv.san ? mv.label+' · lens move '+mv.san : mv.label;
   });
-  $('residinfo').textContent='heat = ||delta|| the structure writes per square (attn+mlp share one viridis scale, emb scaled on its own) · overlay = logit-lens top legal move of the running stream at that point · elo '+elo;
 }
 async function updateResidual(){
   if(!API || !cur || cur.game_over || !residOpen) return;
@@ -1211,7 +1230,9 @@ function renderCompare(d){
    every head, sign = ablated − clean (the app-wide convention: what the
    intervention did — negative means the head was supporting the move). */
 const KIND_COL={emb:'#8a93a3',attn:'#f0a35e',mlp:'#6fb3ff',enc:'#5ac878'};
-const NO_CARRIER_BLOCK=7;                          // final block — excluded from carrier attribution
+// final block — excluded from carrier attribution (writes straight to the logits).
+// Derived from the loaded model so it tracks num_blocks across sizes.
+function noCarrierBlock(){ return ((MODEL_INFO && MODEL_INFO.num_blocks) || 8) - 1; }
 const MLMAX=4;                                     // how many moves you can overlay at once
 const MLCOLORS=['#6ea8fe','#7bd88f','#f0a35e','#c98bff'];
 let mlMoves=[];        // [{uci, san, color, steps, n_legal}] — the moves being compared
@@ -1252,7 +1273,6 @@ function openMicroscope(){              // clicking the microscope's peek (no mo
 }
 function showMicroscopeEmpty(){
   $('mltitle').innerHTML='Move microscope';
-  $('mlchartlab').textContent='pick a move to inspect';
   $('mllegend').innerHTML='';
   $('mlsvg').innerHTML='<text x="330" y="96" fill="#8b93a3" font-size="12" text-anchor="middle" '+
     'font-family="monospace">click a move in the policy list to inspect its depth curve + carrier heads</text>';
@@ -1360,19 +1380,32 @@ function drawMlChart(){
   svg.innerHTML=h;
   const pm=series.find(m=>m.uci===mlPrimary)||series[0];
   $('mltitle').innerHTML=`Move microscope · <b>${pm.san}</b> <span style="color:var(--muted);font-family:var(--mono);font-size:11px">${pm.uci} · elo ${elo}${(single&&B)?' vs '+cmpElo:''}</span>`;
-  $('mlchartlab').innerHTML = single
-    ? "depth curve · "+pm.san+"'s logit after every sub-layer — dots by writer (grey emb, orange attn, blue MLP, green final norm)"
-    : "depth curves · each move's logit after every sub-layer · click a move to load its carrier heads";
-  drawMlLegend(series);
 }
 
 function renderAblGrid(g){
   const el=$('ablgrid'); if(!el) return;
   el.innerHTML='';
-  const nb=g ? g.deltas.length : 8, nh=g ? g.deltas[0].length : 8;
+  const nb=g ? g.deltas.length : ((MODEL_INFO&&MODEL_INFO.num_blocks)||8),
+        nh=g ? g.deltas[0].length : ((MODEL_INFO&&MODEL_INFO.num_heads)||8);
+  // Size the grid (num_heads columns × num_blocks rows) to fill the open,
+  // full-width microscope drawer: make the cells as large as possible while the
+  // whole grid still fits on screen — bounded by a share of the width (so the
+  // depth chart keeps room) and by the viewport height. Scales across model
+  // sizes (6/8/16/32 heads); .mlgridbox scrolls if a huge model still overflows.
+  const vw=window.innerWidth||1400, vh=window.innerHeight||840;
+  const maxW=Math.min(vw*0.42, 640), maxH=Math.min(vh*0.5, 480);
+  const cs=Math.max(10, Math.floor(Math.min((maxW-16)/nh, (maxH-14)/nb)));
+  const gridW=16+nh*cs+nh;  // 16px label col + nh cells + nh 1px gaps
+  el.style.gridTemplateColumns = '16px repeat('+nh+','+cs+'px)';
+  el.style.gridTemplateRows    = '14px repeat('+nb+','+cs+'px)';
+  el.style.width=gridW+'px';
+  // Pin the box (and thus #mlnote, which would otherwise ask for its whole
+  // sentence on one line and stretch the box wider) to exactly the grid's width.
+  const box=$('mlgridbox'); if(box) box.style.width=gridW+'px';
   // The final block writes straight into the logits, so ablating its heads always
   // looks like a huge Δ and drowns out the earlier structure — leave it out of the
   // carrier attribution (colour scale + "strongest" pick), just dim it in the grid.
+  const NO_CARRIER_BLOCK=noCarrierBlock();
   const skip=L=>L===NO_CARRIER_BLOCK;
   let m=1e-9, sL=-1, sH=-1;
   if(g) g.deltas.forEach((row,L)=>{ if(skip(L)) return;
@@ -1406,9 +1439,14 @@ function renderAblGrid(g){
   if(g && sL>=0) $('mlnote').innerHTML=
     `base logit ${g.base_logit.toFixed(2)} · strongest b${sL}·h${sH} `+
     `${g.deltas[sL][sH]>=0?'+':''}${g.deltas[sL][sH].toFixed(2)} · `+
-    `blue = ablating the head drops ${g.san}'s logit (carrier) · orange = raises it (suppressor) · `+
+    `blue = ablating the head drops ${g.san}'s logit (carrier) ·orange = raises it (suppressor) · `+
     `b${NO_CARRIER_BLOCK} excluded (writes straight to the logits) · click a cell to open that head`;
 }
+
+/* re-fit the carrier-head grid to the window while the microscope is open */
+window.addEventListener('resize', ()=>{
+  if(mlGrid && $('mlens').classList.contains('open')) renderAblGrid(mlGrid);
+});
 
 </script>
 </body>
