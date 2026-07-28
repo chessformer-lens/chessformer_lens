@@ -59,19 +59,27 @@ from piece_art import draw_piece
 # ---------------------------------------------------------------------------
 # the app's palette (ui.py :root) — so a figure and the app read the same
 # ---------------------------------------------------------------------------
-# the full :root set, mirrored even where a figure has no use for it (PANEL2)
-BG, PANEL, PANEL2, LINE = "#0e1014", "#161a21", "#1b2029", "#262c37"
+# the full :root set, mirrored even where a figure has no use for it (PANEL2).
+# Lifted one step from ui.py's original pitch-black values (still true of
+# app.py's window `background_color` and ui.py/interp_widget.py's :root — all
+# four were lifted together, 2026-07). Hue and tier spacing are unchanged, and
+# MUTED still clears WCAG AA (4.5:1) on every tier, so it's a lift, not a
+# different theme. To go back to pitch black everywhere, restore this line and
+# the matching one in figstyle.py, ui.py (x2), app.py (x2), interp_widget.py:
+#   BG, PANEL, PANEL2, LINE = "#0e1014", "#161a21", "#1b2029", "#262c37"
+#   CHART_BG (below) -> "#0f131a" ; --chart-bg / background_color to match.
+BG, PANEL, PANEL2, LINE = "#181c24", "#20252f", "#262c38", "#333b4a"
 TEXT, MUTED = "#e7eaf0", "#8b93a3"
 ACCENT, ACCENT2 = "#6ea8fe", "#7bd88f"
 SQ_LIGHT, SQ_DARK = "#c9d1dc", "#6b7686"
 WIN, DRAW, LOSS = "#5fb878", "#6b7480", "#d9606a"
 HL, QRING = "#f5d56b", "#ff5d6c"
-CHART_BG = "#0f131a"
+CHART_BG = "#1a1f29"                                # pitch black: "#0f131a"
 KIND_COL = {"emb": "#8a93a3", "attn": "#f0a35e", "mlp": "#6fb3ff", "enc": "#5ac878"}
 MLCOLORS = ["#6ea8fe", "#7bd88f", "#f0a35e", "#c98bff"]   # compared moves
 MLMAX = 4                                                 # how many at once
 
-_MID, _BLUE, _ORANGE = (24, 28, 36), (64, 132, 234), (244, 134, 58)
+_MID, _BLUE, _ORANGE = (26, 31, 41), (64, 132, 234), (244, 134, 58)   # _MID == CHART_BG
 POLBAR = LinearSegmentedColormap.from_list("polbar", [ACCENT, ACCENT2])
 DIVMAP = LinearSegmentedColormap.from_list(
     "divmap", [np.array(_BLUE) / 255, np.array(_MID) / 255, np.array(_ORANGE) / 255])
@@ -295,6 +303,42 @@ def plot_position(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
     else:
         _wdl_bar(ax_w, res["wdl"], y=.52, h=.36, tag=str(elo))
         _wdl_bar(ax_w, res_b["wdl"], y=.06, h=.36, tag=str(elo_b))
+    return fig
+
+
+def plot_board(board: chess.Board, *, move=None, title=None, elo=None,
+               figsize=(4.6, 4.9)):
+    """Just the position — no engine, no policy, no eval.
+
+    `plot_position`'s left column on its own, for the places a notebook or paper
+    only wants to show a board (python-chess's chess.svg renders a *light* board,
+    which is what this exists to replace). Takes no `eng`: nothing here runs the
+    model.
+
+    Kwargs:
+      move    a uci string or chess.Move to highlight, drawn with plot_position's
+              from/to wash rather than an arrow.
+      title   overrides the default "<side> to move" caption; pass "" for none.
+      elo     appended to the default caption, matching plot_position's.
+    """
+    fig = _fig(figsize)
+    ax = fig.add_subplot(111)
+    draw_board(ax, board)
+
+    if move is not None:
+        mv = chess.Move.from_uci(move) if isinstance(move, str) else move
+        for sq in (mv.from_square, mv.to_square):
+            f, r = chess.square_file(sq), chess.square_rank(sq)
+            ax.add_patch(plt.Rectangle((f - .5, r - .5), 1, 1, lw=0,
+                                       fc=(*_hex(HL), .28), zorder=3))
+
+    if title is None:
+        title = f"{'White' if board.turn else 'Black'} to move"
+        if elo is not None:
+            title += f" · {elo} Elo"
+    if title:
+        ax.set_title(title, fontsize=9.5, color=MUTED, pad=8, family=MONO)
+    fig.tight_layout()
     return fig
 
 

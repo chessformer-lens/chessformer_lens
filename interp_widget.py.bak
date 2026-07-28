@@ -202,13 +202,8 @@ def gab_widget(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
 _CSS = r"""
 <meta charset="utf-8">
 <style>
-  /* Neutrals lifted one step from pitch black (2026-07), to match the paper
-     figures and ui.py — see figstyle.py for why. To revert to pitch black:
-       --bg:#0e1014; --panel:#161a21; --panel2:#1b2029; --line:#262c37;
-       --chart-bg:#0f131a; */
   :root{
-    --bg:#181c24; --panel:#20252f; --panel2:#262c38; --line:#333b4a;
-    --chart-bg:#1a1f29;   /* insets: pair readout, gab readout, coeff strip */
+    --bg:#0e1014; --panel:#161a21; --panel2:#1b2029; --line:#262c37;
     --text:#e7eaf0; --muted:#8b93a3; --accent:#6ea8fe; --accent2:#7bd88f;
     --sq-light:#c9d1dc; --sq-dark:#6b7686;
     --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -347,7 +342,7 @@ _ATTENTION_PAGE = _CSS + r"""
   @media (max-width:760px){ .row{grid-template-columns:1fr} }
   .pos .attcell{cursor:pointer}
   .pos .attcell.lt{background:var(--sq-light)} .pos .attcell.dk{background:var(--sq-dark)}
-  .pair{font-family:var(--mono);font-size:11px;line-height:1.7;background:var(--chart-bg);
+  .pair{font-family:var(--mono);font-size:11px;line-height:1.7;background:#0f131a;
         border:1px solid var(--line);border-radius:6px;padding:6px 8px;margin-top:10px}
   .pair .k{color:var(--muted)} .pair b{color:var(--text)}
 </style>
@@ -446,13 +441,13 @@ _GAB_PAGE = _CSS + r"""
   .mlhint{font-size:10px;color:var(--muted);font-family:var(--mono);flex:1;min-width:0}
   .gabrow{display:grid;grid-template-columns:180px 1fr;gap:16px;align-items:start}
   @media (max-width:760px){ .gabrow{grid-template-columns:1fr} }
-  .gabreadout{font-family:var(--mono);font-size:10px;line-height:1.7;background:var(--chart-bg);
+  .gabreadout{font-family:var(--mono);font-size:10px;line-height:1.7;background:#0f131a;
     border:1px solid var(--line);border-radius:6px;padding:6px 8px;margin:6px 0 10px;min-height:30px}
   .gabreadout b{color:var(--text)}
   .gabreadout .pos{color:#f0a35e} .gabreadout .neg{color:#6fb3ff}
   .gabreadout .tref{color:var(--accent);cursor:pointer}
   .gabreadout .tref:hover{text-decoration:underline}
-  .coeffstrip{display:flex;gap:1px;height:54px;background:var(--chart-bg);border:1px solid var(--line);
+  .coeffstrip{display:flex;gap:1px;height:54px;background:#0f131a;border:1px solid var(--line);
     border-radius:6px;padding:3px;align-items:center}
   .cbar{flex:1;height:100%;position:relative;cursor:pointer;border-radius:2px}
   .cbar:hover{background:#ffffff12} .cbar.selt{background:#ffffff1f}

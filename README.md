@@ -299,3 +299,50 @@ Chess piece artwork is python-chess's built-in "cburnett" set
 - Max-activating positions per head: feed many boards, show what most excites the selected head.
 - Linear probes
 - Skill-acquisition plot highlight which heads shift most between 600 and 2800 on the same position and more interpretability across a skill axis experiments.
+
+## How to ship:
+The key split is square-token vs text-token transformers. Lc0-BT and MAIA-3 are in one family; DeepMind's model, Chess-GPT, and Allie are in the other. 
+Leela chess is extremely popular and worth making also work.
+
+Weights conversion — Lc0 ships .pb networks; you'd convert to PyTorch (community converters/ONNX exports exist, but this is the grindiest step).
+Smolgen — Lc0 adds a learned per-position attention bias. Your GAB/QK geometry-vs-semantics decomposition would need a third additive term (and honestly, "does smolgen play the GAB role?" is itself a publishable comparison).
+Lens placement — pre-LN vs post-LN changes where the "running residual" readout points sit and whether you apply the final norm before decoding.
+Skill panels — Elo conditioning is Maia-specific; the adapter flag lets those panels grey out rather than break.
+My take: worth doing, and specifically worth doing as MAIA-3 + one Lc0-BT backend rather than full generality — two backends force the right abstraction without over-engineering. It also upgrades your "tool + dataset release" row from "MAIA-3 visualizer" to "the lens for square-token chess transformers," which is a much stronger citable artifact — and the natural justification for the chessformer_lens name.
+
+
+Give them a citeable object. Tools get cited when there's a clean BibTeX target — an arXiv writeup, a JOSS paper (Journal of Open Source Software exists precisely for this), or minimally a Zenodo DOI for the release. Without one, the best case is a footnoted GitHub URL. TransformerLens has a citation entry for exactly this reason.
+CITATION.cff in the repo → GitHub renders a "Cite this repository" button and auto-generates the BibTeX. Five minutes, real effect.
+In-tool nudge — README + a one-line "if you use this in published work, please cite …" (some tools print it on import). Standard and effective.
+
+
+The three objects, ranked by effort vs. payoff
+1. Zenodo DOI — the minimum viable citation (~15 min, do at first functional release)
+This is the floor, and notably it's the route TransformerLens itself uses — its canonical citation is a software/Zenodo-style DOI via CITATION.cff, not a journal paper. Mechanics:
+
+Log into zenodo.org with your GitHub account.
+Zenodo → profile → GitHub tab → flip the toggle ON for the chessformer_lens repo. (This installs a webhook.)
+On GitHub, cut a release (tag v0.1.0). Zenodo catches the webhook, archives that tarball, and mints a DOI automatically.
+You get two DOIs: a concept DOI (always points to the newest version — cite this one) and a version DOI.
+Drop the concept DOI into CITATION.cff (doi: + identifiers:), and add a .zenodo.json to control author list / ORCID / license.
+Buys you: a permanent, versioned, BibTeX-able target the day you ship. Zero gatekeepers.
+
+2. JOSS — the real prize for a tool like this (free peer review → paper DOI)
+The Journal of Open Source Software exists precisely for research software, review happens openly on a GitHub issue, and — given your __init__ describes a genuinely interactive visualizer (live policy/attention, ELO slider, click-to-ablate, GAB template decomposition) — this is a strong JOSS fit, not a stretch. Requirement gates you must clear first:
+
+OSI license ✅ (MIT, done)
+Feature-complete & non-trivial — JOSS explicitly rejects skeletons/"in progress"; rule of thumb is substantial scholarly effort (~3+ months / ~1k LOC). Your extracted MAIA-3 harness clears this; 0.0.1 does not.
+Docs: install + usage + API reference
+Tests + CI
+A paper.md (metadata header + 250–1000-word summary + a "Statement of need") and a paper.bib
+Submit → reviewers walk a public checklist → on acceptance you get a Crossref DOI and a short citeable paper. Timeline: weeks to a couple months.
+
+3. arXiv — where the interp audience actually reads (do alongside JOSS)
+A short writeup — either a standalone tool paper or, better, the fork-results paper that features the tool (results paper cites the tool; both get read). One gotcha: as a first-time cs.LG/cs.AI submitter you likely need an endorsement (arXiv's anti-spam — an existing author in that category vouches for you). ***REMOVED***  Not peer-reviewed, but the de-facto BibTeX target in ML. You can post to arXiv and JOSS; they don't conflict.
+
+I SHOULD REACH OUT TO NEEL NANDA FOR ADVICE ON CHESSFORMER_LENS!
+
+Also the pyOpenSci community — they do peer review and mentorship for scientific Python packages and are explicitly friendly to first-timers. This is arguably a better fit than JOSS-first, and pyOpenSci-reviewed packages can then go to JOSS with much of the work done.
+
+Also a single competent research-software engineer for a few hours of paid or favor-based pairing beats a famous advisor for this specific task. This is genuinely the kind of thing where one good afternoon with someone who's shipped a Python package gets you 80% there.
+

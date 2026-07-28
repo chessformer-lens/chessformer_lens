@@ -13,15 +13,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chessformer (Maia 3) Interpretability</title>
 <style>
-  /* Neutrals lifted one step from pitch black (2026-07), to match the paper
-     figures (figstyle.py / interp_plot.py) — see those for why. Duplicated in
-     interp_widget.py's :root and both app.py's window background_color; keep
-     all in sync. To revert this file to pitch black:
-       --bg:#0e1014; --panel:#161a21; --panel2:#1b2029; --line:#262c37;
-       --chart-bg:#0f131a; */
   :root{
-    --bg:#181c24; --panel:#20252f; --panel2:#262c38; --line:#333b4a;
-    --chart-bg:#1a1f29;   /* insets: policy bars, fen box, gab readout, mlsvg */
+    --bg:#0e1014; --panel:#161a21; --panel2:#1b2029; --line:#262c37;
     --text:#e7eaf0; --muted:#8b93a3; --accent:#6ea8fe; --accent2:#7bd88f;
     --sq-light:#c9d1dc; --sq-dark:#6b7686;
     --hl:rgba(245,213,107,.28); --sel:#7bd88f; --win:#5fb878; --draw:#6b7480; --loss:#d9606a;
@@ -95,14 +88,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .wdl.cmp{flex-direction:column;height:42px;gap:2px;font-size:9px}
   .wdl .wdlrow{display:flex;flex:1;min-width:0;justify-content:flex-start;border-radius:4px;overflow:hidden}
   .wdltag{flex:0 0 30px;display:flex;align-items:center;padding-left:2px;
-    color:var(--muted);font-family:var(--mono);background:var(--chart-bg)}
+    color:var(--muted);font-family:var(--mono);background:#0f131a}
 
   /* policy list */
   #policy{flex:1;overflow-y:auto;min-height:0}
   .prow{display:grid;grid-template-columns:52px 1fr 52px;align-items:center;gap:10px;
     padding:4px 0;font-size:12px}
   .prow .san{font-family:var(--mono);color:var(--text)}
-  .prow .barwrap{display:block;height:18px;background:var(--chart-bg);border:1px solid var(--line);
+  .prow .barwrap{display:block;height:18px;background:#0f131a;border:1px solid var(--line);
     border-radius:10px;overflow:hidden}
   .prow .bar{display:block;height:100%;min-width:3px;border-radius:10px;
     background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .18s ease}
@@ -158,7 +151,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     color:rgba(255,255,255,.9);text-shadow:0 0 2px rgba(0,0,0,.95);pointer-events:none}
   .attcoord.f{right:1px;bottom:0} .attcoord.r{left:1px;top:0}
   .fenrow{display:flex;gap:6px;margin-top:8px}
-  .fenbox{flex:1;min-width:0;background:var(--chart-bg);border:1px solid var(--line);border-radius:6px;
+  .fenbox{flex:1;min-width:0;background:#0f131a;border:1px solid var(--line);border-radius:6px;
     color:var(--text);font-family:var(--mono);font-size:10px;padding:5px 7px}
   #fenload{padding:5px 10px;font-size:11px}
   /* side-by-side board pairs (content vs geometry) */
@@ -166,7 +159,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .attpair>div{flex:1;min-width:0}
   .attpair .attboard{max-width:none}
   /* smolgen mixture: readout + coefficient strip + template gallery */
-  .gabreadout{font-family:var(--mono);font-size:10px;line-height:1.7;background:var(--chart-bg);
+  .gabreadout{font-family:var(--mono);font-size:10px;line-height:1.7;background:#0f131a;
     border:1px solid var(--line);border-radius:6px;padding:6px 8px;margin:6px 0 10px;min-height:30px}
   .gabreadout b{color:var(--text)}
   .gabreadout .pos{color:#f0a35e} .gabreadout .neg{color:#6fb3ff}
@@ -174,7 +167,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .gabreadout .tref:hover{text-decoration:underline}
   .coeffstrip{display:flex;align-items:stretch;gap:1px;height:44px;border:1px solid var(--line);
     border-radius:6px;padding:2px;margin-bottom:12px;
-    background:linear-gradient(var(--chart-bg) 49%,var(--line) 49%,var(--line) 51%,var(--chart-bg) 51%)}
+    background:linear-gradient(#0f131a 49%,#262c37 49%,#262c37 51%,#0f131a 51%)}
   .cbar{flex:1;min-width:1px;position:relative;cursor:pointer}
   .cbar span{position:absolute;left:0;right:0;border-radius:1px}
   .cbar:hover{background:rgba(110,168,254,.15)}
@@ -275,7 +268,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #mlclose{padding:3px 10px;font-size:11px}
   .mlbody{display:flex;gap:24px;align-items:flex-start}
   .mlchart{flex:1;min-width:0}
-  #mlsvg{width:100%;height:auto;display:block;background:var(--chart-bg);
+  #mlsvg{width:100%;height:auto;display:block;background:#0f131a;
     border:1px solid var(--line);border-radius:8px}
   .mlgridbox{flex:0 0 auto;align-self:flex-start;overflow:auto}
   /* grid-template-columns/rows + width are set per model in renderAblGrid so the
@@ -1356,7 +1349,7 @@ function drawMlChart(){
   const tip=(s,n,pre)=>`${pre}${s.label} · logit ${s.logit.toFixed(2)} · p ${s.prob!=null?(s.prob*100).toFixed(1)+'%':'—'} · rank ${s.rank!=null?s.rank+'/'+n:'—'}`;
   let h='';
   for(const v of [lo+pad, (lo+hi)/2, hi-pad]){
-    h+=`<line x1="${ML}" y1="${Y(v)}" x2="${W-MR}" y2="${Y(v)}" stroke="#333b4a"/>`+
+    h+=`<line x1="${ML}" y1="${Y(v)}" x2="${W-MR}" y2="${Y(v)}" stroke="#262c37"/>`+
        `<text x="${ML-4}" y="${Y(v)+3}" fill="#8b93a3" font-size="9" text-anchor="end" font-family="monospace">${v.toFixed(1)}</text>`;
   }
   // the snap (first point of the final rank-1 run) only makes sense for a single move
