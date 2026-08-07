@@ -1,15 +1,11 @@
-"""
-engine.py — the Maia-3 interpretability core (no UI, safe to import anywhere).
+"""Interpretability core for chessformers that treat the 64 squares as tokens.
 
 `MaiaEngine` loads a Maia-3 checkpoint, runs forward passes, and captures the
-residual stream at every sub-layer. Everything the app's visuals show is
-computed here, and nothing in this file imports pywebview or the UI, so it
-imports cleanly into a notebook. It is the compute layer for bridge.py/app.py
-(the native app), interp_plot.py (static figures) and interp_widget.py (the two
-interactive panels) — and it stands alone for any chessformer that treats the 64
-squares as tokens.
+residual stream at every layer. It imports cleanly into a notebook; plotting
+lives next door in interp_plot.py (static figures) and interp_widget.py
+(interactive panels), and the standalone app in bridge.py/app.py/ui.py.
 
-Quick start (Colab / Jupyter / REPL):
+Quick start:
 
     import chess
     from engine import MaiaEngine
@@ -17,28 +13,33 @@ Quick start (Colab / Jupyter / REPL):
     eng   = MaiaEngine()                           # downloads 5M weights on first run
     board = chess.Board()
 
-    # 1. policy + WDL at a chosen rating
+    # policy + win/draw/loss probabilities at 1500 elo
     out = eng.evaluate(board, self_elo=1500)
     out["policy"][:3]                              # [(uci, prob), ...] descending
 
-    # 2. transformer_lens-style cache of the whole residual stream
+    # transformer_lens-style cache of the whole residual stream
     out, cache = eng.run_with_cache(board, self_elo=1500)
-    cache["block_03"].shape                        # (64, dim_vit)  per-square residual
-    eng.hook_points.keys()                         # every name you can read / patch
+    cache["block_03"].shape                        # (64, dim_vit) per-square residual
+    eng.hook_points.keys()                         # every name you can read or patch
 
-    # 3. logit lens: decode any (64, dim) residual through the policy head
+    # logit lens: decode any (64, dim) residual through the policy head
     eng.logit_lens(cache["postattn_04"], board)    # {'uci','san',...} top legal move
 
-    # 4. activation patching / ablation: inject, don't just observe
-    def zero_attn(act):  return act * 0            # kill block 5's attention write
-    eng.run_with_hooks(board, 1500, fwd_hooks=[("attn_05", zero_attn)])
+    # activation patching / ablation: kill block 5's attention write
+    eng.run_with_hooks(board, 1500, fwd_hooks=[("attn_05", lambda act: act * 0)])
 
-See `attention()` and `residual_stream()` for the structured views the app draws,
-the GAB/smolgen decomposition suite — `gab_templates()`, `gab_coeffs()`,
-`gab_bias()`, `qk_scores()` — for taking the geometric attention bias apart,
-`compare_residual()` for the skill diff on internals, and the move-centric
-lenses `move_logit_lens()` (one move's depth curve) and `ablate_grid()` (its
-per-head carrier heatmap, delta = ablated − clean).
+    # one move's logit / probability / rank at every readout point
+    eng.logit_per_depth(board, 1500, "Nf3")        # also policy_ and rank_
+
+Past the basics: `attention()` and `residual_stream()` are the structured views
+the app draws, the gab_* methods decompose the geometric attention bias, and
+`compare_residual()`, `move_logit_lens()` and `ablate_grid()` are experiments
+built on top of the primitives above.
+
+Moves come in five notations (uci, SAN, chess.Move, policy index, canonical
+(from, to) squares) — see the "move notation" section; `to_move()` reads any of
+them and `move_info()` returns all of them, so nothing has to hand-roll the
+side-to-move mirror.
 """
 import math
 import os
@@ -94,27 +95,25 @@ def build_cfg(alias="maia3-5m", device=None, checkpoint_path=None,
 class MaiaEngine:
     """Hook-based interpretability engine for a Maia-3 checkpoint.
 
-    Loads the model itself (see __init__), then exposes read paths
-    (run_with_cache, logit_lens, residual_stream, attention, gab_*) and
-    intervention paths (run_with_hooks, ablate_head, ablate_grid). Every tensor
-    a read path returns is on CPU, in the model's canonical side-to-move frame
-    (square = rank*8 + file)."""
+    Exposes read paths (run_with_cache, logit_lens, residual_stream, attention,
+    gab_*) and intervention paths (run_with_hooks, ablate_head, ablate_grid).
+    Every tensor a read path returns is on CPU, in the model's canonical
+    side-to-move frame (square = rank*8 + file)."""
 
     def __init__(self, alias="maia3-5m", device=None, checkpoint_path=None,
                  activation_dir="activations", trust_checkpoint=False):
         """Build the model and install the permanent capture hooks.
 
-        Side effects, in order: resolves the checkpoint, downloading it from
-        Hugging Face on first use if it isn't in the local HF cache (so this
-        touches the network); creates `activation_dir`; and registers
-        4·num_blocks + 2 forward hooks that copy every sub-layer's output to
-        CPU on EVERY forward. That copy is what makes the read paths work — it
-        also means each forward costs a handful of device->host transfers.
+        Resolves the checkpoint (downloading it from Hugging Face on first
+        use), creates `activation_dir`, and registers forward hooks that copy
+        every sub-layer's output to CPU on each forward. That copy is what
+        makes the read paths work; it also costs a handful of device->host
+        transfers per forward.
 
         `device`: an explicit string wins; otherwise see `pick_device`.
-        `trust_checkpoint=True` loads with `weights_only=False`, i.e. it will
-        execute pickled code from the checkpoint file — only for checkpoints
-        you produced yourself."""
+        `trust_checkpoint=True` loads with `weights_only=False`, i.e. it can
+        execute pickled code from the checkpoint file — only use it for
+        checkpoints you produced yourself."""
         self.cfg, self.spec = build_cfg(alias, device, checkpoint_path, trust_checkpoint)
 
         if self.cfg.checkpoint_path is None:
@@ -148,18 +147,17 @@ class MaiaEngine:
         on every forward, so the snapshot is always the most recent position.
 
           embed_in      the stream entering block 0 (token_projection out)
-          attn_NN       block NN's attention WRITE (self_attn out, post out_proj)
+          attn_NN       block NN's attention write (self_attn out, post out_proj)
           postattn_NN   the running stream after attention (norm1 out)
           mlp_NN        block NN's MLP write (linear2 out)
           block_NN      the running stream after the whole block (post-LN)
           encoder_out   after the final encoder norm
 
-        Writes vs stream: this is a Post-LN model, x = norm(x + sublayer(x)),
-        so attn_NN/mlp_NN are the vectors ADDED (dropout is identity in eval,
-        so they are exactly the summands), while the other four are the stream
-        itself. Every tensor is copied to CPU on the way out. `hook_points`
-        records name -> module for all of them, so `run_with_hooks` can patch
-        anywhere you can read."""
+        This is a Post-LN model, x = norm(x + sublayer(x)), so attn_NN/mlp_NN
+        are the vectors *added* to the stream (dropout is identity in eval),
+        while the other four are the stream itself. Everything is copied to
+        CPU on the way out. `hook_points` records name -> module for all of
+        these, so `run_with_hooks` can patch anywhere you can read."""
         def make_hook(name):
             def hook(_module, _inp, out):
                 t = out[0] if isinstance(out, tuple) else out
@@ -185,12 +183,11 @@ class MaiaEngine:
         add("encoder_out", self.model.transformer.norm)
 
     def remove_hooks(self):
-        """Detach the capture hooks — for a bare forward with no CPU copies.
+        """Detach the capture hooks, for a bare forward with no CPU copies.
 
-        `hook_points` is deliberately left populated, so `run_with_hooks`
-        (which registers its own temporary hooks) keeps working. Every READ
-        path breaks with KeyError instead, because `_activations` stops being
-        refreshed, and there is no public re-register: build a new MaiaEngine."""
+        `hook_points` stays populated so `run_with_hooks` keeps working, but
+        the read paths will KeyError once `_activations` stops being refreshed.
+        There is no re-register; build a new MaiaEngine."""
         for h in self._hooks:
             h.remove()
         self._hooks = []
@@ -207,9 +204,8 @@ class MaiaEngine:
 
     def _idx_to_move(self, board: chess.Board, idx: int):
         """Decode a policy index to a legal chess.Move, un-mirroring for Black.
-        Returns None if the index doesn't decode to a move that's legal here —
-        the branch every caller handles. (Not to be confused with the
-        `idx_to_move` attribute, which is the raw index -> uci-string table.)"""
+        Returns None if the index doesn't decode to a move that's legal here.
+        (Distinct from the `idx_to_move` attribute, the raw index -> uci table.)"""
         uci = self.idx_to_move[int(idx)]
         if board.turn == chess.BLACK:
             uci = mirror_move(uci)
@@ -272,15 +268,13 @@ class MaiaEngine:
 
           out   = the evaluate() dict (policy / wdl / _logits)
           cache = {name: Tensor(64, dim_vit)} snapshot of the residual stream,
-                  copied so it survives the next forward. Keys are `hook_points`:
-                  embed_in, then per block attn_NN / postattn_NN / mlp_NN /
-                  block_NN, then encoder_out.
+                  cloned so it survives the next forward. Keys are the
+                  `hook_points` names.
 
-          Cached tensors are always on CPU, whatever `self.device` is (the
-          capture hooks copy on the way out). Contrast `run_with_hooks`, whose
-          hook functions see activations on the LIVE device — move tensors
-          yourself when you feed a cached value into an intervention.
-        """
+        Cached tensors are always on CPU, whatever `self.device` is. Contrast
+        `run_with_hooks`, whose hook functions see activations on the live
+        device — move tensors yourself when feeding a cached value into an
+        intervention."""
         out = self.evaluate(board, self_elo, oppo_elo)
         cache = {k: v.squeeze(0).clone() for k, v in self._activations.items()}
         return out, cache
@@ -288,28 +282,27 @@ class MaiaEngine:
     def run_with_hooks(self, board: chess.Board, self_elo: int, oppo_elo: int | None = None,
                        *, fwd_hooks=(), return_type: str = "policy"):
         """Forward pass with temporary intervention hooks — activation patching,
-        ablation, steering. Each `fwd_hooks` entry is (name, fn) where `name` is a
-        key of `hook_points` and `fn(activation) -> activation | None` (return
-        None to leave it unchanged). `activation` is that module's output on the
-        live device: the residual *write* for attn_NN/mlp_NN, the running stream
-        for embed_in / postattn_NN / block_NN / encoder_out.
+        ablation, steering. Each `fwd_hooks` entry is (name, fn) where `name`
+        is a key of `hook_points` and `fn(activation) -> activation | None`
+        (return None to leave it unchanged). `activation` is that module's
+        output on the live device: the residual *write* for attn_NN/mlp_NN,
+        the running stream for everything else.
 
         return_type='policy' -> the evaluate() dict; 'logits' -> the raw
-        (logits_move (4352,), logits_value (3,)) tensors (unmasked). The hooks are
-        always removed afterward, even on error.
+        (logits_move, logits_value) tensors, unmasked. Hooks are always
+        removed afterward, even on error.
 
-        NOTE on heads: attn_NN is the write AFTER out_proj, which mixes every
-        head into every channel — slicing attn_NN channels does NOT isolate a
-        head. For a true per-head ablation use `ablate_head()` / `head_writes()`.
+        Two gotchas. attn_NN is the write after out_proj, which mixes every
+        head into every channel, so slicing attn_NN channels does not isolate
+        a head — use `ablate_head()` / `head_writes()` for that. And the
+        capture hooks from __init__ fire before your hook on the same module,
+        so after a patched run `_activations[name]` (and any cache taken from
+        it) holds the clean output of the patched module, while downstream
+        entries do reflect the patch. Take your clean cache before you patch,
+        not after.
+
         Example — halve block 5's whole attention write:
             self.run_with_hooks(board, 1500, fwd_hooks=[("attn_05", lambda a: a * 0.5)])
-
-        Hook order: __init__'s capture hooks were registered first, so they
-        fire BEFORE your intervention on the same module. After a patched run,
-        `_activations[name]` — and any cache taken from it — holds the CLEAN
-        output of the patched module, while every downstream entry does reflect
-        the patch. This call also clobbers `_activations`, so take your clean
-        cache before you patch, not after.
         """
         def make(fn):
             def hook(_module, _inp, out):
@@ -374,8 +367,8 @@ class MaiaEngine:
     # ----- live attention (per layer / head) --------------------------------
     @torch.no_grad()
     def _block_input(self, board, self_elo, oppo_elo, layer):
-        """One forward pass, then the residual stream ENTERING block `layer`:
-        (1, 64, dim) on the live device. This is exactly the tensor the block's
+        """One forward pass, then the residual stream entering block `layer`:
+        (1, 64, dim) on the live device — exactly the tensor the block's
         attention (and its GAB generator) sees as query/key/value."""
         oppo_elo = self_elo if oppo_elo is None else oppo_elo
         self.evaluate(board, self_elo, oppo_elo)
@@ -402,23 +395,23 @@ class MaiaEngine:
 
     @torch.no_grad()
     def attention(self, board, self_elo, oppo_elo=None, layer=0, head=0):
-        """Return the 64x64 attention components of one (layer, head) for the
-        current position, reproducing Chessformer Fig. 1:
-          qk           = semantic dot-product logits (scaled QK^T)  -- selected head
-          gab          = geometric attention bias (learned positional bias) -- selected head
-          attn         = softmax(qk + gab)  -- the selected head's attention
-          attn_content = softmax(qk) -- what the head would attend to WITHOUT the
-                         geometry; compare with `attn` to see what GAB adds
-          attn_layer   = mean over ALL heads of softmax(qk + gab) -- the whole layer's
-                         aggregate attention pattern (head-independent)
-          coeffs       = the smolgen mixing coefficients that generated this head's
-                         gab (see gab_coeffs())
-        Requires a GAB block: a block built with use_gab=False has no smolgen
-        submodules, so the _sq_bias call below raises AttributeError before any
-        of this returns (gab_bias()/gab_templates() raise a clean RuntimeError).
-        Matrices are in the side-to-move (mirrored) frame; square = rank*8 + file.
-        Computed directly from the residual stream entering the block, using that
-        block's own projections and GAB generator -- no model re-implementation."""
+        """The 64x64 attention components of one (layer, head) for the current
+        position, reproducing Chessformer Fig. 1:
+
+          qk           = semantic dot-product logits (scaled QK^T)
+          gab          = geometric attention bias (learned positional bias)
+          attn         = softmax(qk + gab), the head's actual attention
+          attn_content = softmax(qk), attention without the geometry; compare
+                         with `attn` to see what GAB adds
+          attn_layer   = mean over all heads of softmax(qk + gab)
+          coeffs       = the smolgen mixing coefficients that generated this
+                         head's gab (see gab_coeffs())
+
+        Computed directly from the residual stream entering the block, using
+        the block's own projections and GAB generator — no re-implementation
+        of the model. Requires a GAB block: with use_gab=False there are no
+        smolgen submodules and the _sq_bias call raises AttributeError.
+        Matrices are in the side-to-move frame; square = rank*8 + file."""
         L = int(layer)
         x = self._block_input(board, self_elo, oppo_elo, L)   # (1, 64, dim) -> input to block L
         blk = self.model.transformer.layers[L].self_attn
@@ -451,9 +444,9 @@ class MaiaEngine:
     @staticmethod
     def _smolgen_coeffs(blk, x):
         """Replicate one block's smolgen generator up to the mixing coefficients:
-        (1, H, gen_size). Checked on the spot: mixing the shared templates with
-        these coefficients must reproduce the block's own _sq_bias() to
-        atol=rtol=1e-4, asserted (so the check disappears under python -O)."""
+        (1, H, gen_size). Sanity-checked on the spot: mixing the shared
+        templates with these coefficients must reproduce the block's own
+        _sq_bias() (asserted, so the check vanishes under python -O)."""
         B = x.size(0)
         if blk.sm1 is not None:                                # per-square path
             y = blk.sm1(x).reshape(B, -1)                      # (B, 64*p)
@@ -478,7 +471,7 @@ class MaiaEngine:
         is its contribution to query square q attending to key square k (canonical
         side-to-move frame, square = rank*8 + file). Position-independent and
         shared across all layers and heads — this is the model's entire geometric
-        vocabulary. Computed once and cached — the same tensor is returned each
+        vocabulary. Computed once and cached; the same tensor is returned each
         call, so `.clone()` before mutating."""
         if self.model.gab_shared_weight is None:
             raise RuntimeError("this model was built without GAB (use_gab=False)")
@@ -489,12 +482,12 @@ class MaiaEngine:
 
     @torch.no_grad()
     def gab_coeffs(self, board, self_elo, oppo_elo=None, layer=0):
-        """The generated smolgen mixing coefficients of one block for this
-        position: (H, gen_size). Row h are the weights with which head h mixes
-        the static `gab_templates()` into its 64x64 bias:
+        """The smolgen mixing coefficients of one block for this position:
+        (H, gen_size). Row h holds the weights with which head h mixes the
+        static `gab_templates()` into its 64x64 bias:
             gab_bias(layer, h) == (coeffs[h, :, None, None] * gab_templates()).sum(0)
-        (checked inside to atol=rtol=1e-4, asserted — so the check disappears
-        under python -O). This is the model *choosing geometry* live."""
+        (verified internally, see `_smolgen_coeffs`). This is the model
+        choosing its geometry live."""
         L = int(layer)
         x = self._block_input(board, self_elo, oppo_elo, L)
         blk = self.model.transformer.layers[L].self_attn
@@ -529,16 +522,16 @@ class MaiaEngine:
     # ----- per-head attention writes (for true head ablation) ---------------
     @torch.no_grad()
     def head_writes(self, board, self_elo, oppo_elo=None, layer=0):
-        """Exact per-head residual-stream writes of one block's attention: (H, 64, dim).
+        """Exact per-head residual-stream writes of one block's attention:
+        (H, 64, dim).
 
-        Head h's write is (A_h V_h) W_O^{(h)} — its attention-weighted values pushed
-        through its own dh-column block of the OUTPUT projection. This is the tensor a
-        true head ablation must subtract: the hooked attn_NN activation is post-out_proj,
-        where the heads are already mixed across every channel, so slicing attn_NN
-        channels does not correspond to heads. Recomputed from the block's own weights
-        (same approach as `attention()`); checked on the spot — the writes must sum
-        (plus the out_proj bias) back to the attn_NN activation of this forward, to
-        atol=rtol=1e-4, asserted (so the check disappears under python -O)."""
+        Head h's write is (A_h V_h) W_O^{(h)} — its attention-weighted values
+        pushed through its own dh-column block of the output projection. This
+        is the tensor a true head ablation must subtract: the hooked attn_NN
+        activation is post-out_proj, where the heads are already mixed across
+        every channel. Recomputed from the block's own weights (same approach
+        as `attention()`), and asserted on the spot to sum back — with the
+        out_proj bias — to this forward's attn_NN activation."""
         L = int(layer)
         x = self._block_input(board, self_elo, oppo_elo, L)    # (1, 64, dim) into block L
         blk = self.model.transformer.layers[L].self_attn
@@ -568,18 +561,16 @@ class MaiaEngine:
 
     def ablate_head(self, board, self_elo, layer, head, oppo_elo=None,
                     return_type: str = "policy"):
-        """Forward pass with ONE attention head's write removed, exactly.
+        """Forward pass with one attention head's write removed, exactly.
 
-        Upstream of `layer` is untouched by the ablation, so the write computed from a
-        clean pass is exactly the write the ablated pass would have produced — we
-        subtract it from attn_NN via run_with_hooks. Downstream layers then react to
-        the head's absence normally.
+        Upstream of `layer` is untouched by the ablation, so the write computed
+        from a clean pass is exactly the write the ablated pass would have
+        produced; we subtract it from attn_NN via run_with_hooks, and
+        downstream layers react to the head's absence normally.
 
-        `return_type` is passed straight to run_with_hooks ('policy' -> the
-        evaluate() dict, 'logits' -> the raw tensors). Note the argument order:
-        `layer`/`head` come BEFORE `oppo_elo` here, unlike every other method in
-        this file — pass them by keyword if you call positionally elsewhere.
-        Costs two forward-pass groups: head_writes plus the ablated run."""
+        `return_type` is passed straight to run_with_hooks. Watch the argument
+        order: `layer`/`head` come before `oppo_elo` here, unlike the other
+        methods in this file."""
         w = self.head_writes(board, self_elo, oppo_elo, layer)[int(head)]
 
         def sub(act):
@@ -590,17 +581,6 @@ class MaiaEngine:
                                    return_type=return_type)
 
     # ----- residual-stream evolution across depth ---------------------------
-    @staticmethod
-    def move_squares(idx):
-        """Canonical (from, to) squares for a policy-move index (handles promotions).
-        Mirrors MAIA3Model.forward's move layout: first 64*64 are from*64+to, then
-        256 promotions ordered from_file*32 + to_file*4 + piece (rank7 -> rank8)."""
-        if idx < 64 * 64:
-            return idx // 64, idx % 64
-        idx -= 64 * 64
-        from_file, to_file = idx // 32, (idx % 32) // 4
-        return 48 + from_file, 56 + to_file          # rank-7 -> rank-8, canonical
-
     def _move_logits(self, x):
         """Full (4352,) move logits from one position's residual x (64, dim),
         replicating MAIA3Model.forward's policy head (64*64 moves + 256 promotions).
@@ -622,30 +602,25 @@ class MaiaEngine:
         """Two per-square views of how the residual stream is built up, in the
         side-to-move frame (square = rank*8 + file):
 
-          delta = the per-square magnitude of the vector each STRUCTURE writes
-                  into the stream, in execution order. The blocks are Post-LN
-                  (x = norm(x + sublayer(x))), so the things that actually add a
-                  vector are: the input embedding (`emb`), then, for every block,
-                  the self-attention sub-layer (`bN attn` = ||sa_out||) and the
-                  feed-forward sub-layer (`bN mlp` = ||ff_out||). Each entry is
-                  tagged with its `kind` ('emb'/'attn'/'mlp') so the UI can mark
-                  *what* is writing at each point. This is the residual-stream
-                  evolution decomposed by contributing module, not just norms.
-                  1 + 2·num_blocks entries (17 on the 5M).
+          delta = the per-square magnitude of the vector each structure writes
+                  into the stream, in execution order: the input embedding
+                  (`emb`), then for every block the self-attention write
+                  (`bN attn` = ||sa_out||) and the feed-forward write
+                  (`bN mlp` = ||ff_out||). Each entry is tagged with its `kind`
+                  ('emb'/'attn'/'mlp') so the UI can mark what is writing at
+                  each point. 1 + 2·num_blocks entries.
 
-          moves = per-SUB-LAYER logit lens on the running residual stream, at the
-                  same points as `delta` plus a final `enc` readout — one more
-                  entry: emb, then for every block the post-attention point
-                  (norm1 out) and the post-MLP point (block out), then enc (see
-                  `_lens_steps`). `kind` is 'emb'/'attn'/'mlp'/'enc'. Decode each
-                  through the policy head, take the top *legal* move, and watch
-                  the prediction form sub-layer by sub-layer. Read the caveat on
-                  `logit_lens`: every point but `enc` skips the head's final
-                  LayerNorm.
+          moves = logit lens on the running residual stream at every readout
+                  point (see `_lens_steps`): emb, then per block the
+                  post-attention and post-MLP points, then a final `enc`
+                  readout. Decode each through the policy head, take the top
+                  legal move, and watch the prediction form sub-layer by
+                  sub-layer. The `logit_lens` caveat applies everywhere but
+                  `enc`.
 
         `delta` is a list of {label, kind, norm:[64]}; `moves` is a list of
-        {label, kind, from, to, uci, san, piece} (from/to canonical squares;
-        uci/san real-board; piece = symbol of the moving piece, e.g. 'N'/'n')."""
+        {label, kind, from, to, uci, san, piece} (from/to canonical squares,
+        uci/san real-board, piece the moving piece's symbol)."""
         oppo_elo = self_elo if oppo_elo is None else oppo_elo
         self.evaluate(board, self_elo, oppo_elo)         # populates activations + logits
         nb = self.cfg.num_blocks
@@ -697,23 +672,22 @@ class MaiaEngine:
 
     @torch.no_grad()
     def compare_residual(self, board, elo_a, elo_b):
-        """Skill diff on INTERNALS, not just outputs: run the same position at
+        """Skill diff on internals, not just outputs: run the same position at
         two ratings and, at each readout point of the running residual stream
-        (2·num_blocks + 2 of them — 18 on every current Maia-3 size), report
+        (see `_lens_steps`), report
 
-          norm    = per-square ||x_A − x_B||  (where on the board, and at what
-                    depth, the two skill levels diverge)
+          norm     = per-square ||x_A − x_B|| — where on the board, and at
+                     what depth, the two skill levels diverge
           move_a/b = logit-lens top legal move of each run at that point
-          same    = whether the two lenses agree
+          same     = whether the two lenses agree
 
-        Elo enters as an embedding concatenated to EVERY square token before
+        Elo enters as an embedding concatenated to every square token before
         token_projection, so at `emb` the diff is one constant "skill vector"
-        repeated on all 64 squares (flat heat) — the interesting structure is
-        how depth localizes it. Both runs use oppo_elo == self_elo (run_with_cache's
-        default), so BOTH ratings' embeddings move — read the result as the diff
-        between two whole skill settings, not one player's. Side-to-move frame;
-        square = rank*8 + file. The lens caveat on `logit_lens` applies to
-        move_a/move_b at every point but `enc`."""
+        repeated on all 64 squares; the interesting structure is how depth
+        localizes it. Both runs use oppo_elo == self_elo, so both ratings'
+        embeddings move — read the result as the diff between two whole skill
+        settings, not one player's. Side-to-move frame; the `logit_lens`
+        caveat applies to move_a/move_b everywhere but `enc`."""
         _, cache_a = self.run_with_cache(board, int(elo_a))
         _, cache_b = self.run_with_cache(board, int(elo_b))
         legal = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
@@ -730,26 +704,146 @@ class MaiaEngine:
             })
         return {"elo_a": int(elo_a), "elo_b": int(elo_b), "steps": steps}
 
+    # ----- move notation ----------------------------------------------------
+    # Five representations of the same move circulate in this file, and they are
+    # easy to mix up:
+    #
+    #   Move         chess.Move             real board (python-chess)
+    #   uci          "e2e4", "e7e8q"        real board
+    #   san          "Nf3", "exd5"          real board, only readable with one
+    #   idx          0 .. 4351              policy index — in the model's
+    #                                       side-to-move frame (Black mirrored)
+    #   (from, to)   0 .. 63 each           canonical squares, rank*8 + file, in
+    #                                       that same side-to-move frame
+    #
+    # The first three are what a human types, the last two are what the model
+    # thinks in, and the mirror sits between them. Every `from`/`to` this file
+    # returns is canonical; every `uci`/`san` is real-board. `to_move()` reads
+    # any of the five, `move_info()` returns all five at once — go through those
+    # instead of hand-rolling the mirror.
+
+    @staticmethod
+    def canon_square(square: int, turn: bool) -> int:
+        """python-chess square -> canonical index (side-to-move frame,
+        rank*8 + file): identity for White, vertically mirrored for Black.
+        Duplicated as interp_plot._canon and ui.py's realToCanon() so each side
+        stands alone — keep the three in sync."""
+        rank, file = chess.square_rank(square), chess.square_file(square)
+        return (rank if turn == chess.WHITE else 7 - rank) * 8 + file
+
+    @staticmethod
+    def real_square(canon: int, turn: bool) -> int:
+        """Canonical index -> python-chess square. Inverse of `canon_square`."""
+        rank, file = divmod(int(canon), 8)
+        return chess.square(file, rank if turn == chess.WHITE else 7 - rank)
+
+    @staticmethod
+    def move_squares(idx):
+        """Canonical (from, to) squares for a policy-move index (handles promotions).
+        Mirrors MAIA3Model.forward's move layout: first 64*64 are from*64+to, then
+        256 promotions ordered from_file*32 + to_file*4 + piece (rank7 -> rank8)."""
+        if idx < 64 * 64:
+            return idx // 64, idx % 64
+        idx -= 64 * 64
+        from_file, to_file = idx // 32, (idx % 32) // 4
+        return 48 + from_file, 56 + to_file          # rank-7 -> rank-8, canonical
+
+    def to_move(self, board: chess.Board, move) -> chess.Move:
+        """Any of the five forms above -> chess.Move on `board`: a chess.Move, a
+        uci string, a SAN string, a policy index, or a (from, to) pair of
+        canonical squares. Raises ValueError on anything unreadable.
+
+        A (from, to) pair carries no promotion piece — the policy layout folds
+        every rank7->rank8 promotion onto the same square pair — so it resolves
+        to whichever legal move matches those squares."""
+        if isinstance(move, chess.Move):
+            return move
+        if isinstance(move, str):
+            try:
+                return chess.Move.from_uci(move)
+            except ValueError:
+                pass
+            try:
+                return board.parse_san(move)
+            except ValueError as e:
+                raise ValueError(f"neither uci nor SAN on this board: {move!r}") from e
+        if isinstance(move, (tuple, list)):
+            frm, to = (self.real_square(s, board.turn) for s in move)
+            mv = chess.Move(frm, to)
+            if mv in board.legal_moves:
+                return mv
+            promo = next((m for m in board.legal_moves
+                          if m.from_square == frm and m.to_square == to), None)
+            if promo is None:
+                raise ValueError("no legal move "
+                                 f"{chess.square_name(frm)}{chess.square_name(to)}")
+            return promo
+        idx = int(move)
+        if idx not in self.idx_to_move:
+            raise ValueError(f"policy index out of range: {idx}")
+        uci = self.idx_to_move[idx]
+        return chess.Move.from_uci(mirror_move(uci) if board.turn == chess.BLACK else uci)
+
+    def move_index(self, board: chess.Board, move) -> int:
+        """Policy index of a move on this board — this is where the Black mirror
+        is applied. Takes any form `to_move` does. Raises KeyError if the move
+        isn't in the 4352-move vocabulary (a null move, an under-promotion the
+        head doesn't encode)."""
+        uci = self.to_move(board, move).uci()
+        return self.all_moves_dict[mirror_move(uci) if board.turn == chess.BLACK else uci]
+
+    def move_info(self, board: chess.Board, move) -> dict:
+        """One move in every representation at once — the table above as a dict,
+        and the single call to reach for when converting:
+
+          move         chess.Move
+          uci, san     real-board strings (`san` falls back to uci if illegal)
+          idx          policy index, side-to-move frame
+          from, to     canonical squares of that index — the frame the lens
+                       dicts, heatmaps and `residual_stream` are indexed by
+          from_sq, to_sq   the same two squares as python-chess squares
+          piece        symbol of the moving piece, None on an empty from-square
+          legal        whether the move is legal in this position
+
+        Reads any form `to_move` does, so it converts in every direction:
+        `eng.move_info(board, "Nf3")["idx"]`, `eng.move_info(board, 1234)["san"]`."""
+        mv = self.to_move(board, move)
+        idx = self.move_index(board, mv)
+        frm, to = self.move_squares(idx)
+        pc = board.piece_at(mv.from_square)
+        legal = mv in board.legal_moves
+        return {"move": mv, "uci": mv.uci(),
+                "san": board.san(mv) if legal else mv.uci(),
+                "idx": idx, "from": frm, "to": to,
+                "from_sq": mv.from_square, "to_sq": mv.to_square,
+                "piece": pc.symbol() if pc is not None else None,
+                "legal": legal}
+
     # ----- move-centric lenses ----------------------------------------------
-    def _move_index(self, board, uci: str):
-        """Policy index of a uci move on this board (handles the Black mirror).
-        Raises KeyError if the move can't be encoded."""
-        enc = mirror_move(uci) if board.turn == chess.BLACK else uci
-        return self.all_moves_dict[enc]
+
+    def depth_points(self):
+        """The readout points as [{label, kind}] in depth order — the x axis
+        every *_per_depth curve below is indexed by, without spending a forward
+        pass to get it. Same list, same order, as the `steps` of
+        `move_logit_lens` and `compare_residual`."""
+        return [{"label": lab, "kind": kind} for _, lab, kind in self._lens_steps()]
 
     @torch.no_grad()
     def move_logit_lens(self, board, self_elo, uci, oppo_elo=None):
-        """ONE move's depth curve — the logit lens applied to a single chosen
-        move at every readout point of the residual stream (2·num_blocks + 2 of
-        them — 18 on every current Maia-3 size). This is where a move "snaps"
-        into the plan: watch its logit, its probability over legal moves, and
-        its rank cross the field (rank 1 = currently the top move).
+        """One move's depth curve: the logit lens applied to a single chosen
+        move at every readout point of the residual stream. This is where a
+        move "snaps" into the plan — watch its logit, its probability over
+        legal moves, and its rank (1 = currently the top move) across depth.
+
+        `uci` is any form `to_move` reads (uci, SAN, chess.Move, policy index,
+        canonical (from, to)); the returned `uci` is always the real-board one.
 
         Returns {uci, san, steps: [{label, kind, logit, prob, rank}], n_legal}.
-        Read the caveat on `logit_lens`: every point but `enc` skips the head's
-        final LayerNorm, so compare points against each other."""
+        One forward pass for all three curves — the `*_per_depth` helpers below
+        are views on this. The `logit_lens` caveat applies everywhere but `enc`."""
         self.evaluate(board, self_elo, oppo_elo)
-        idx = self._move_index(board, uci)
+        info = self.move_info(board, uci)
+        idx = info["idx"]
         legal = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
         n_legal = int(legal.sum())
         steps = []
@@ -761,23 +855,44 @@ class MaiaEngine:
             rank = int((masked > masked[idx]).sum()) + 1 if n_legal else None
             steps.append({"label": lab, "kind": kind,
                           "logit": lg, "prob": prob, "rank": rank})
-        mv = chess.Move.from_uci(uci)
-        return {"uci": uci, "san": board.san(mv) if mv in board.legal_moves else uci,
+        return {"uci": info["uci"], "san": info["san"],
                 "steps": steps, "n_legal": n_legal}
+
+    # Bare-list views of that curve, for plotting and for arithmetic on depth.
+    # Each is one forward pass, so take `move_logit_lens` directly when you want
+    # more than one of them. Indexed by `depth_points()`.
+    def logit_per_depth(self, board, self_elo, move, oppo_elo=None) -> list[float]:
+        """This move's raw policy logit at every readout point (unmasked, so it
+        is comparable across positions in a way the probability is not)."""
+        return [s["logit"] for s in
+                self.move_logit_lens(board, self_elo, move, oppo_elo)["steps"]]
+
+    def policy_per_depth(self, board, self_elo, move, oppo_elo=None) -> list[float]:
+        """This move's probability at every readout point — softmax over the
+        legal moves only, i.e. the policy the app would show if the stream
+        stopped there. All None in a position with no legal moves."""
+        return [s["prob"] for s in
+                self.move_logit_lens(board, self_elo, move, oppo_elo)["steps"]]
+
+    def rank_per_depth(self, board, self_elo, move, oppo_elo=None) -> list[int]:
+        """This move's rank among the legal moves at every readout point,
+        1 = the top move. The step where it reaches 1 and stays is the snap."""
+        return [s["rank"] for s in
+                self.move_logit_lens(board, self_elo, move, oppo_elo)["steps"]]
 
     @torch.no_grad()
     def ablate_grid(self, board, self_elo, uci, oppo_elo=None):
-        """The carrier heatmap of one move: ablate EVERY attention head (all
-        num_blocks × num_heads of them, exactly, via head_writes) and record
-        what the intervention did to the move's logit. Sign convention, used
-        everywhere in this app:  delta = ablated − clean  — negative means the
-        head was SUPPORTING the move (removing it hurts), positive means it
-        suppresses.
+        """The carrier heatmap of one move: ablate every attention head
+        (exactly, via head_writes) and record what that did to the move's
+        logit. Sign convention throughout the app: delta = ablated − clean,
+        so negative means the head was supporting the move (removing it
+        hurts) and positive means it suppresses it.
 
         Returns {uci, san, base_logit, deltas: (num_blocks, num_heads) nested
-        list}. ~num_blocks·(num_heads+1) forward passes (72 on the 5M, 264 on
-        the 79M), so seconds, not ms."""
-        idx = self._move_index(board, uci)
+        list}. Costs ~num_blocks·(num_heads+1) forward passes — seconds, not
+        milliseconds."""
+        info = self.move_info(board, uci)
+        idx = info["idx"]
         base_logits, _ = self._forward(board, self_elo, oppo_elo)
         base = float(base_logits[idx])
         nb, nh = self.cfg.num_blocks, self.cfg.num_heads
@@ -794,8 +909,7 @@ class MaiaEngine:
                 )
                 row.append(float(abl_logits[idx]) - base)     # ablated − clean
             deltas.append(row)
-        mv = chess.Move.from_uci(uci)
-        return {"uci": uci, "san": board.san(mv) if mv in board.legal_moves else uci,
+        return {"uci": info["uci"], "san": info["san"],
                 "base_logit": base, "deltas": deltas}
 
     # ----- activation dump --------------------------------------------------

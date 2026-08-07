@@ -147,7 +147,7 @@ class MaiaApi:
         return pol, res["wdl"], act_file
 
     def policy(self, elo=1500, save=True):
-        """Re-evaluate the CURRENT position at a given ELO (no move made).
+        """Re-evaluate the current position at a given Elo (no move made).
         This is the slider probe + per-position activation dump."""
         if not self.ready:
             return {"error": self.error or "model still loading"}
@@ -215,7 +215,7 @@ class MaiaApi:
 
     def analyze(self):
         """Switch to set-up / analyze mode (you move both sides; Maia never
-        auto-moves) WITHOUT resetting the board."""
+        auto-moves) without resetting the board."""
         self.human_both = True
         return self._base()
 
@@ -278,7 +278,7 @@ class MaiaApi:
         }
 
     def gab_coeffs(self, elo=1500, layer=0):
-        """The smolgen mixing coefficients (all heads) generated for the CURRENT
+        """The smolgen mixing coefficients (all heads) generated for the current
         position: coeffs[h][i] is how much of template i head h mixes into its
         GAB bias. (attention() also returns the selected head's row, so the UI
         normally doesn't need this extra call.)"""
@@ -296,7 +296,7 @@ class MaiaApi:
                 "gen_size": int(c.shape[1]), "coeffs": c.tolist()}
 
     def gab_bias(self, elo=1500, layer=0, head=0):
-        """One head's generated 64×64 geometric attention bias for the CURRENT
+        """One head's generated 64×64 geometric attention bias for the current
         position (the matrix added to QKᵀ before the softmax)."""
         if not self.ready:
             return {"error": self.error or "model still loading"}
@@ -312,7 +312,7 @@ class MaiaApi:
         return {"layer": int(layer), "head": int(head), "gab": g.tolist()}
 
     def qk_scores(self, elo=1500, layer=0, head=0):
-        """One head's raw content logits (scaled QKᵀ) for the CURRENT position —
+        """One head's raw content logits (scaled QKᵀ) for the current position —
         the semantic half of attention, before GAB is added."""
         if not self.ready:
             return {"error": self.error or "model still loading"}
@@ -336,7 +336,7 @@ class MaiaApi:
     def compare_residual(self, elo_a=1500, elo_b=1100):
         """Skill diff on internals: per-square ||x_A − x_B|| of the running
         residual stream at every readout point, plus each run's logit-lens
-        move, for the CURRENT position (see engine.compare_residual). Not
+        move, for the current position (see engine.compare_residual). Not
         consumed by the UI — its skill comparison uses `compare_policy`."""
         if not self.ready:
             return {"error": self.error or "model still loading"}
@@ -347,9 +347,8 @@ class MaiaApi:
             return self.engine.compare_residual(b, elo_a=int(elo_a), elo_b=int(elo_b))
 
     def move_lens(self, elo=1500, uci=None):
-        """One move's depth curve (logit / prob / rank at every readout point —
-        2·num_blocks + 2 of them, 18 on every current Maia-3 size) for the
-        CURRENT position: the "snap" view."""
+        """One move's depth curve (logit / prob / rank at every readout point)
+        for the current position: the "snap" view."""
         if not self.ready:
             return {"error": self.error or "model still loading"}
         b = self.board
@@ -363,8 +362,8 @@ class MaiaApi:
     def ablate_grid(self, elo=1500, uci=None):
         """The carrier heatmap of one move: every head ablated in turn,
         delta = ablated − clean logit (the app-wide sign: negative = the head
-        supports the move). Slow-ish: ~num_blocks·(num_heads+1) forward passes
-        (72 on the 5M, 264 on the 79M)."""
+        supports the move). Slow-ish: ~num_blocks·(num_heads+1) forward
+        passes."""
         if not self.ready:
             return {"error": self.error or "model still loading"}
         b = self.board
@@ -391,7 +390,7 @@ class MaiaApi:
             return False
 
     def compare_policy(self, elo_a=1500, elo_b=1100):
-        """Evaluate the CURRENT position at two ratings (no move, no activation
+        """Evaluate the current position at two ratings (no move, no activation
         dump) for the skill-comparison view. Rows sorted by max probability."""
         if not self.ready:
             return {"error": self.error or "model still loading"}
@@ -411,7 +410,7 @@ class MaiaApi:
         return {**out, "rows": rows, "wdl_a": ra["wdl"], "wdl_b": rb["wdl"]}
 
     def ablate(self, elo=1500, layer=0, head=0):
-        """Remove ONE attention head's exact residual write (engine.ablate_head)
+        """Remove one attention head's exact residual write (engine.ablate_head)
         and report how the policy + WDL move vs a clean forward pass. Rows are
         sorted by |Δp| so the moves the head matters for come first."""
         if not self.ready:

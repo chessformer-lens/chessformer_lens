@@ -2,12 +2,11 @@
 The app's two interactive panels, each as a self-contained notebook cell.
 
 `interp_plot.py` covers everything in the app you read once — the position and
-its policy, the residual film, a move's depth curve, the carrier grid. These two
-are different: they're spaces you sweep (num_blocks × num_heads × 64 query
-squares of attention; a bias built from a bank of static templates), and no
-single frame is the answer. So they keep the app's own interaction, CSS and
-wording, rewired from "fetch from window.pywebview.api" to "read the injected
-data":
+its policy, the residual film, a move's depth curve, the carrier grid. These
+two are different: they're spaces you sweep (num_blocks × num_heads × 64 query
+squares of attention; a bias built from a bank of static templates). So they
+keep the app's own interaction, CSS and wording, rewired from "fetch from
+window.pywebview.api" to "read the injected data":
 
     from interp_widget import attention_widget, gab_widget
 
@@ -56,7 +55,8 @@ from pieces import PIECE_URI
 def _canon(square: int, turn: bool) -> int:
     """python-chess square -> the model's canonical index (side-to-move frame,
     square = rank*8 + file). The app's realToCanon(). Duplicated verbatim in
-    interp_plot.py so each module imports standalone — keep the three in sync."""
+    interp_plot.py so each module imports standalone — keep both, and the
+    app's JS, in sync."""
     rank, file = chess.square_rank(square), chess.square_file(square)
     return (rank if turn == chess.WHITE else 7 - rank) * 8 + file
 
@@ -203,7 +203,7 @@ _CSS = r"""
 <meta charset="utf-8">
 <style>
   /* Neutrals lifted one step from pitch black (2026-07), to match the paper
-     figures and ui.py — see figstyle.py for why. To revert to pitch black:
+     figures and ui.py — see interp_plot.py's palette note. To revert:
        --bg:#0e1014; --panel:#161a21; --panel2:#1b2029; --line:#262c37;
        --chart-bg:#0f131a; */
   :root{

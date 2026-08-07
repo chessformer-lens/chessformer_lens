@@ -1,4 +1,5 @@
 """
+
 The app's views as matplotlib figures — same layouts, same colours, same words.
 
 `interp_widget.py` keeps the two panels whose whole point is sweeping a space
@@ -18,15 +19,23 @@ notebook, a script, or a paper pipeline:
   plot_position         the board, "Policy over N legal moves", and the
                         Win / Draw / Loss bar — with a second rating overlaid
                         when you pass `elo_b`
+  plot_board            just the position — no engine, no policy, no eval
   plot_residual_film    "Residual stream across depth · this position": the
                         per-square ‖Δ‖ each structure writes, with the logit-lens
                         top move drawn on top of every readout point
-  plot_move_microscope  "Move microscope": one move's logit through depth (or up
-                        to 4 moves compared, or one move at two ratings), beside
-                        the carrier heads that hold it up
-  plot_carrier_heads    the carrier grid alone · Δlogit = ablated − clean
+  plot_logit_curve      one move's logit at every readout point (up to 4 moves
+                        overlaid) — `eng.logit_per_depth` drawn
+  plot_policy_curve     the same curve after the softmax over legal moves
+  plot_rank_curve       the same as a rank, 1 = the top move at that depth
+  plot_move_microscope  "Move microscope": the logit curve as the app shows it —
+                        with the snap marker, and one move at two ratings
+  plot_carrier_heads    the carrier grid · Δlogit = ablated − clean; costs
+                        ~num_blocks·(num_heads+1) forward passes where the
+                        microscope's curve costs one
   plot_attention        "Live attention · this position": semantic QKᵀ, geometric
                         GAB, and the head's final attention, for one query square
+  plot_attention_layer  the same three, for every head in a layer at once —
+                        3·num_heads boards on one comparable scale
   plot_gab_mixture      "How L·H's GAB is generated": the decomposition readout,
                         the generated mixing coefficients, and the template bank
   plot_gab_templates    the template vocabulary on its own
@@ -45,6 +54,9 @@ Frames follow the app: the attention boards and the position are drawn in real
 board orientation (White at the bottom), while the residual film and the skill
 diff are in the model's own canonical side-to-move frame — that is the frame the
 engine returns those tensors in, and the app draws them the same way.
+
+Depth reads the same on every figure that has it: `emb`, then `aN`/`mN` for
+block N's attention and MLP sub-layers, then `enc` (see `_depth_label`).
 """
 from __future__ import annotations
 
@@ -59,13 +71,12 @@ from piece_art import draw_piece
 # ---------------------------------------------------------------------------
 # the app's palette (ui.py :root) — so a figure and the app read the same
 # ---------------------------------------------------------------------------
-# the full :root set, mirrored even where a figure has no use for it (PANEL2).
-# Lifted one step from ui.py's original pitch-black values (still true of
-# app.py's window `background_color` and ui.py/interp_widget.py's :root — all
-# four were lifted together, 2026-07). Hue and tier spacing are unchanged, and
-# MUTED still clears WCAG AA (4.5:1) on every tier, so it's a lift, not a
-# different theme. To go back to pitch black everywhere, restore this line and
-# the matching one in figstyle.py, ui.py (x2), app.py (x2), interp_widget.py:
+# The full :root set, mirrored even where a figure has no use for it (PANEL2).
+# Lifted one step from the original pitch-black values (2026-07), together
+# with ui.py, app.py and interp_widget.py. Hue and tier spacing are unchanged,
+# and MUTED still clears WCAG AA (4.5:1) on every tier. To go back to pitch
+# black everywhere, restore this line and the matching ones in ui.py (x2),
+# app.py (x2) and interp_widget.py:
 #   BG, PANEL, PANEL2, LINE = "#0e1014", "#161a21", "#1b2029", "#262c37"
 #   CHART_BG (below) -> "#0f131a" ; --chart-bg / background_color to match.
 BG, PANEL, PANEL2, LINE = "#181c24", "#20252f", "#262c38", "#333b4a"
@@ -96,9 +107,26 @@ def _divmap(v: float) -> tuple:
 def _canon(square: int, turn: bool) -> int:
     """python-chess square -> the model's canonical index (side-to-move frame,
     square = rank*8 + file). The app's realToCanon(). Duplicated verbatim in
-    interp_widget.py so each module imports standalone — keep the three in sync."""
+    interp_widget.py so each module imports standalone — keep both, and the
+    app's JS, in sync."""
     rank, file = chess.square_rank(square), chess.square_file(square)
     return (rank if turn == chess.WHITE else 7 - rank) * 8 + file
+
+
+def _depth_label(step) -> str:
+    """A readout point -> its compact depth label: 'emb', then 'a0'/'m0' for
+    block 0's attention and MLP sub-layers, ..., 'enc'. The label names the
+    writer at every point, so nothing else (marker colour, say) has to.
+
+    Takes any dict carrying the engine's {label, kind} pair, so the microscope's
+    `steps`, the film's `delta` and the skill diff's `steps` all label alike."""
+    kind = step["kind"]
+    if kind in ("emb", "enc"):
+        return step["label"]
+    # "b0 attn" -> "0"; parsed rather than counted so a caller can label a
+    # subset of points without the block numbers sliding.
+    n = step["label"].split()[0].lstrip("b")
+    return ("a" if kind == "attn" else "m") + n
 
 
 def _fig(figsize):
@@ -310,10 +338,10 @@ def plot_board(board: chess.Board, *, move=None, title=None, elo=None,
                figsize=(4.6, 4.9)):
     """Just the position — no engine, no policy, no eval.
 
-    `plot_position`'s left column on its own, for the places a notebook or paper
-    only wants to show a board (python-chess's chess.svg renders a *light* board,
-    which is what this exists to replace). Takes no `eng`: nothing here runs the
-    model.
+    `plot_position`'s left column on its own, for the places a notebook or
+    paper only wants to show a board in the app's style (python-chess's
+    chess.svg only renders a light one). Takes no `eng`; nothing here runs
+    the model.
 
     Kwargs:
       move    a uci string or chess.Move to highlight, drawn with plot_position's
@@ -460,7 +488,7 @@ def plot_residual_film(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=Non
                        move=(mvd["from"], mvd["to"], mvd["piece"]))
         col = KIND_COL.get(kind, MUTED)
         ax.plot([-.5, 7.5], [7.62, 7.62], color=col, lw=3, clip_on=False, zorder=8)
-        label = mvd["label"] + (f" {mvd['san']}" if mvd["san"] else "")
+        label = _depth_label(mvd) + (f" {mvd['san']}" if mvd["san"] else "")
         ax.text(3.5, -1.15, label, ha="center", va="top", fontsize=8,
                 color=col, family=MONO)
 
@@ -481,26 +509,150 @@ def plot_residual_film(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=Non
 
 
 # ---------------------------------------------------------------------------
+# depth curves  (one move's logit / probability / rank across the readout points)
+# ---------------------------------------------------------------------------
+def _depth_axes(ax, labels, curves, *, ylabel, invert=False, legend=False):
+    """The app's depth chart: a dark panel, y grid, and the compact depth labels
+    (`emb`, `a0`/`m0`, ..., `enc`) on x. `labels` is one per readout point;
+    `curves` is [(name, values, colour, lw)] sharing that x axis, with None
+    values left as gaps. `invert` flips y for rank, where 1 belongs at the top."""
+    x = np.arange(len(labels))
+    _panel(ax, face=CHART_BG)
+    ax.grid(axis="y", color=LINE, lw=.9)
+    ax.set_axisbelow(True)
+    for name, values, color, lw in curves:
+        y = [np.nan if v is None else float(v) for v in values]
+        ax.plot(x, y, color=color, lw=lw, zorder=3, label=name)
+        if len(curves) > 1:
+            ax.scatter(x, y, s=14, color=color, zorder=4)
+    ax.set_xticks(x, labels, fontsize=8, family=MONO)
+    ax.tick_params(colors=MUTED, labelsize=8, length=0)
+    for lab in ax.get_yticklabels():
+        lab.set_family(MONO)
+    ax.set_xlim(-.4, len(labels) - .6)
+    ax.set_ylabel(ylabel, color=MUTED, fontsize=8, family=MONO)
+    if invert:
+        ax.invert_yaxis()
+    if legend and len(curves) > 1:
+        leg = ax.legend(frameon=False, fontsize=8, loc="upper left", ncols=len(curves))
+        for t, (_, _, color, _) in zip(leg.get_texts(), curves):   # the app's .mlchip
+            t.set_family(MONO)
+            t.set_color(color)
+    return ax
+
+
+def _curve_moves(eng, board, elo, ucis, oppo_elo):
+    """Resolve the `ucis` argument the curve plotters share: None = the model's
+    own move, one move or a list, capped at MLMAX. Returns [(uci, san)]."""
+    if ucis is None:
+        ucis = [eng.evaluate(board, elo, oppo_elo)["policy"][0][0]]
+    if isinstance(ucis, str):
+        ucis = [ucis]
+    info = [eng.move_info(board, u) for u in list(ucis)[:MLMAX]]
+    return [(i["uci"], i["san"]) for i in info]
+
+
+def _curve_header(fig, title, moves, elo, hint):
+    """The two-line header the curve figures share: title · primary move, then
+    a monospace hint."""
+    _runs(fig, .06, _inch_y(fig, .26), [
+        (f"{title} · ", dict(fontsize=11.5, color=TEXT, fontweight="600")),
+        (moves[0][1], dict(fontsize=11.5, color=ACCENT2, fontweight="600")),
+        (f"  {moves[0][0]} · elo {elo}", dict(fontsize=8.5, color=MUTED, family=MONO)),
+    ])
+    fig.text(.06, _inch_y(fig, .52), hint, fontsize=8, color=MUTED, family=MONO, va="top")
+    fig.text(.06, _inch_y(fig, .74), "aN / mN = block N's attention / MLP sub-layer",
+             fontsize=7.5, color=MUTED, family=MONO, va="top", alpha=.8)
+
+
+def plot_logit_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
+                     oppo_elo=None, figsize=(11, 4.4)):
+    """"Logit through depth" — `eng.logit_per_depth` as a figure.
+
+    The raw policy logit of one move (or up to MLMAX overlaid) at every readout
+    point. Unmasked, so the curves are on one scale and comparable across
+    positions — `plot_policy_curve` is the same picture after the softmax over
+    legal moves. `plot_move_microscope` is this chart plus the snap marker and
+    the second-rating overlay.
+
+    `ucis` is one move or a list, in any notation `eng.to_move` reads; it
+    defaults to the model's own move."""
+    moves = _curve_moves(eng, board, elo, ucis, oppo_elo)
+    curves = [(san, eng.logit_per_depth(board, elo, uci, oppo_elo), col, 2.2 if i == 0 else 1.5)
+              for i, ((uci, san), col) in enumerate(zip(moves, MLCOLORS))]
+    fig = _fig(figsize)
+    ax = fig.add_axes([.06, .14, .91, .64])
+    _depth_axes(ax, [_depth_label(p) for p in eng.depth_points()], curves,
+                ylabel="logit", legend=True)
+    _curve_header(fig, "Logit through depth", moves, elo,
+                  f"one forward pass · {len(curves)} move(s) · "
+                  "the logit lens read at every readout point")
+    return fig
+
+
+def plot_policy_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
+                      oppo_elo=None, figsize=(11, 4.4)):
+    """"Policy through depth" — `eng.policy_per_depth` as a figure: the move's
+    probability, softmaxed over the legal moves only, at every readout point.
+    Same chart as `plot_logit_curve` on the scale the app's policy list uses."""
+    moves = _curve_moves(eng, board, elo, ucis, oppo_elo)
+    curves = [(san, eng.policy_per_depth(board, elo, uci, oppo_elo), col, 2.2 if i == 0 else 1.5)
+              for i, ((uci, san), col) in enumerate(zip(moves, MLCOLORS))]
+    fig = _fig(figsize)
+    ax = fig.add_axes([.06, .14, .91, .64])
+    _depth_axes(ax, [_depth_label(p) for p in eng.depth_points()], curves,
+                ylabel="p(move)", legend=True)
+    ax.set_ylim(0, max(1e-3, max(v for _, ys, _, _ in curves for v in ys if v is not None)) * 1.15)
+    _curve_header(fig, "Policy through depth", moves, elo,
+                  "probability over the legal moves if the stream stopped there")
+    return fig
+
+
+def plot_rank_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
+                    oppo_elo=None, figsize=(11, 4.4)):
+    """"Rank through depth" — `eng.rank_per_depth` as a figure: where the move
+    sits among the legal moves at every readout point, 1 (the top move) at the
+    top of the axis. The step where a curve reaches the dashed rank-1 line and
+    stays there is the snap `plot_move_microscope` marks on the logit."""
+    moves = _curve_moves(eng, board, elo, ucis, oppo_elo)
+    curves = [(san, eng.rank_per_depth(board, elo, uci, oppo_elo), col, 2.2 if i == 0 else 1.5)
+              for i, ((uci, san), col) in enumerate(zip(moves, MLCOLORS))]
+    fig = _fig(figsize)
+    ax = fig.add_axes([.06, .14, .91, .64])
+    _depth_axes(ax, [_depth_label(p) for p in eng.depth_points()], curves,
+                ylabel="rank (1 = top move)", invert=True, legend=True)
+    worst = max((v for _, ys, _, _ in curves for v in ys if v is not None), default=1)
+    ax.set_ylim(max(2, worst) + .6, .4)                 # 1 pinned to the top edge
+    ticks = plt.MaxNLocator(5, integer=True).tick_values(1, max(2, worst))
+    ax.set_yticks([1] + [t for t in ticks if 1.5 < t <= worst])   # rank 1 always labelled
+    ax.axhline(1, color=QRING, ls=(0, (4, 3)), lw=1.1, zorder=2)
+    n_legal = board.legal_moves.count()
+    _curve_header(fig, "Rank through depth", moves, elo,
+                  f"rank among the {n_legal} legal moves · "
+                  "rank 1 = the lens would play it here")
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # move microscope
 # ---------------------------------------------------------------------------
 def plot_move_microscope(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
                          oppo_elo=None, elo_b: int | None = None,
-                         carrier: bool = True, figsize=(13, 5.0)):
-    """"Move microscope" — one move's logit through depth, and the heads that
-    carry it.
+                         figsize=(11, 4.4)):
+    """"Move microscope" — one move's logit through depth.
 
-    `ucis` is one move or up to four to overlay (the app's MLMAX); the first is
-    the primary, whose carrier-head grid is drawn. `elo_b` overlays the same move
-    at a second rating, which — as in the app — only applies to a single move.
-    The dashed line marks the snap: the first point of the final rank-1 run.
+    The depth curve alone; `plot_carrier_heads` draws the carrier grid
+    separately, since the curve costs one forward pass and the grid
+    ~num_blocks·(num_heads+1).
+
+    `ucis` is one move or up to four to overlay (the app's MLMAX); the first
+    is the primary. `elo_b` overlays the primary move at a second rating and,
+    as in the app, only applies to a single move. The dashed line marks the
+    snap: the first point of the final rank-1 run.
 
     Kwargs:
       oppo_elo    the opponent's rating; defaults to `elo` for both sides.
-      elo_b       overlay the primary move at a second rating (single move only).
-      carrier     draw the carrier-head grid on the right. False leaves only the
-                  depth curve — the whole right-hand half of the figure goes
-                  away, and with it the ~num_blocks·(num_heads+1) ablation
-                  passes it costs."""
+      elo_b       overlay the primary move at a second rating (single move only)."""
     if ucis is None:
         ucis = [eng.evaluate(board, elo, oppo_elo)["policy"][0][0]]
     if isinstance(ucis, str):
@@ -512,31 +664,15 @@ def plot_move_microscope(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
               if (single and elo_b is not None) else None)
 
     fig = _fig(figsize)
-    if carrier:
-        gs = GridSpec(1, 2, figure=fig, width_ratios=[1, .42], wspace=.13,
-                      left=.05, right=.97, top=.80, bottom=.22)   # room for .mlnote
-        ax = fig.add_subplot(gs[0, 0])
-        ax_g = fig.add_subplot(gs[0, 1])
-    else:
-        ax = fig.add_axes([.05, .13, .92, .67])
-        ax_g = None
+    ax = fig.add_axes([.06, .14, .91, .64])
 
     steps = series[0]["steps"]
     x = np.arange(len(steps))
-    _panel(ax, face=CHART_BG)
-    ax.grid(axis="y", color=LINE, lw=.9)
-    ax.set_axisbelow(True)
-
-    for m, color in zip(series, MLCOLORS):
-        y = [s["logit"] for s in m["steps"]]
-        ax.plot(x, y, color=color, lw=2.2 if m is series[0] else 1.5, zorder=3,
-                label=m["san"])
-        if not single:
-            ax.scatter(x, y, s=14, color=color, zorder=4)
-    if single:                                   # writer-coloured dots
-        for i, s in enumerate(steps):
-            ax.scatter([i], [s["logit"]], s=26, zorder=4,
-                       color=KIND_COL.get(s["kind"], "#fff"))
+    _depth_axes(ax, [_depth_label(s) for s in steps],
+                [(m["san"], [s["logit"] for s in m["steps"]], color,
+                  2.2 if m is series[0] else 1.5)
+                 for m, color in zip(series, MLCOLORS)],
+                ylabel="logit", legend=True)
     if data_b is not None:
         ax.plot(x, [s["logit"] for s in data_b["steps"]], color=ACCENT2, lw=1.4, zorder=2)
         ax.scatter(x, [s["logit"] for s in data_b["steps"]], s=10, color=ACCENT2,
@@ -553,40 +689,27 @@ def plot_move_microscope(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
                 snap -= 1
         if snap > 0:
             ax.axvline(snap, color=QRING, ls=(0, (4, 3)), lw=1.2, zorder=2)
-            ax.text(snap + .15, ax.get_ylim()[1], f"top from {steps[snap]['label']}",
+            ax.text(snap + .15, ax.get_ylim()[1],
+                    f"top from {_depth_label(steps[snap])}",
                     color=QRING, fontsize=8, family=MONO, va="top")
-
-    ax.set_xticks(x, [s["label"].replace(" mlp", "") if s["kind"] == "mlp" else
-                      (s["label"] if s["kind"] in ("emb", "enc") else "")
-                      for s in steps], fontsize=8, family=MONO)
-    ax.tick_params(colors=MUTED, labelsize=8, length=0)
-    for lab in ax.get_yticklabels():
-        lab.set_family(MONO)
-    ax.set_xlim(-.4, len(steps) - .6)
-    ax.set_ylabel("logit", color=MUTED, fontsize=8, family=MONO)
-    if not single:
-        leg = ax.legend(frameon=False, fontsize=8, loc="upper left", ncols=len(series))
-        for t, color in zip(leg.get_texts(), MLCOLORS):   # the app's .mlchip colours
-            t.set_family(MONO)
-            t.set_color(color)
 
     pm = series[0]
     y = _inch_y(fig, .26)
-    _runs(fig, .05, y, [
+    _runs(fig, .06, y, [
         ("Move microscope · ", dict(fontsize=11.5, color=TEXT, fontweight="600")),
         (pm["san"], dict(fontsize=11.5, color=ACCENT2, fontweight="600")),
         (f"  {pm['uci']} · elo {elo}" + (f" vs {elo_b}" if data_b is not None else ""),
          dict(fontsize=8.5, color=MUTED, family=MONO)),
     ])
-    fig.text(.05, _inch_y(fig, .52),
-             "click policy move(s) to see its logits through depth, and the heads "
-             "that carry it" if len(series) > 1 else
+    fig.text(.06, _inch_y(fig, .52),
+             "click policy move(s) to see each one's logits through depth"
+             if len(series) > 1 else
              f"logit at each of the {len(steps)} readout points · "
              f"rank 1 of {pm['n_legal']} legal moves = currently the top move",
              fontsize=8, color=MUTED, family=MONO, va="top")
-
-    if ax_g is not None:
-        _carrier_grid(ax_g, eng, board, elo, pm["uci"], oppo_elo)
+    fig.text(.06, _inch_y(fig, .74),
+             "aN / mN = block N's attention / MLP sub-layer",
+             fontsize=7.5, color=MUTED, family=MONO, va="top", alpha=.8)
     return fig
 
 
@@ -704,6 +827,112 @@ def plot_attention(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
     _legbar(fig, .03 + span * 2.08, .055, span * .82, plt.get_cmap("viridis"), "0", "max")
     fig.text(.03 + span * 2.08, .028, "query's 64 weights (one per key square) sum to 1",
              fontsize=7.5, color=MUTED, family=MONO, va="top")
+    return fig
+
+
+def plot_attention_layer(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
+                         layer: int = 0, query: str | None = None,
+                         target: str | None = None,
+                         shared_scale: bool = True, figsize=None):
+    """One whole layer's attention: 3 components x num_heads boards (24 on the
+    5M) for a single query square — `plot_attention` widened from one head to
+    all of them, so heads are compared side by side instead of one at a time.
+
+    Rows are semantic (QKᵀ), geometric (GAB), and the head's final attention;
+    columns are heads. Real board orientation, like `plot_attention`.
+
+    `shared_scale` is what makes the grid comparable: each row is normalized by
+    one maximum across every head in it, so a bright square means that head
+    really is attending harder than its neighbours. Per-panel scaling would
+    make a flat head look as decisive as a sharp one; pass False for it when
+    you want each head's *shape* legible regardless of magnitude.
+
+    One head is ringed and named in the subtitle: with `target`, the head
+    attending hardest along that query->target pair; without it, the head with
+    the sharpest peak anywhere on the query's row. Those are often different
+    heads, so name the `target` whenever the question is about a specific pair
+    (a move's from- and to-square, say). The percentage it prints reads against
+    the uniform 1/64 ≈ 1.6% of a head that learned nothing.
+
+    Kwargs:
+      oppo_elo      the opponent's rating; defaults to `elo` for both sides.
+      layer         which block to open up.
+      query         square name ('e4') whose attention row is drawn; defaults to
+                    the from-square of the model's move.
+      target        square name to rank heads by, and to ring on every board.
+      shared_scale  see above.
+      figsize       defaults to a size that keeps the boards square."""
+    H = eng.cfg.num_heads
+    if query is None:
+        best = eng.evaluate(board, elo, oppo_elo)["policy"][0][0]
+        q = _canon(chess.Move.from_uci(best).from_square, board.turn)
+    else:
+        q = _canon(chess.parse_square(query), board.turn)
+    t = _canon(chess.parse_square(target), board.turn) if target else None
+
+    # eng.attention() computes all heads and returns one, so calling it H times
+    # redoes cheap work over a cached activation — worth it to stay on the
+    # public API.
+    rows = ("qk", "gab", "attn")
+    data = {k: np.empty((H, 64)) for k in rows}
+    for h in range(H):
+        att = eng.attention(board, elo, oppo_elo, layer=layer, head=h)
+        for k in rows:
+            data[k][h] = np.array(att[k])[q]
+
+    peak = int(data["attn"][:, t].argmax() if t is not None
+               else data["attn"].max(axis=1).argmax())
+    figsize = figsize or (1.28 * H + .5, 4.9)
+    fig = _fig(figsize)
+    gs = GridSpec(3, H, figure=fig, wspace=.06, hspace=.20,
+                  left=.045, right=.985, top=.775, bottom=.125)
+    viridis = plt.get_cmap("viridis")
+    row_titles = {"qk": "semantic (QKᵀ)", "gab": "geometric (GAB)",
+                  "attn": "attention"}
+
+    for r, k in enumerate(rows):
+        row_max = float(np.abs(data[k]).max()) or 1
+        for h in range(H):
+            ax = fig.add_subplot(gs[r, h])
+            vals = data[k][h]
+            mx = row_max if shared_scale else (float(np.abs(vals).max()) or 1)
+            draw_board(ax, board, heat=vals / mx,
+                       cmap=viridis if k == "attn" else _divmap,
+                       pieces=False, query=q, coords=False)
+            if t is not None:                # the pair's key half, in the HL yellow
+                tx, ty = _real_xy(t, board.turn)
+                ax.add_patch(plt.Rectangle((tx - .5, ty - .5), 1, 1, lw=1.8,
+                                           ec=HL, fc="none", zorder=6))
+            if r == 0:
+                ax.set_title(f"h{h}", fontsize=8, family=MONO, pad=4,
+                             color=ACCENT2 if h == peak else MUTED,
+                             fontweight="600" if h == peak else "normal")
+            if h == peak:                    # the layer's sharpest head, ringed
+                ax.add_patch(plt.Rectangle((-.5, -.5), 8, 8, fill=False, lw=1.6,
+                                           ec=ACCENT2, zorder=9, clip_on=False))
+        # row label down the left edge, aligned to that row of boards
+        fig.text(.038, (gs[r, 0].get_position(fig).y0
+                        + gs[r, 0].get_position(fig).y1) / 2,
+                 row_titles[k], fontsize=8, color=MUTED, family=MONO,
+                 fontweight="600", rotation=90, ha="right", va="center")
+
+    fig.text(.045, _inch_y(fig, .26), f"Layer {layer} · every head's attention",
+             fontsize=11.5, color=TEXT, fontweight="600", va="top")
+    if t is None:
+        pick = f"sharpest head h{peak}"
+    else:
+        pct = 100 * float(data["attn"][peak, t])
+        pick = (f"{_canon_name(q, board.turn)}→{_canon_name(t, board.turn)}: "
+                f"h{peak} at {pct:.1f}% ({pct / (100 / 64):.1f}× uniform)")
+    fig.text(.045, _inch_y(fig, .52),
+             f"query {_canon_name(q, board.turn)} · elo {elo} · {3 * H} boards "
+             f"({H} heads × semantic / geometric / final) · "
+             f"{'one scale per row' if shared_scale else 'per-panel scale'} · "
+             f"{pick}",
+             fontsize=8.5, color=MUTED, family=MONO, va="top")
+    span = (.985 - .045) / 3
+    _legbar(fig, .045 + span * .62, .045, span * .78, DIVMAP, "−max", "+max")
+    _legbar(fig, .045 + span * 2.10, .045, span * .78, plt.get_cmap("viridis"), "0", "max")
     return fig
 
 
@@ -869,7 +1098,7 @@ def plot_gab_templates(eng, *, per_row: int = 16, figsize=None):
 # ---------------------------------------------------------------------------
 def plot_skill_diff(eng, board: chess.Board, elo_a: int = 1500, elo_b: int = 1100, *,
                     per_row: int = 9, figsize=None):
-    """Skill diff on INTERNALS: per-square ‖x_A − x_B‖ at every readout point,
+    """Skill diff on internals: per-square ‖x_A − x_B‖ at every readout point,
     with each rating's logit-lens move — where on the board, and at what depth,
     the two skill levels diverge. Canonical side-to-move frame.
 
@@ -893,7 +1122,7 @@ def plot_skill_diff(eng, board: chess.Board, elo_a: int = 1500, elo_b: int = 110
                    pieces=False, canonical=True, coords=False)
         col = KIND_COL.get(s["kind"], MUTED)
         ax.plot([-.5, 7.5], [7.62, 7.62], color=col, lw=3, clip_on=False, zorder=8)
-        ax.text(3.5, -1.05, s["label"], ha="center", va="top", fontsize=8,
+        ax.text(3.5, -1.05, _depth_label(s), ha="center", va="top", fontsize=8,
                 color=col, family=MONO)
         agree = s["same"]
         ax.text(3.5, -2.15,
