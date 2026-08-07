@@ -1,6 +1,9 @@
 activations/
+NOTES.md
 __pycache__/
 *.pt
 .venv/
 .DS_Store
 tests.ipynb
+piece_art.py
+pieces.py
