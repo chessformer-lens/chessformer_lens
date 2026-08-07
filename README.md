@@ -1,29 +1,10 @@
-<!-- ===========================================================================
-     WRITING SCAFFOLD.
-     Notes to self live in HTML comments, so they do NOT render on GitHub —
-     safe to push mid-draft. Delete each note once its section is written.
-     Sections with real content below are already accurate; leave them alone.
-     Screenshot staging + verification steps: see the plan file.
-     =========================================================================== -->
+# Chessformer interpretability
 
-# Chessformer interp
+This toolkit+visualizer is designed for mech interp researchers working with chess models that use transformers tokenized by square.
 
-<!-- TITLE + PITCH — TO WRITE (one line under the title)
-     · It's a workbench / toolkit, not an activity. The app is the headline
-       feature, not the whole product.
-     · The old title ("Chessformer (Maia 3) mechanistic interpretability app.")
-       said "app" and pinned to Maia-3 — both narrower than what this is.
-     · Keep it to one sentence. Hero image goes immediately after, before prose.
--->
+![Hero Image](Screenshots/Screenshot1.png)
 
-<img width="1440" height="900" alt="Screenshot 2026-07-09 at 6 09 56 PM" src="https://github.com/user-attachments/assets/42218edf-d8b2-4d89-81d3-c750837d3df3" />
-
-<!-- HERO IMAGE = SHOT 1 — REPLACE THE IMAGE ABOVE
-     Whole window, all three columns, no drawer open. Play ~8 plies into an open
-     position so the policy list and the Moves card have content.
-     The tag above is the stale Jul-09 hosted shot. The 5 files in Screenshots/
-     are also stale (five-board attention panel; today ships three).
--->
+Chess tranformers are good interp subjects because **[copy from paper]**
 
 <!-- WHAT THIS IS — TO WRITE. Three short paragraphs:
      1. WHY chess transformers are good interp subjects. They read the board as
@@ -42,160 +23,112 @@
 
 ## What it can do
 
-<!-- TO WRITE — one bullet per method. Facts for each:
+- **Logit Lens Across Depth**: decode the running residual stream at all readout points {embed, attention_i, mlp_j,unembed}, and watch a move form layer by layer
+- **Per Head Causal Ablation**: remove a head's exact residual write, reconstructed from the layer's own weights. Uses the models' placed hooks on attention layers. Also, sweep every head to get a carrier/supressor heatmap.
+- **Dissect positional encoding GAB heads**: A small generator network reads
+the board and emits, per head, linear combinations of a bank of 64×64 square-pair templates shared across every layer and head for its geometric attention head called GAB (a head does not
+have a fixed geometry). Expose the static template bank each layer shares, the linear combination of these templates each head learns per position, and any single (to, from) square pair decomposed into its top templates.
+- **Activation Patching**: run_with_hooks takes arbitrary intervention functions on any readout point, allowing for patching and steering.
+- **Skill Axis**: Maia-3 conditions on a rating, so you can run one position at two ratings and compare the internals. This is a genuinely unusual and inspiring capaility; almost no other top model has a skill axis that allows for meaningful mech interp with skill acquisition. Highly recommended.
 
-     · LOGIT LENS ACROSS DEPTH — decode the running residual stream at all
-       2·num_blocks + 2 readout points (18 on every current size) and watch a
-       move form sub-layer by sub-layer.
 
-     · PER-HEAD CAUSAL ABLATION — removes a head's *exact* residual write,
-       reconstructed from the block's own weights. Worth saying why that
-       matters: the hooked attn_NN activation is post-out_proj, where heads are
-       already mixed across channels, so slicing channels does NOT isolate a
-       head. Sweep every head -> the carrier heatmap.
 
-     · GAB / "smolgen" — Maia-3 GENERATES its positional bias instead of
-       storing it. Three pieces to expose: the static template bank every layer
-       and head shares, the per-head mixing coefficients generated live for the
-       position, and any single square pair decomposed into its top templates.
-       gab_bias == coeffs @ templates holds to 1e-4 — which is what lets the
-       browser rebuild it client-side.
+## Quickstart in colab:
+<-------------------------------------------------------------------->
+```python
+!pip install -q git+https://github.com/CSSLab/maia3
+!git clone -q https://github.com/David-31415/chessformer_interp.git
+%cd chessformer_interp
 
-     · ACTIVATION PATCHING — run_with_hooks takes arbitrary intervention
-       functions on any readout point, so patching and steering work, not just
-       zero-ablation.
+#Interact with the attention widget
+import chess
+from engine import MaiaEngine
+import interp_widget as iw
 
-     · THE SKILL AXIS — Maia-3 conditions on a rating, so you can run one
-       position at two ratings and diff the INTERNALS, per square and per depth.
-       The genuinely unusual capability here; almost no other model has a skill
-       axis to do interp across. Give it its own sentence.
+eng = MaiaEngine()                      # or "maia3-23m"; downloads on first use
+board = "...fill in FEN for position..."
+board = chess.Board(board)                   # starting position, or pass a FEN
 
-     · CAVEAT, stated once, here — intermediate lens readouts skip the head's
-       final LayerNorm, so compare readout points against each other rather
-       than against the real policy. (Matches engine.logit_lens's docstring.)
--->
+iw.attention_widget(eng, board, 1500,layer=4,head=3) # click between different layers and heads in the widget
+```
+<-------------------------------------------------------------------->
+
+
 
 ## The app
 
-<!-- THE LARGEST SECTION. Three sub-parts below. Every quoted string is the
-     app's ACTUAL label, verified against ui.py — use them verbatim rather than
-     paraphrasing, so the README and the app share one vocabulary. -->
+**Play or Set up a Position**
+![alt text](Screenshots/Screenshot7.png)
+Click to move your pieces. Select an Elo for the engine (recall that it mimics *human* play at that strength)
+and use `New game`, `← Back`, and a dropdown:`You play White` / `You play Black` / `Set up position`.
+It is also possible to `paste a FEN to load` a position with the `Load` button. 
 
-<!-- PLAY OR SET UP A POSITION — TO WRITE
-     · Click-to-move. NO drag-and-drop (pieces are explicitly draggable=false).
-     · Promotion picker modal: `Promote to`.
-     · `New game`, `← Back`, and a dropdown:
-       `You play White` / `You play Black` / `Set up position`.
-     · FEN box, placeholder `paste a FEN to load`, plus a `Load` button. The box
-       is also an OUTPUT — it rewrites itself after every move.
-     · In setup mode both sides are yours; clicks move pieces ignoring legality,
-       and clicking the same square twice deletes the piece.
-     · Header line reads `Maia3 5M · cpu · 8 blocks × 8 heads × 256d`.
-     · THE ONE GAP TO BE UPFRONT ABOUT: no piece palette, so FEN is the only
-       way to ADD material.
-     · Also: gold last-move arrow, legal-move dots, captures drawn as rings,
-       `Moves` card with SAN history.
--->
+In setup mode both sides are yours; clicks move pieces ignoring legality, and clicking the same square twice deletes the piece. 
+Select a color to continue as it from that position.
 
-<!-- READ THE POSITION — TO WRITE
-     · `Win / Draw / Loss · side to move` — stacked bar.
-     · `Policy over N legal moves` — scrollable ranked list, caps at 40 rows
-       then `+N more legal moves`.
-     · `Maia rating (self_elo)` slider: 600-2800, step 25, default 1500.
-       Dragging re-evaluates the same position (180 ms debounce).
-     · `compare with a second rating` checkbox reveals a `second rating` slider
-       (default 1100). What responds: policy rows become paired blue/green bars
-       with a signed Δ; the WDL bar splits into one labelled row per rating; the
-       move microscope overlays a second curve ONLY when exactly one move is
-       selected. The attention / GAB / residual panels always use slider A.
--->
+The last move is indicated by a gold arrow, legal moves for a selected piece are indicated by dots, captures are drawn as rings. The games
+moves are recorded in SAN notation.
 
-<!-- TAKE THE MODEL APART  [= SHOT 2] — TO WRITE
-     · `Live attention · this position`, with `Layer` and `Head` chip rows and
-       the caption `Click a square to set the query.`
-     · The three boards, exact labels:
-         `semantic attention (QKᵀ)`
-         `geometric attention (GAB)`
-         `final head attention matrix (scaled softmax(QKᵀ + GAB))`
-     · BEST SINGLE DETAIL IN THE APP: hover any heat cell and the GAB drawer
-       decomposes that square pair live —
-         GAB d4→e5 = +1.84 = +0.91·#12 +0.44·#3 … +0.12 rest
-       — with every #N clickable to open that template.
-     · `Ablate this head` (its note: `removes its exact residual write`) gives
-       the top 8 moves by |Δp| as `Nf3  12.4 → 3.1%  -9.3`, plus
-       `W/D/L 41/38/21 → 33/44/23`. Self-expires when position, rating, layer
-       or head changes.
--->
+Header line reads `Maia3 5M · cpu · 8 blocks × 8 heads × 256d`. **[THIS IS OUTDATED]**
 
-<!-- THE THREE DRAWERS  [= SHOT 3, SHOT 4] — TO WRITE
-     One open at a time, each peeking at the bottom with a `▲ pull up` grip,
-     `Escape` closes.
+**Read the Position**
 
-     · `Residual stream across depth · this position` — a filmstrip of mini
-       boards, one per readout point, top border colour-coded by writer kind
-       (legend: `emb (input)` / `attn add` / `MLP add` / `enc (final norm)`),
-       heat = per-square ‖Δ‖, logit-lens top move drawn on top. Opened by the
-       `Watch residual stream` button.
+At the top in the center there is a `Win / Draw / Loss · side to move` stacked bar. 
+Under it is the `Maia rating (self_elo)` slider: 600-2800, step 25, default 1500; Dragging reevaluates the same position. 
+Under that it is the scrollable ranked list: `Policy over N legal moves`. 
 
-     · `Move microscope` — click up to 4 policy moves to overlay their depth
-       curves (4 fixed colours); dashed red "snap" marker at the start of the
-       final rank-1 run; per-dot hover
-       `b3 mlp · logit 4.21 · p 38.2% · rank 1/31`.
+There is a `compare with a second rating` checkbox which reveals a `second rating` slider
+(default 1100). Setting it makes the policy rows become paired blue/green bars showing the compared policy and evaluation. ![alt text](Screenshots/Screenshot7.png)This second rating does not affect the attention or GAB or residual panel app features.
 
-     · `carrier heads · Δlogit = ablated − clean` — the blocks×heads grid beside
-       the curve. Hover gives `b3·h5  Δ -1.42 — supports Nf3`; the strongest
-       cell is ringed red. CLICK A CELL TO JUMP THE ATTENTION PANEL TO THAT
-       HEAD — be precise, clicking does not ablate. The final block is dimmed
-       and striped, `excluded from carrier attribution`, because it writes
-       straight to the logits. The grid re-fits to the model's head count.
+**Take the Model Apart**
+Get the `Live attention · this position`, with `Layer` and `Head` chip rows.
+Click a square to set the query for the three boards, labeled:
+-`semantic attention (QKᵀ)`
+-`geometric attention (GAB)`
+-`final head attention matrix (scaled softmax(QKᵀ + GAB))`
+`Ablate this head` (its note: `removes its exact residual write`) gives the top 8 moves by |Δp|.
+![alt text](Screenshots/Screenshot2.png)
+Unique to the app and Maia-3, hover over any attention square and the GAB drawer decomposes that square pair live, with every head clickable to open that template.
 
-     · `How L0·H0's GAB is generated` —
-       `generated mixing coefficients · template #0–63 · click to inspect`,
-       then `template vocabulary · the 64 static stencils (row = query sq,
-       col = key sq)` over a gallery of canvas tiles.
--->
+ 
+**The Three Drawers**
+![alt text](Screenshots/Screenshot2.png)
+![alt text](Screenshots/Screenshot4.png)
+![alt text](Screenshots/Screenshot5.png)
+One open at a time, each peeking at the bottom with a `▲ pull up` grip, `Escape` closes.
 
-<!-- TWO THINGS TO DISCLOSE + THE POLISH NOTES — TO WRITE
+· `Residual stream across depth · this position` — creates a filmstrip of mini
+  boards, one per readout point, top border color coded by writer kind, **[SAY MORE HERE]**
+  heat = per-square ‖Δ‖, logit-lens top move in miniature display on top. Opened by the
+  `Watch residual stream` button.
 
-     · SWEEP COST: num_blocks·(num_heads+1) forward passes — 72 on 5M, 264 on
-       79M — and it blocks the microscope while it runs.
+· `Move microscope (and Carrier Heads)` — click up to 4 policy moves to overlay their depth curves (essentially logit lens narrowed to one policy); marker shows when a move sustains rank-1; per-dot hover
+ex: `b3 mlp · logit 4.21 · p 38.2% · rank 1/31`.
+`carrier heads` runs (layers x heads) forward passes with different ablated heads and record: `Δlogit = ablated − clean`.Hover for exact values. The largest Δlogit head is ringed red. The final layer is dimmed and striped, `excluded from carrier attribution`, because it writes straight to the logits and muddles meaningful results from earlier layers. 
 
-     · UNDISCLOSED TODAY: every position you analyze is dumped to activations/
-       as ply016_white_elo1500.pt — a torch.save of every hook point's
-       (64, dim) tensor plus {fen, self_elo, side_to_move, ply}. Reads as a
-       feature if the README says so, a surprise if not. Worth adding that the
-       filename keys on ply+side+elo only, so re-analysis silently overwrites,
-       and nothing is pruned (146 files in the repo now).
+· `How L[i]H[j] GAB is generated` — see the network's generated linear combination of each template #0–63. `click to inspect`, and under
+see `template vocabulary · the 64 static stencils (row = query sq, col = key sq)` as a gallery.
 
-     · POLISH, a line each: the model loads on a background thread so the window
-       opens instantly (staged `Loading Maia model…` -> `Connecting to Python
-       bridge…` -> `Loading Maia3 5M…`); the layout reads the loaded model's
-       counts, so one UI drives 6/8/16/32-head models; attention board
-       coordinates re-label per side-to-move so heatmaps stay aligned when Black
-       is to move; native window, dark palette matched end to end.
 
-     · DON'T CLAIM: no export button, no PGN, no session save, no URL/permalink
-       (it's a native window, no address bar), no temperature control, no
-       in-app model switcher (launch-time flag), no redo.
--->
 
-## Figures for a paper or a batch run
+## Addional Notes
+The model loads on a background thread so the window opens instantly; the layout reads the loaded model's counts so all sizes of Maia-3 with different head counts work the same. As of now, it opens in a native window and there is no export button or permalink for a session.
 
+## Install as library
+
+`engine.py` imports `maia3`, the Maia-3 model code, which is not on PyPI — it
+installs from GitHub and pulls in torch, python-chess, numpy and
+huggingface-hub. The library quickstarts below need the repo on your path *and*
+that package installed; neither happens by uploading `engine.py` on its own.
+
+Locally, `pip install -r requirements.txt` from a clone covers the same ground
+(plus `pywebview` and `matplotlib`, which only the app and the figure layer
+need). See [Run](#run) for the app itself.
+
+interp_plot is the library's read-once views as static figures
 <!-- TO WRITE: a sentence or two framing interp_plot as the app's read-once
      views as static figures. The code block below is accurate — keep as-is. -->
 
-```python
-import chess
-from engine import MaiaEngine
-import interp_plot as ip
-
-eng = MaiaEngine()
-board = chess.Board("<your fen>")
-
-ip.plot_position(eng, board, 1500)            # board · policy · win/draw/loss
-ip.plot_residual_film(eng, board, 1500)       # residual stream across depth
-ip.plot_move_microscope(eng, board, 1500)     # one move's depth curve + carrier heads
-```
 
 ## The two live panels in a notebook
 
@@ -247,6 +180,7 @@ CUDA to speed them up. Model weights: <https://huggingface.co/UofTCSSLab>
 
 ## Use the engine directly
 
+
 <!-- TO WRITE: a sentence or two. Point at engine.py's module docstring as the
      real reference rather than duplicating it — it's accurate now. Two facts
      worth stating: no UI dependency, and read paths return CPU tensors in the
@@ -257,24 +191,48 @@ import chess
 from engine import MaiaEngine
 
 eng = MaiaEngine()                      # or "maia3-23m"; downloads on first use
-board = chess.Board("<your fen>")
+board = chess.Board()                   # starting position, or pass a FEN
 
 out, cache = eng.run_with_cache(board, self_elo=1500)
 eng.logit_lens(cache["postattn_04"], board)     # top legal move at that point
 eng.run_with_hooks(board, 1500, fwd_hooks=[("attn_05", lambda a: a * 0)])
 ```
 
+See the residual stream film and move microscope for the famous Paul Morphy "Opera Game"
+```python
+import chess
+from engine import MaiaEngine
+import interp_plot as ip
+
+#opera game FEN right at legendary queen sacrifice 
+fen = "4kb1r/p2n1ppp/4q3/4p1B1/4P3/1Q6/PPP2PPP/2KR4 w k - 0 16" 
+import matplotlib.pyplot as plt
+
+eng = MaiaEngine('23m')
+board = chess.Board(fen)                   
+move = eng.to_move(board,'Qb8+')
+ip.plot_position(eng, board,2600)
+plt.show()
+print("\n\n")
+ip.plot_residual_film(eng, board, 2600) #exceptional Elo rating to match Morphy's skill
+plt.show()
+print("\n\n")
+ip.plot_move_microscope(eng, board, 2600, move)     # one move's depth curve + carrier heads
+plt.show()
+plt.close()
+```
+
 ## Code layout
 
-- `engine.py` — `MaiaEngine`: the interp core (model + hooks + logit lens + head ablation). No UI deps; imports cleanly in a notebook.
+- `engine.py` — `MaiaEngine`: the interp core (model + hooks + logit lens + head ablation + list of values through depth). No UI deps; imports cleanly in a notebook.
 - `interp_plot.py` — the app's read-once views as matplotlib figures, same layouts and wording: `plot_position`, `plot_residual_film`, `plot_move_microscope`, `plot_carrier_heads`, `plot_attention`, `plot_gab_mixture`, `plot_gab_templates`, `plot_skill_diff`. Engine + matplotlib only.
+- `interp_widget.py` — the app's two interactive panels as a self-contained notebook cell or standalone HTML page: `attention_widget` (Live attention) and `gab_widget` (the GAB generator), plus their `*_html` twins; `ui.py`'s CSS, colormaps and interaction, reading injected data instead of the pywebview API. These are the interactive versions of `interp_plot`'s static `plot_attention` / `plot_gab_mixture`. Take the figure for one frame, the widget to explore.
 - `piece_art.py` — draws `pieces.py`'s cburnett pieces in matplotlib from PNGs rasterised offline into `piece_art/`, so figures use the app's actual artwork with no native dependency at runtime (`piece_art/regenerate.py` rebuilds them, and needs cairosvg).
-- `interp_widget.py` — the app's two interactive panels as a self-contained notebook cell or standalone HTML page: `attention_widget` (Live attention) and `gab_widget` (the GAB generator), plus their `*_html` twins; `ui.py`'s CSS, colormaps and interaction, reading injected data instead of the pywebview API. These are the sweep-a-space versions of `interp_plot`'s static `plot_attention` / `plot_gab_mixture` — take the figure for one frame, the widget to explore.
-- `bridge.py` — game state + the JSON API the UI calls.
-- `ui.py` — the whole interface (HTML/CSS/JS) as one string.
+- `bridge.py` — the game state + the JSON API the UI calls.
+- `ui.py` — the whole interface (HTML/CSS/JS) as one string including guide to change template.
 - `pieces.py` — SVG piece set as data URIs.
 - `app.py` — launcher (native window via pywebview).
-- `requirements.txt` — everything the app needs (matplotlib is only for the figure/notebook layer).
+- `requirements.txt` Everything the toolkit needs
 
 ## Built on
 

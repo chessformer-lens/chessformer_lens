@@ -219,6 +219,15 @@ class MaiaApi:
         self.human_both = True
         return self._base()
 
+    def resume(self, human_color="white"):
+        """Leave set-up / analyze mode and play on from the CURRENT position:
+        assign the side you play without touching the board. `new_game` is the
+        one that resets, so switching the dropdown back to White/Black keeps
+        the position you just set up."""
+        self.human_both = False
+        self.human = chess.BLACK if human_color == "black" else chess.WHITE
+        return self._base()
+
     def set_fen(self, fen):
         """Load an arbitrary position from a FEN (enters analyze mode)."""
         try:

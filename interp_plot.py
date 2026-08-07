@@ -541,14 +541,28 @@ def _depth_axes(ax, labels, curves, *, ylabel, invert=False, legend=False):
     return ax
 
 
-def _curve_moves(eng, board, elo, ucis, oppo_elo):
-    """Resolve the `ucis` argument the curve plotters share: None = the model's
-    own move, one move or a list, capped at MLMAX. Returns [(uci, san)]."""
+def _move_list(eng, board, elo, ucis, oppo_elo):
+    """Normalize the `ucis` argument the move plotters share into a list of at
+    most MLMAX moves, in any notation `MaiaEngine.to_move` reads.
+
+    None = the model's own top move. A single move may be passed bare: a uci or
+    SAN string, a chess.Move, a policy index, or a canonical (from, to) pair —
+    the last stays one move rather than two indices, matching `to_move`, which
+    also reads a 2-sequence of ints as a square pair."""
     if ucis is None:
-        ucis = [eng.evaluate(board, elo, oppo_elo)["policy"][0][0]]
-    if isinstance(ucis, str):
-        ucis = [ucis]
-    info = [eng.move_info(board, u) for u in list(ucis)[:MLMAX]]
+        return [eng.evaluate(board, elo, oppo_elo)["policy"][0][0]]
+    if isinstance(ucis, (str, chess.Move, int)):
+        return [ucis]
+    seq = list(ucis)
+    if len(seq) == 2 and all(isinstance(s, int) for s in seq):
+        return [tuple(seq)]                      # a (from, to) square pair
+    return seq[:MLMAX]
+
+
+def _curve_moves(eng, board, elo, ucis, oppo_elo):
+    """Resolve `ucis` for the curve plotters. Returns [(uci, san)]."""
+    info = [eng.move_info(board, u)
+            for u in _move_list(eng, board, elo, ucis, oppo_elo)]
     return [(i["uci"], i["san"]) for i in info]
 
 
@@ -653,11 +667,7 @@ def plot_move_microscope(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
     Kwargs:
       oppo_elo    the opponent's rating; defaults to `elo` for both sides.
       elo_b       overlay the primary move at a second rating (single move only)."""
-    if ucis is None:
-        ucis = [eng.evaluate(board, elo, oppo_elo)["policy"][0][0]]
-    if isinstance(ucis, str):
-        ucis = [ucis]
-    ucis = list(ucis)[:MLMAX]
+    ucis = _move_list(eng, board, elo, ucis, oppo_elo)
     series = [eng.move_logit_lens(board, elo, u, oppo_elo) for u in ucis]
     single = len(series) == 1
     data_b = (eng.move_logit_lens(board, elo_b, ucis[0], oppo_elo)

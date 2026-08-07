@@ -13,15 +13,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chessformer (Maia 3) Interpretability</title>
 <style>
-  /* Neutrals lifted one step from pitch black (2026-07), to match the paper
-     figures (figstyle.py / interp_plot.py) — see those for why. Duplicated in
-     interp_widget.py's :root and both app.py's window background_color; keep
-     all in sync. To revert this file to pitch black:
-       --bg:#0e1014; --panel:#161a21; --panel2:#1b2029; --line:#262c37;
-       --chart-bg:#0f131a; */
+  /* Pitch-black neutrals — the app's original scheme, restored 2026-08 after a
+     brief lighter run (see interp_plot.py, which still carries the lifted set
+     for the paper figures). Mirrored in app.py's window background_color; the
+     notebook widgets (interp_widget.py) intentionally stay lighter.
+     The lifted set was:
+       --bg:#181c24; --panel:#20252f; --panel2:#262c38; --line:#333b4a;
+       --chart-bg:#1a1f29; */
   :root{
-    --bg:#181c24; --panel:#20252f; --panel2:#262c38; --line:#333b4a;
-    --chart-bg:#1a1f29;   /* insets: policy bars, fen box, gab readout, mlsvg */
+    --bg:#0e1014; --panel:#161a21; --panel2:#1b2029; --line:#262c37;
+    --chart-bg:#0f131a;   /* insets: policy bars, fen box, gab readout, mlsvg */
     --text:#e7eaf0; --muted:#8b93a3; --accent:#6ea8fe; --accent2:#7bd88f;
     --sq-light:#c9d1dc; --sq-dark:#6b7686;
     --hl:rgba(245,213,107,.28); --sel:#7bd88f; --win:#5fb878; --draw:#6b7480; --loss:#d9606a;
@@ -533,7 +534,13 @@ function setModelInfo(){
 /* ---- controls ---- */
 $('newbtn').onclick = ()=>{ if(!busy) newGame(); };
 $('undobtn').onclick = ()=>{ if(!busy) doUndo(); };
-$('color').addEventListener('change', ()=>{ if(busy) return; setupMode=($('color').value==='setup'); if(setupMode) enterSetup(); else newGame(); });
+$('color').addEventListener('change', ()=>{
+  if(busy) return;
+  const v = $('color').value;
+  if(v==='setup') enterSetup();
+  else if(setupMode) resumeFrom(v);   // leaving set-up: play on from THIS position
+  else newGame();                     // white<->black mid-game: start over
+});
 $('fenload').onclick = ()=>{ if(!busy) doSetFen($('fenin').value.trim()); };
 async function enterSetup(){
   if(!API || busy) return;
@@ -541,6 +548,15 @@ async function enterSetup(){
   sel=null;
   cur = await API.analyze();
   renderBoard(); renderMoves();
+  await advance();
+}
+async function resumeFrom(hc){
+  if(!API || busy) return;
+  sel=null; busy=true; setupMode=false;
+  cur = await API.resume(hc);
+  orient = (hc==='black') ? 'black' : 'white';
+  renderBoard(); renderMoves(); relabelAttCoords();
+  busy=false;
   await advance();
 }
 async function doSetFen(fen){
@@ -1356,7 +1372,7 @@ function drawMlChart(){
   const tip=(s,n,pre)=>`${pre}${s.label} · logit ${s.logit.toFixed(2)} · p ${s.prob!=null?(s.prob*100).toFixed(1)+'%':'—'} · rank ${s.rank!=null?s.rank+'/'+n:'—'}`;
   let h='';
   for(const v of [lo+pad, (lo+hi)/2, hi-pad]){
-    h+=`<line x1="${ML}" y1="${Y(v)}" x2="${W-MR}" y2="${Y(v)}" stroke="#333b4a"/>`+
+    h+=`<line x1="${ML}" y1="${Y(v)}" x2="${W-MR}" y2="${Y(v)}" stroke="#262c37"/>`+
        `<text x="${ML-4}" y="${Y(v)+3}" fill="#8b93a3" font-size="9" text-anchor="end" font-family="monospace">${v.toFixed(1)}</text>`;
   }
   // the snap (first point of the final rank-1 run) only makes sense for a single move

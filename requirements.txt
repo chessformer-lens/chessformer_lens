@@ -7,4 +7,4 @@ ipython
 python-chess
 huggingface-hub
 pywebview
-matplotlib          # interp_plot.py / piece_art.py only; the app itself doesn't need it
+matplotlib

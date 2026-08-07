@@ -74,7 +74,7 @@ def main():
         html=INDEX_HTML,
         js_api=api,
         width=1400, height=840, min_size=(1360, 780),
-        background_color="#181c24",   # matches ui.py's --bg; pitch black was "#0e1014"
+        background_color="#0e1014",   # matches ui.py's --bg
     )
     webview.start()
 
