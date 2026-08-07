@@ -1,9 +1,27 @@
-activations/
-NOTES.md
+# Python
 __pycache__/
-*.pt
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
 .venv/
+venv/
+env/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# OS / editor
 .DS_Store
+.vscode/
+.idea/
+
+# Project working data
+activations/
+*.pt
+NOTES.md
 tests.ipynb
-piece_art.py
-pieces.py

@@ -16,10 +16,11 @@ from pathlib import Path
 
 import chess
 
-from engine import MaiaEngine
+from .engine import MaiaEngine
 
-HERE = Path(__file__).resolve().parent
-ACT_DIR = HERE / "activations"
+# Cached activations are working data, not package content: they land under the
+# directory the app is launched from, so an installed copy is never written to.
+ACT_DIR = Path.cwd() / "activations"
 
 
 def side_name(turn):

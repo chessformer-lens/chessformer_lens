@@ -8,7 +8,7 @@ squares of attention; a bias built from a bank of static templates). So they
 keep the app's own interaction, CSS and wording, rewired from "fetch from
 window.pywebview.api" to "read the injected data":
 
-    from interp_widget import attention_widget, gab_widget
+    from chessformer_lens.interp_widget import attention_widget, gab_widget
 
     attention_widget(eng, board, elo=1500, layer=5, head=3)   # Live attention
     gab_widget(eng, board, elo=1500, layer=5, head=3)         # the GAB generator
@@ -49,7 +49,7 @@ import json
 import chess
 import numpy as np
 
-from pieces import PIECE_URI
+from .pieces import PIECE_URI
 
 
 def _canon(square: int, turn: bool) -> int:

@@ -1478,5 +1478,5 @@ window.addEventListener('resize', ()=>{
 
 # Inject the embedded SVG piece set (the only Python in this module).
 import json as _json
-from pieces import PIECE_URI as _PIECE_URI
+from .pieces import PIECE_URI as _PIECE_URI
 INDEX_HTML = INDEX_HTML.replace("__PIECE_URI__", _json.dumps(_PIECE_URI))

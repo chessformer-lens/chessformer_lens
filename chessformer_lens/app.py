@@ -23,10 +23,12 @@ interp_plot.py (the read-once views as matplotlib figures), interp_widget.py (th
 two interactive panels as a notebook cell), and pieces.py / piece_art.py for the
 piece artwork both of them share with the app. See README.md.
 
-Run:  python app.py                 # default model (Maia3 5M)
-      python app.py 23m             # any built-in alias: 3m / 5m / 23m / 79m
-      python app.py --model maia3-79m
-      MAIA3_ALIAS=23m python app.py # env var still works
+Run:  chessformer-lens                 # default model (Maia3 5M)
+      chessformer-lens 23m             # any built-in alias: 3m / 5m / 23m / 79m
+      chessformer-lens --model maia3-79m
+      MAIA3_ALIAS=23m chessformer-lens # env var still works
+
+From a source checkout the same launcher is `python -m chessformer_lens.app`.
 
 The GUI adapts to whatever loads (block/head/dim counts, GAB template bank), so
 the same interface drives every model size.
@@ -35,8 +37,8 @@ import argparse
 import os
 import sys
 
-from bridge import MaiaApi
-from ui import INDEX_HTML
+from .bridge import MaiaApi
+from .ui import INDEX_HTML
 
 
 def resolve_alias():
@@ -67,7 +69,7 @@ def main():
     try:
         import webview  # pywebview
     except ImportError:
-        sys.exit("pywebview is not installed.  Run:  pip install -r requirements.txt")
+        sys.exit("pywebview is not installed.  Run:  pip install 'chessformer_lens[app]'")
     api = MaiaApi(alias=alias)
     webview.create_window(
         "Chessformer (Maia 3) Interpretability App",

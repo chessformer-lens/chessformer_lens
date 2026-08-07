@@ -1,6 +1,6 @@
 # Chessformer interpretability
-
-A toolkit+visualizer that is designed for mech interp researchers working with chess models that use transformers tokenized by square.
+A toolkit+visualizer that is designed for mech interp enthusiasts working with chess models that treat the board as 64 square tokens with a
+from, to policy head (MAIA-3 is completed; Leela will be done next).
 
 Since starting to do interpretability work on chess models, I was struck by a serious lack of infrastructure. I could hardly find a decent GUI to display general UCI reading engines. So, I decided to build an interface both for interactive visualization and serious mech interp functionality, especially inspired by Neel Nanda's fantastic transformer_lens library.
 
@@ -39,13 +39,12 @@ have a fixed geometry). Expose the static template bank each layer shares, the l
 <-------------------------------------------------------------------->
 ```python
 !pip install -q git+https://github.com/CSSLab/maia3
-!git clone -q https://github.com/David-31415/chessformer_interp.git
-%cd chessformer_interp
+!pip install -q "chessformer_lens[plot] @ git+https://github.com/chessformer-lens/chessformer_lens"
 
 #Interact with the attention widget
 import chess
-from engine import MaiaEngine
-import interp_widget as iw
+from chessformer_lens import MaiaEngine
+import chessformer_lens.interp_widget as iw
 
 eng = MaiaEngine()                      # or "maia3-23m"; downloads on first use
 board = "...fill in FEN for position..."
@@ -77,7 +76,7 @@ Header line reads `Maia3 5M · cpu · 8 blocks × 8 heads × 256d`. **[THIS IS O
 
 At the top in the center there is a `Win / Draw / Loss · side to move` stacked bar. 
 Under it is the `Maia rating (self_elo)` slider: 600-2800, step 25, default 1500; Dragging reevaluates the same position. 
-Under that it is the scrollable ranked list: `Policy over N legal moves`. 
+Under that is the scrollable ranked list: `Policy over N legal moves`. 
 
 There is a `compare with a second rating` checkbox which reveals a `second rating` slider
 (default 1100). Setting it makes the policy rows become paired blue/green bars showing the compared policy and evaluation. This second rating does not affect the attention or GAB or residual panel app features.
@@ -112,20 +111,33 @@ ex: `b3 mlp · logit 4.21 · p 38.2% · rank 1/31`.
 see `template vocabulary · the 64 static stencils (row = query sq, col = key sq)` as a gallery.
 
 
-
 ## Addional Notes
 The model loads on a background thread so the window opens instantly; the layout reads the loaded model's counts so all sizes of Maia-3 with different head counts work the same. As of now, it opens in a native window and there is no export button or permalink for a session.
 
 ## Install as library
 
-`engine.py` imports `maia3`, the Maia-3 model code, which is not on PyPI — it
-installs from GitHub and pulls in torch, python-chess, numpy and
-huggingface-hub. The library quickstarts below need the repo on your path *and*
-that package installed; neither happens by uploading `engine.py` on its own.
+`chessformer_lens` is a normal Python package, but it needs one thing installed
+first: `engine.py` imports `maia3`, the Maia-3 model code, which is **not on
+PyPI**, so it can't be declared as a dependency and has to come from GitHub.
 
-Locally, `pip install -r requirements.txt` from a clone covers the same ground
-(plus `pywebview` and `matplotlib`, which only the app and the figure layer
-need). See [Run](#run) for the app itself.
+```bash
+pip install git+https://github.com/CSSLab/maia3
+pip install "chessformer_lens[all] @ git+https://github.com/chessformer-lens/chessformer_lens"
+```
+
+The base install pulls in torch, numpy, python-chess, huggingface-hub and
+ipython — everything `engine.py` and the widgets need. The two heavier frontends
+are extras, so a notebook-only or engine-only install stays lean:
+
+| extra | adds | needed for |
+|---|---|---|
+| *(none)* | — | `engine.py`, `interp_widget.py` |
+| `[plot]` | matplotlib | `interp_plot.py`, `piece_art.py` — the static figures |
+| `[app]` | pywebview | `app.py` — the native window |
+| `[all]` | both | everything |
+
+From a clone, `pip install -e ".[all]"` does the same thing; `pip install -r
+requirements.txt` is the older flat equivalent and still works.
 
 interp_plot is the library's read-once views as static figures
 <!-- TO WRITE: a sentence or two framing interp_plot as the app's read-once
@@ -145,8 +157,11 @@ srcdoc fallback never renders. Open in Colab or Jupyter.)
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python app.py
+chessformer-lens
 ```
+
+(From a source checkout without installing, `python -m chessformer_lens.app`
+is the same launcher.)
 
 The first launch downloads the Maia3-5M transformer weights (~20 MB) from
 Hugging Face and a native window opens (no browser needed).
@@ -170,9 +185,9 @@ block / head / dimension / GAB-template counts and lays itself out to match, so
 Pick one at launch:
 
 ```bash
-python app.py 23m               # built-in alias: 3m / 5m / 23m / 79m
-python app.py --model maia3-79m # full alias, HF repo id, or HF URL
-MAIA3_ALIAS=23m python app.py   # env var (still supported)
+chessformer-lens 23m               # built-in alias: 3m / 5m / 23m / 79m
+chessformer-lens --model maia3-79m # full alias, HF repo id, or HF URL
+MAIA3_ALIAS=23m chessformer-lens   # env var (still supported)
 ```
 
 Weights for the chosen size download on first use and are cached. Larger models
@@ -190,7 +205,7 @@ CUDA to speed them up. Model weights: <https://huggingface.co/UofTCSSLab>
 
 ```python
 import chess
-from engine import MaiaEngine
+from chessformer_lens import MaiaEngine
 
 eng = MaiaEngine()                      # or "maia3-23m"; downloads on first use
 board = chess.Board()                   # starting position, or pass a FEN
@@ -203,8 +218,8 @@ eng.run_with_hooks(board, 1500, fwd_hooks=[("attn_05", lambda a: a * 0)])
 See the residual stream film and move microscope for the famous Paul Morphy "Opera Game"
 ```python
 import chess
-from engine import MaiaEngine
-import interp_plot as ip
+from chessformer_lens import MaiaEngine
+import chessformer_lens.interp_plot as ip
 
 #opera game FEN right at legendary queen sacrifice 
 fen = "4kb1r/p2n1ppp/4q3/4p1B1/4P3/1Q6/PPP2PPP/2KR4 w k - 0 16" 
@@ -226,6 +241,12 @@ plt.close()
 
 ## Code layout
 
+Everything importable lives in the `chessformer_lens/` package; the paths below
+are relative to it. `import chessformer_lens` itself is cheap — the submodules
+resolve on first use, so nothing drags in torch, matplotlib or pywebview until
+you actually touch that layer.
+
+- `__init__.py` — the package surface: `MaiaEngine`, `build_cfg`, `pick_device`, `attention_widget`, `gab_widget`, `__version__`.
 - `engine.py` — `MaiaEngine`: the interp core (model + hooks + logit lens + head ablation + list of values through depth). No UI deps; imports cleanly in a notebook.
 - `interp_plot.py` — the app's read-once views as matplotlib figures, same layouts and wording: `plot_position`, `plot_residual_film`, `plot_move_microscope`, `plot_carrier_heads`, `plot_attention`, `plot_gab_mixture`, `plot_gab_templates`, `plot_skill_diff`. Engine + matplotlib only.
 - `interp_widget.py` — the app's two interactive panels as a self-contained notebook cell or standalone HTML page: `attention_widget` (Live attention) and `gab_widget` (the GAB generator), plus their `*_html` twins; `ui.py`'s CSS, colormaps and interaction, reading injected data instead of the pywebview API. These are the interactive versions of `interp_plot`'s static `plot_attention` / `plot_gab_mixture`. Take the figure for one frame, the widget to explore.
@@ -233,8 +254,11 @@ plt.close()
 - `bridge.py` — the game state + the JSON API the UI calls.
 - `ui.py` — the whole interface (HTML/CSS/JS) as one string including guide to change template.
 - `pieces.py` — SVG piece set as data URIs.
-- `app.py` — launcher (native window via pywebview).
-- `requirements.txt` Everything the toolkit needs
+- `app.py` — launcher (native window via pywebview); the `chessformer-lens` command is its `main()`.
+
+At the repo root: `pyproject.toml` (packaging metadata, deps and extras),
+`requirements.txt` (the flat everything-at-once install, including `maia3`),
+`CITATION.cff`, `LICENSE` and `THIRD-PARTY-NOTICES.md`.
 
 ## Built on
 
@@ -272,3 +296,8 @@ their own terms.
 - Skill-acquisition plot highlight which heads shift most between 600 and 2800 on the same position and more interpretability across a skill axis experiments.
 - **Add the next engine functionality: Leela Lc0-BT**: 
      - How to: Lc0 uses .pb so I need to first convert to PyTorch (community converters do exist for this). Lc0 uses smolgen not GAB which is a learned per position attention bias. Worth researching if smolgen plays the role GAB does perhaps. For logit lens, Maia-3 and Lc0 differ by pre-LN vs post-LN at readout points so be wary of that. Also, Lc0 does not have a skill panel, BUT IT IS VERY WIDELY USED and worked on in interp (e.g. Erik Jenner et al paper).
+
+## Citing
+
+If `chessformer_lens` contributes to published work, a citation is very appreciated and helps others find it! Please see
+`CITATION.cff` and GitHub's "Cite this repository" button.

@@ -8,7 +8,7 @@ lives next door in interp_plot.py (static figures) and interp_widget.py
 Quick start:
 
     import chess
-    from engine import MaiaEngine
+    from chessformer_lens import MaiaEngine
 
     eng   = MaiaEngine()                           # downloads 5M weights on first run
     board = chess.Board()

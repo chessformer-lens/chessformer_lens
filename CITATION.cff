@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use chessformer_lens in your research, please cite it."
+title: "chessformer_lens: an interpretability lens for square-token chess transformers"
+authors:
+  - family-names: Litman
+    given-names: David
+type: software
+license: MIT
+repository-code: "https://github.com/chessformer-lens/chessformer_lens"
+url: "https://github.com/chessformer-lens/chessformer_lens"
+version: 0.1.0
+date-released: "2026-08-07"
+keywords:
+  - chess
+  - transformer
+  - mechanistic interpretability
+  - MAIA
+  - Leela Chess Zero

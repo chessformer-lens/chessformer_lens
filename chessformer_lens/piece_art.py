@@ -15,7 +15,7 @@ install cleanly on every Colab. So the pieces were rasterised once, offline, int
 Pieces keep their own colours (white with a black outline, black), so a board
 here looks like a board there.
 
-    from piece_art import draw_piece
+    from chessformer_lens.piece_art import draw_piece
     draw_piece(ax, "N", x=4, y=0, size=.88)     # one unit square per board square
 """
 from __future__ import annotations

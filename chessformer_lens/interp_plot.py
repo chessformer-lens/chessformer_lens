@@ -10,8 +10,8 @@ module draws them from `engine.py` alone — no UI deps, so it imports cleanly i
 notebook, a script, or a paper pipeline:
 
     import chess
-    from engine import MaiaEngine
-    from interp_plot import plot_position, plot_residual_film
+    from chessformer_lens import MaiaEngine
+    from chessformer_lens.interp_plot import plot_position, plot_residual_film
 
     eng = MaiaEngine()
     plot_residual_film(eng, chess.Board(), 1500)
@@ -66,7 +66,7 @@ import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 
-from piece_art import draw_piece
+from .piece_art import draw_piece
 
 # ---------------------------------------------------------------------------
 # the app's palette (ui.py :root) — so a figure and the app read the same
