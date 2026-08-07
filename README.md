@@ -1,6 +1,6 @@
 # Chessformer interpretability
 
-This toolkit+visualizer is designed for mech interp researchers working with chess models that use transformers tokenized by square.
+A toolkit+visualizer that is designed for mech interp researchers working with chess models that use transformers tokenized by square.
 
 Since starting to do interpretability work on chess models, I was struck by a serious lack of infrastructure. I could hardly find a decent GUI to display general UCI reading engines. So, I decided to build an interface both for interactive visualization and serious mech interp functionality, especially inspired by Neel Nanda's fantastic transformer_lens library.
 
@@ -245,11 +245,22 @@ Please don't hesitate to give feedback by email or at davidlitman.com
 
 ## License
 
-AGPLv3 — see [LICENSE](LICENSE). This app is built on the
-[CSSLab/maia3](https://github.com/CSSLab/maia3) model code (also AGPLv3);
-model weights from [Hugging Face](https://huggingface.co/UofTCSSLab/Maia3-5M).
-Chess piece artwork is python-chess's built-in "cburnett" set
-(Colin M.L. Burnett, GFDL/BSD/GPL).
+**MIT** — see [LICENSE](LICENSE). Use it, fork it, build on it.
+
+Two things MIT can't cover, both spelled out in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md):
+
+- It runs on [python-chess](https://github.com/niklasf/python-chess) (GPLv3+)
+  and [CSSLab/maia3](https://github.com/CSSLab/maia3) (AGPLv3), which pip
+  installs separately — no code from either is in this repo. Installing and
+  using this project is unaffected, but if you redistribute a *bundle* that
+  ships those libraries alongside it (Docker image, frozen binary, vendored
+  copy), the bundle as a whole is subject to their terms, not MIT.
+- Chess piece artwork is the "cburnett" set by Colin M.L. Burnett, used under
+  the BSD option of its GFDL/BSD/GPL triple license.
+
+Model weights come from [Hugging Face](https://huggingface.co/UofTCSSLab) under
+their own terms.
 
 ## Future implementations:
 
@@ -260,8 +271,4 @@ Chess piece artwork is python-chess's built-in "cburnett" set
 - Linear probes
 - Skill-acquisition plot highlight which heads shift most between 600 and 2800 on the same position and more interpretability across a skill axis experiments.
 - **Add the next engine functionality: Leela Lc0-BT**: 
-     - How to: Lc0 ships .pb networks; you'd convert to PyTorch (community converters/ONNX exports exist, but this is the grindiest step).
-     Smolgen — Lc0 adds a learned per-position attention bias. GAB/QK geometry-vs-semantics decomposition would need a third additive term ("does smolgen play the GAB role?" may be a publishable comparison).
-     Lens placement — pre-LN vs post-LN changes where the "running residual" readout points sit and whether you apply the final norm before decoding.
-     Skill panels — Elo conditioning is Maia-specific; the adapter flag lets those panels grey out rather than break.
-
+     - How to: Lc0 uses .pb so I need to first convert to PyTorch (community converters do exist for this). Lc0 uses smolgen not GAB which is a learned per position attention bias. Worth researching if smolgen plays the role GAB does perhaps. For logit lens, Maia-3 and Lc0 differ by pre-LN vs post-LN at readout points so be wary of that. Also, Lc0 does not have a skill panel, BUT IT IS VERY WIDELY USED and worked on in interp (e.g. Erik Jenner et al paper).
