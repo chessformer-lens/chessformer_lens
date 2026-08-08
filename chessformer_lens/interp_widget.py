@@ -1,20 +1,6 @@
 """
 The app's two interactive panels, each as a self-contained notebook cell.
 
-`interp_plot.py` covers everything in the app you read once — the position and
-its policy, the residual film, a move's depth curve, the carrier grid. These
-two are different: they're spaces you sweep (num_blocks × num_heads × 64 query
-squares of attention; a bias built from a bank of static templates). So they
-keep the app's own interaction, CSS and wording, rewired from "fetch from
-window.pywebview.api" to "read the injected data":
-
-    from chessformer_lens.interp_widget import attention_widget, gab_widget
-
-    attention_widget(eng, board, elo=1500, layer=5, head=3)   # Live attention
-    gab_widget(eng, board, elo=1500, layer=5, head=3)         # the GAB generator
-
-Each renders exactly its panel from the app, nothing else. What they ship:
-
   attention_widget  the scaled QKᵀ logits and the generated GAB of every block
                     and head, fp16 (~1.4 MB); the JS takes softmax(QKᵀ + GAB)
                     itself, so every block, head and query square is live
@@ -32,13 +18,6 @@ and classic Jupyter all execute scripts inside one, whereas a bare <script> in
 drops the iframe entirely, so on GitHub these cells look empty — the srcdoc
 fallback never renders. Open in Colab or Jupyter.
 `*_widget_html()` returns the same page as a standalone .html file for sharing.
-
-`interp_plot.plot_attention` / `plot_gab_mixture` render these same two panels as
-static figures — one slice each, for a paper or a batch run.
-
-GAB / smolgen: GAB is the bias itself; "smolgen" is the upstream name for the
-tiny generator that emits the mixing coefficients. This file says GAB throughout,
-including in both pages' JS.
 """
 from __future__ import annotations
 

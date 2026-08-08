@@ -21,17 +21,7 @@ The app itself is four small, single-purpose modules:
 Alongside it, the same engine drives a notebook/figure layer that needs no UI:
 interp_plot.py (the read-once views as matplotlib figures), interp_widget.py (the
 two interactive panels as a notebook cell), and pieces.py / piece_art.py for the
-piece artwork both of them share with the app. See README.md.
-
-Run:  chessformer-lens                 # default model (Maia3 5M)
-      chessformer-lens 23m             # any built-in alias: 3m / 5m / 23m / 79m
-      chessformer-lens --model maia3-79m
-      MAIA3_ALIAS=23m chessformer-lens # env var still works
-
-From a source checkout the same launcher is `python -m chessformer_lens.app`.
-
-The GUI adapts to whatever loads (block/head/dim counts, GAB template bank), so
-the same interface drives every model size.
+piece artwork both of them share with the app. See README.md for more and details for running it.
 """
 import argparse
 import os

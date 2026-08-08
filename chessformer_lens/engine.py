@@ -1,45 +1,76 @@
 """Interpretability core for chessformers that treat the 64 squares as tokens.
-
 `MaiaEngine` loads a Maia-3 checkpoint, runs forward passes, and captures the
-residual stream at every layer. It imports cleanly into a notebook; plotting
-lives next door in interp_plot.py (static figures) and interp_widget.py
-(interactive panels), and the standalone app in bridge.py/app.py/ui.py.
+residual stream at every layer.
 
-Quick start:
+  evaluate              one forward pass — the full normalized policy over
+                        legal moves (in descending order) and the WDL for the side to
+                        move
+  select_move           pick a move at a rating (temperature 0 = argmax),
+                        through the released engine's own sampler
+  tokens                the position as the model's input tokens, padded to
+                        fill `history`
+  run_with_cache        forward pass returning (out, cache) — the whole
+                        residual stream, transformer_lens style
+  run_with_hooks        the same with temporary intervention hooks: activation
+                        patching, ablation, steering
+  logit_lens            decode any residual activation through the policy head
+                        — the top legal move at that point in depth
 
-    import chess
-    from chessformer_lens import MaiaEngine
+  attention             the 64×64 components of one (layer, head): semantic
+                        QKᵀ, geometric GAB, and the softmax the model actually
+                        runs
+  qk_scores             just the content half — one block's scaled QKᵀ logits
+  gab_bias              just the geometric half — one block's generated bias
+  gab_coeffs            the coefficients head h mixes the static bank with —
+                        the model choosing its geometry live
+  gab_templates         the static square-pair template bank every layer shares
+  head_writes           exact per-head residual writes of one block's attention
 
-    eng   = MaiaEngine()                           # downloads 5M weights on first run
-    board = chess.Board()
+  ablate_head           forward pass with one head's write removed, exactly
+  ablate_grid           the carrier heatmap of one move: every head ablated in
+                        turn, Δlogit = ablated − clean (negative = the head
+                        carried it)
 
-    # policy + win/draw/loss probabilities at 1500 elo
-    out = eng.evaluate(board, self_elo=1500)
-    out["policy"][:3]                              # [(uci, prob), ...] descending
+  residual_stream       per-square views of how the stream is built up, one row
+                        per readout point
+  compare_residual      the same position at two ratings, differenced — where
+                        skill diverges inside the stream, not just in the
+                        output
 
-    # transformer_lens-style cache of the whole residual stream
-    out, cache = eng.run_with_cache(board, self_elo=1500)
-    cache["block_03"].shape                        # (64, dim_vit) per-square residual
-    eng.hook_points.keys()                         # every name you can read or patch
+  depth_points          the readout points as [{label, kind}] — the x axis
+                        every curve below is indexed by, for free
+  move_logit_lens       one move's depth curve: logit, probability and rank at
+                        every readout point — where a move snaps into the plan
+  logit_per_depth       that curve's raw logit alone, unmasked
+  policy_per_depth      that curve after the softmax over legal moves
+  rank_per_depth        that curve as a rank, 1 = the top move at that depth
 
-    # logit lens: decode any (64, dim) residual through the policy head
-    eng.logit_lens(cache["postattn_04"], board)    # {'uci','san',...} top legal move
+  to_move               any of the five move forms -> chess.Move
+  move_index            a move -> its policy index; this is where the Black
+                        mirror is applied
+  move_info             one move in every representation at once, as a dict
+  move_squares          a policy index -> canonical (from, to), promotions
+                        included
+  canon_square          python-chess square -> canonical index (side-to-move
+                        frame)
+  real_square           canonical index -> python-chess square, the inverse
 
-    # activation patching / ablation: kill block 5's attention write
-    eng.run_with_hooks(board, 1500, fwd_hooks=[("attn_05", lambda act: act * 0)])
+  save_activations      persist the most recent forward's snapshot to disk
+  remove_hooks          detach the capture hooks, for a bare forward with no
+                        CPU copies
 
-    # one move's logit / probability / rank at every readout point
-    eng.logit_per_depth(board, 1500, "Nf3")        # also policy_ and rank_
+Module level, beside the class: `build_cfg` builds the args-namespace the model
+expects from a registry alias, and `pick_device` resolves the torch device
+(explicit > $MAIA3_DEVICE > cuda > cpu).
 
-Past the basics: `attention()` and `residual_stream()` are the structured views
-the app draws, the gab_* methods decompose the geometric attention bias, and
-`compare_residual()`, `move_logit_lens()` and `ablate_grid()` are experiments
-built on top of the primitives above.
+Every tensor a read path returns is on CPU, in the model's canonical
+side-to-move frame (square = rank*8 + file). Depth reads the same as in the
+figures: `emb`, then `aN`/`mN` for block N's attention and MLP sub-layers, then
+`enc` — `depth_points` hands you that axis directly.
 
-Moves come in five notations (uci, SAN, chess.Move, policy index, canonical
-(from, to) squares) — see the "move notation" section; `to_move()` reads any of
-them and `move_info()` returns all of them, so nothing has to hand-roll the
-side-to-move mirror.
+It imports cleanly into a notebook; plotting lives next door in interp_plot.py
+(static figures) and interp_widget.py (interactive panels), and the standalone
+app in bridge.py/app.py/ui.py.
 """
 import math
 import os

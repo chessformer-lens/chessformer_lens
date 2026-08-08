@@ -1,12 +1,11 @@
 # Chessformer interpretability
-A toolkit+visualizer that is designed for mech interp enthusiasts working with chess models that treat the board as 64 square tokens with a
-from, to policy head (MAIA-3 is completed; Leela will be done next).
+A toolkit + visualizer designed for mech interp enthusiasts working with chess models that treat each square as a token (MAIA-3 is completed; Leela will be completed soon).
 
-Since starting to do interpretability work on chess models, I was struck by a serious lack of infrastructure. I could hardly find a decent GUI to display general UCI reading engines. So, I decided to build an interface both for interactive visualization and serious mech interp functionality, especially inspired by Neel Nanda's fantastic transformer_lens library.
+Since beginning to do interpretability work on chess engines, I was struck by the lack of supporting infrastructure. I could hardly find a decent GUI to display general UCI reading engines. So, I decided to build an interface both for interactive visualization and rigorous mechanistic interpretability functionality—especially inspired by Neel Nanda's fantastic transformer_lens library.
 
 ![Hero Image](Screenshots/Screenshot1.png)
 
-Chess tranformers are good interp subjects because **[copy from paper]**
+Chess tranformers are good interp subjects because **[copy from my paper]**
 
 <!-- WHAT THIS IS — TO WRITE. Three short paragraphs:
      1. WHY chess transformers are good interp subjects. They read the board as
@@ -46,21 +45,20 @@ import chess
 from chessformer_lens import MaiaEngine
 import chessformer_lens.interp_widget as iw
 
-eng = MaiaEngine()                      # or "maia3-23m"; downloads on first use
+eng = MaiaEngine()                      
 board = "...fill in FEN for position..."
-board = chess.Board(board)                   # starting position, or pass a FEN
+board = chess.Board(board)                   
 
 iw.attention_widget(eng, board, 1500,layer=4,head=3) # click between different layers and heads in the widget
 ```
 <-------------------------------------------------------------------->
 
 
-
-## The app
+## The standalone app
 
 **Play or Set up a Position**
 ![alt text](Screenshots/Screenshot7.png)
-Click to move your pieces. Select an Elo for the engine (recall that it mimics *human* play at that strength)
+Click to move your pieces. Select an Elo for the engine (recall that it mimics human play at that strength, with all of our biases)
 and use `New game`, `← Back`, and a dropdown:`You play White` / `You play Black` / `Set up position`.
 It is also possible to `paste a FEN to load` a position with the `Load` button. 
 
@@ -70,7 +68,7 @@ Select a color to continue as it from that position.
 The last move is indicated by a gold arrow, legal moves for a selected piece are indicated by dots, captures are drawn as rings. The games
 moves are recorded in SAN notation.
 
-Header line reads `Maia3 5M · cpu · 8 blocks × 8 heads × 256d`. **[THIS IS OUTDATED]**
+Header line reads `Maia3 5M · cpu · 8 blocks × 8 heads × 256d`. **[THIS IS OUTDATED both heads instead of layers and hard coded num heads]**
 
 **Read the Position**
 
@@ -114,7 +112,7 @@ see `template vocabulary · the 64 static stencils (row = query sq, col = key sq
 ## Addional Notes
 The model loads on a background thread so the window opens instantly; the layout reads the loaded model's counts so all sizes of Maia-3 with different head counts work the same. As of now, it opens in a native window and there is no export button or permalink for a session.
 
-## Install as library
+## Install as library (this and below is not necessarily fully functional yet)
 
 `chessformer_lens` is a normal Python package, but it needs one thing installed
 first: `engine.py` imports `maia3`, the Maia-3 model code, which is **not on
@@ -125,9 +123,8 @@ pip install git+https://github.com/CSSLab/maia3
 pip install "chessformer_lens[all] @ git+https://github.com/chessformer-lens/chessformer_lens"
 ```
 
-The base install pulls in torch, numpy, python-chess, huggingface-hub and
-ipython — everything `engine.py` and the widgets need. The two heavier frontends
-are extras, so a notebook-only or engine-only install stays lean:
+The install also installs torch, numpy, python-chess, huggingface-hub and
+ipython for `engine.py` and the widgets. 
 
 | extra | adds | needed for |
 |---|---|---|
@@ -138,11 +135,6 @@ are extras, so a notebook-only or engine-only install stays lean:
 
 From a clone, `pip install -e ".[all]"` does the same thing; `pip install -r
 requirements.txt` is the older flat equivalent and still works.
-
-interp_plot is the library's read-once views as static figures
-<!-- TO WRITE: a sentence or two framing interp_plot as the app's read-once
-     views as static figures. The code block below is accurate — keep as-is. -->
-
 
 ## The two live panels in a notebook
 
@@ -160,40 +152,28 @@ pip install -r requirements.txt
 chessformer-lens
 ```
 
-(From a source checkout without installing, `python -m chessformer_lens.app`
-is the same launcher.)
+Or without installing, `python -m chessformer_lens.app`
 
-The first launch downloads the Maia3-5M transformer weights (~20 MB) from
+
+The first launch downloads the Maia-3 5m model weights (~20 MB) from
 Hugging Face and a native window opens (no browser needed).
 
 ### Choosing a model size
 
 The same interface drives every Maia-3 size — the GUI reads the loaded model's
-block / head / dimension / GAB-template counts and lays itself out to match, so
-`3m`, `5m`, `23m` and `79m` all just work.
+block / head / dimension / GAB-template counts and lays itself out to match, so `5m`, `23m` and `79m` all work. The higher parameter models have 16 and 32 heads per layer, and 512 and 1024 dim of the model (d_model).
 
-| alias | blocks | heads | dim | GAB templates | ablation sweep |
-|---|---|---|---|---|---|
-| `3m` | 8 | 6 | 192 | 64 | 56 passes |
-| `5m` (default) | 8 | 8 | 256 | 64 | 72 passes |
-| `23m` | 8 | 16 | 512 | 128 | 136 passes |
-| `79m` | 8 | 32 | 1024 | 128 | 264 passes |
 
-<!-- Table verified against maia3.model_registry. Note `3m`'s registry display
-     name is "Maia3 3M ablation" — don't call it plain 3M. -->
-
-Pick one at launch:
+Various ways to launch:
 
 ```bash
-chessformer-lens 23m               # built-in alias: 3m / 5m / 23m / 79m
-chessformer-lens --model maia3-79m # full alias, HF repo id, or HF URL
-MAIA3_ALIAS=23m chessformer-lens   # env var (still supported)
+chessformer-lens 23m               
+chessformer-lens --model maia3-79m 
+MAIA3_ALIAS=5m chessformer-lens   
 ```
 
-Weights for the chosen size download on first use and are cached. Larger models
-are heavier per position — on CPU the 23M/79M attention and head-ablation views
-are noticeably slower than 5M; set `MAIA3_DEVICE=mps` (Apple Silicon) or run on
-CUDA to speed them up. Model weights: <https://huggingface.co/UofTCSSLab>
+<!-- understand about set `MAIA3_DEVICE=mps` (Apple Silicon) or run on
+CUDA to speed higher parameter models up. Model weights: <https://huggingface.co/UofTCSSLab> -->
 
 ## Use the engine directly
 
@@ -203,17 +183,6 @@ CUDA to speed them up. Model weights: <https://huggingface.co/UofTCSSLab>
      worth stating: no UI dependency, and read paths return CPU tensors in the
      model's canonical side-to-move frame (square = rank*8 + file). -->
 
-```python
-import chess
-from chessformer_lens import MaiaEngine
-
-eng = MaiaEngine()                      # or "maia3-23m"; downloads on first use
-board = chess.Board()                   # starting position, or pass a FEN
-
-out, cache = eng.run_with_cache(board, self_elo=1500)
-eng.logit_lens(cache["postattn_04"], board)     # top legal move at that point
-eng.run_with_hooks(board, 1500, fwd_hooks=[("attn_05", lambda a: a * 0)])
-```
 
 See the residual stream film and move microscope for the famous Paul Morphy "Opera Game"
 ```python
@@ -285,7 +254,7 @@ Two things MIT can't cover, both spelled out in
 
 Model weights come from [Hugging Face](https://huggingface.co/UofTCSSLab) under
 their own terms.
-
+<!--
 ## Future implementations:
 
 - Activation patching beyond zero-ablation.
@@ -296,7 +265,7 @@ their own terms.
 - Skill-acquisition plot highlight which heads shift most between 600 and 2800 on the same position and more interpretability across a skill axis experiments.
 - **Add the next engine functionality: Leela Lc0-BT**: 
      - How to: Lc0 uses .pb so I need to first convert to PyTorch (community converters do exist for this). Lc0 uses smolgen not GAB which is a learned per position attention bias. Worth researching if smolgen plays the role GAB does perhaps. For logit lens, Maia-3 and Lc0 differ by pre-LN vs post-LN at readout points so be wary of that. Also, Lc0 does not have a skill panel, BUT IT IS VERY WIDELY USED and worked on in interp (e.g. Erik Jenner et al paper).
-
+-->
 ## Citing
 
 If `chessformer_lens` contributes to published work, a citation is very appreciated and helps others find it! Please see

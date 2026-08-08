@@ -1,21 +1,6 @@
 """
 
 The app's views as matplotlib figures — same layouts, same colours, same words.
-
-`interp_widget.py` keeps the two panels whose whole point is sweeping a space
-(attention over blocks/heads/queries, and the GAB template mixture). Everything
-else in the app is a view you read: the position and its policy, the residual
-film, one move's depth curve, the carrier-head grid. Those are figures, and this
-module draws them from `engine.py` alone — no UI deps, so it imports cleanly in a
-notebook, a script, or a paper pipeline:
-
-    import chess
-    from chessformer_lens import MaiaEngine
-    from chessformer_lens.interp_plot import plot_position, plot_residual_film
-
-    eng = MaiaEngine()
-    plot_residual_film(eng, chess.Board(), 1500)
-
   plot_position         the board, "Policy over N legal moves", and the
                         Win / Draw / Loss bar — with a second rating overlaid
                         when you pass `elo_b`

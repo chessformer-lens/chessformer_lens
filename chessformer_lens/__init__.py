@@ -1,18 +1,10 @@
-"""chessformer_lens — an interpretability lens and visualizer for square-token chess transformers.
+"""chessformer_lens — an interpretability lens and visualizer for chessformers.
 
-Reads the internals of chess models that treat the board as 64 square tokens with
-a (from, to) policy head. The Maia-3 backend is complete; Leela Lc0-BT is next.
-
-Play a transformer-based chess bot trained to mimic human play and watch its move
-policy, its attention (semantic QKᵀ vs the geometric GAB bias), and how its
-residual stream evolves with depth — live. Decode the running residual with a
-logit lens, ablate any head and see the causal effect, take the GAB apart into the
-64 static templates every layer shares, and drag the ELO slider to re-evaluate the
-same position at different skill levels.
+A toolkit + visualizer designed for mech interp enthusiasts working with chess models that treat each square as a token (MAIA-3 is completed; Leela will be completed soon).
 
 One engine, three frontends:
 
-    from chessformer_lens import MaiaEngine            # the interp core, no UI deps
+    from chessformer_lens import MaiaEngine            # the interp core
     from chessformer_lens import interp_plot as ip     # read-once views as figures
     from chessformer_lens import interp_widget as iw   # the two live panels, in a notebook
 
