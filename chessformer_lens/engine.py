@@ -2,58 +2,53 @@
 `MaiaEngine` loads a Maia-3 checkpoint, runs forward passes, and captures the
 residual stream at every layer.
 
-  evaluate              one forward pass — the full normalized policy over
-                        legal moves (in descending order) and the WDL for the side to
+  evaluate              one forward pass yielding the full normalized policy over
+                        legal moves (in descending order) and the W/D/L for the side to
                         move
   select_move           pick a move at a rating (temperature 0 = argmax),
                         through the released engine's own sampler
   tokens                the position as the model's input tokens, padded to
                         fill `history`
-  run_with_cache        forward pass returning (out, cache) — the whole
+  run_with_cache        forward pass returning (out, cache): the whole
                         residual stream, transformer_lens style
-  run_with_hooks        the same with temporary intervention hooks: activation
+  run_with_hooks        forward pass with intervention hooks: activation
                         patching, ablation, steering
-  logit_lens            decode any residual activation through the policy head
-                        — the top legal move at that point in depth
+  logit_lens            decode any residual activation at a readout point
+                        by pushing it through the policy head
+                        
+
 
   attention             the 64×64 components of one (layer, head): semantic
                         QKᵀ, geometric GAB, and the softmax the model actually
                         runs
-  qk_scores             just the content half — one block's scaled QKᵀ logits
-  gab_bias              just the geometric half — one block's generated bias
-  gab_coeffs            the coefficients head h mixes the static bank with —
-                        the model choosing its geometry live
+  qk_scores             one block's scaled QKᵀ logits
+  gab_bias              one block's generated bias
+  gab_coeffs            the coefficients head h applies to the GAB bank with
   gab_templates         the static square-pair template bank every layer shares
-  head_writes           exact per-head residual writes of one block's attention
+  head_writes           exact residual writes of one block's attention
 
+  
   ablate_head           forward pass with one head's write removed, exactly
   ablate_grid           the carrier heatmap of one move: every head ablated in
                         turn, Δlogit = ablated − clean (negative = the head
                         carried it)
-
   residual_stream       per-square views of how the stream is built up, one row
                         per readout point
   compare_residual      the same position at two ratings, differenced — where
                         skill diverges inside the stream, not just in the
                         output
-
-  depth_points          the readout points as [{label, kind}] — the x axis
-                        every curve below is indexed by, for free
+  depth_points          the readout points as [{label, kind}]—the x axis in the below polts
   move_logit_lens       one move's depth curve: logit, probability and rank at
-                        every readout point — where a move snaps into the plan
+                        every readout point
   logit_per_depth       that curve's raw logit alone, unmasked
   policy_per_depth      that curve after the softmax over legal moves
-  rank_per_depth        that curve as a rank, 1 = the top move at that depth
+  rank_per_depth        that curve as a rank, 1 being the top move at that depth
 
-  to_move               any of the five move forms -> chess.Move
-  move_index            a move -> its policy index; this is where the Black
-                        mirror is applied
-  move_info             one move in every representation at once, as a dict
-  move_squares          a policy index -> canonical (from, to), promotions
-                        included
-  canon_square          python-chess square -> canonical index (side-to-move
-                        frame)
-  real_square           canonical index -> python-chess square, the inverse
+  
+  move_info             One move in every representation at once in dictionary.
+                        THE method to use when converting between any of the 
+                        five move forms
+  to_move               any move form -> chess.Move (used frequently in other files)
 
   save_activations      persist the most recent forward's snapshot to disk
   remove_hooks          detach the capture hooks, for a bare forward with no
@@ -384,7 +379,7 @@ class MaiaEngine:
             if bool(legal.any()):
                 logits = logits.masked_fill(~legal, float("-inf"))
         idx = int(torch.argmax(logits))
-        frm, to = self.move_squares(idx)
+        frm, to = self._move_squares(idx)
         mv = self._idx_to_move(board, idx)
         pc = board.piece_at(mv.from_square) if mv is not None else None
         return {
@@ -694,7 +689,7 @@ class MaiaEngine:
         if bool(legal_mask.any()):
             logits = logits.masked_fill(~legal_mask, float("-inf"))
         idx = int(torch.argmax(logits))
-        frm, to = self.move_squares(idx)
+        frm, to = self._move_squares(idx)
         mv = self._idx_to_move(board, idx)
         pc = board.piece_at(mv.from_square) if mv is not None else None
         return {"from": frm, "to": to, "uci": mv.uci() if mv else None,
@@ -754,7 +749,7 @@ class MaiaEngine:
     # instead of hand-rolling the mirror.
 
     @staticmethod
-    def canon_square(square: int, turn: bool) -> int:
+    def _canon_square(square: int, turn: bool) -> int:
         """python-chess square -> canonical index (side-to-move frame,
         rank*8 + file): identity for White, vertically mirrored for Black.
         Duplicated as interp_plot._canon and ui.py's realToCanon() so each side
@@ -763,13 +758,13 @@ class MaiaEngine:
         return (rank if turn == chess.WHITE else 7 - rank) * 8 + file
 
     @staticmethod
-    def real_square(canon: int, turn: bool) -> int:
-        """Canonical index -> python-chess square. Inverse of `canon_square`."""
+    def _real_square(canon: int, turn: bool) -> int:
+        """Canonical index -> python-chess square. Inverse of `_canon_square`."""
         rank, file = divmod(int(canon), 8)
         return chess.square(file, rank if turn == chess.WHITE else 7 - rank)
 
     @staticmethod
-    def move_squares(idx):
+    def _move_squares(idx):
         """Canonical (from, to) squares for a policy-move index (handles promotions).
         Mirrors MAIA3Model.forward's move layout: first 64*64 are from*64+to, then
         256 promotions ordered from_file*32 + to_file*4 + piece (rank7 -> rank8)."""
@@ -799,7 +794,7 @@ class MaiaEngine:
             except ValueError as e:
                 raise ValueError(f"neither uci nor SAN on this board: {move!r}") from e
         if isinstance(move, (tuple, list)):
-            frm, to = (self.real_square(s, board.turn) for s in move)
+            frm, to = (self._real_square(s, board.turn) for s in move)
             mv = chess.Move(frm, to)
             if mv in board.legal_moves:
                 return mv
@@ -815,7 +810,7 @@ class MaiaEngine:
         uci = self.idx_to_move[idx]
         return chess.Move.from_uci(mirror_move(uci) if board.turn == chess.BLACK else uci)
 
-    def move_index(self, board: chess.Board, move) -> int:
+    def _move_index(self, board: chess.Board, move) -> int:
         """Policy index of a move on this board — this is where the Black mirror
         is applied. Takes any form `to_move` does. Raises KeyError if the move
         isn't in the 4352-move vocabulary (a null move, an under-promotion the
@@ -839,8 +834,8 @@ class MaiaEngine:
         Reads any form `to_move` does, so it converts in every direction:
         `eng.move_info(board, "Nf3")["idx"]`, `eng.move_info(board, 1234)["san"]`."""
         mv = self.to_move(board, move)
-        idx = self.move_index(board, mv)
-        frm, to = self.move_squares(idx)
+        idx = self._move_index(board, mv)
+        frm, to = self._move_squares(idx)
         pc = board.piece_at(mv.from_square)
         legal = mv in board.legal_moves
         return {"move": mv, "uci": mv.uci(),
