@@ -1,0 +1,26 @@
+{
+  "title": "chessformer_lens: an interpretability lens for square-token chess transformers",
+  "description": "A toolkit and visualizer for mechanistic interpretability of transformer-based chess models that tokenize the board by square. Provides an interp core (hooks, logit lens, head ablation, depth traces) plus interactive attention and GAB-decomposition panels.",
+  "upload_type": "software",
+  "license": "MIT",
+  "access_right": "open",
+  "creators": [
+    {
+      "name": "Litman, David"
+    }
+  ],
+  "keywords": [
+    "chess",
+    "transformer",
+    "mechanistic interpretability",
+    "MAIA",
+    "Leela Chess Zero"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/chessformer-lens/chessformer_lens",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    }
+  ]
+}

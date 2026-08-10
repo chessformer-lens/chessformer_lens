@@ -2,7 +2,9 @@
 
 #### A toolkit + visualizer library  for mechanistic interpretability of transformer based chess models.
 
-![The app: board, policy, live attention and the GAB decomposition](Screenshots/Screenshot1.png)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21877655.svg)](https://doi.org/10.5281/zenodo.21877655)
+
+![The app: board, policy, live attention and the GAB decomposition](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot1.png)
 
 ---
 ## Case study: Knight Fork Carrier Head
@@ -13,14 +15,14 @@ Pip install:
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install git+https://github.com/CSSLab/maia3
-pip install "chessformer_lens[all] @ git+https://github.com/chessformer-lens/chessformer_lens"
+pip install "chessformer_lens[all]"
 ```
 
 Clone install:
 ```bash
 git clone https://github.com/chessformer-lens/chessformer_lens
 cd chessformer_lens
-`pip install -r requirements.txt` 
+pip install -r requirements.txt
 ```
 
 Quick interpretability demo (n=10): **attention layer 5 head 5 seems to be the carrier head for knight forks**
@@ -54,7 +56,7 @@ for pos in knight_forks:
 plt.close()
 ```
 
-![alt text](Screenshots/screenshot10.png)![alt text](Screenshots/screenshot11.png)
+![A knight-fork position's move report](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/screenshot10.png)![A second knight-fork move report](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/screenshot11.png)
 
 ---
 
@@ -75,7 +77,7 @@ This repo's core is **one engine** with **three frontends**:
 - `interp_widget.py`
 
 Users are encouraged to read the user guides for each of these modules which can be found at the top of the respective scripts.
-![A move's logit curve across depth, beside its carrier-head grid](Screenshots/Screenshot9.png)
+![A move's logit curve across depth, beside its carrier-head grid](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot9.png)
 *interp_plot.py functions **plot_logit_curve** and **plot_carrier_heads***
 
 ---
@@ -84,7 +86,7 @@ Users are encouraged to read the user guides for each of these modules which can
 Recall that FEN is the modern notation for a chess position
 ```python
 !pip install -q git+https://github.com/CSSLab/maia3
-!pip install -q "chessformer_lens[plot] @ git+https://github.com/chessformer-lens/chessformer_lens"
+!pip install -q "chessformer_lens[plot]"
 
 import chess
 from chessformer_lens import MaiaEngine
@@ -159,4 +161,4 @@ Please don't hesitate to give me feedback or thoughts by email or at **davidlitm
 
 ---
 ### Citing
-If `chessformer_lens` contributes to published work, a citation is very appreciated and helps others find it! Please see `CITATION.cff` and GitHub's "Cite this repository" button.
+If `chessformer_lens` contributes to published work, a citation is very appreciated and helps others find it! Use GitHub's "Cite this repository" button, or DOI [10.5281/zenodo.21877655](https://doi.org/10.5281/zenodo.21877655).
