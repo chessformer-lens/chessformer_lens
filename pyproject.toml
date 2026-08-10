@@ -9,7 +9,7 @@ description = "An interpretability lens and visualizer for square-token chess tr
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-license-files = ["LICENSE", "THIRD-PARTY-NOTICES.md"]
+license-files = ["LICENSE"]   # third-party notices live at the bottom of it
 authors = [{ name = "David Litman", email = "david.litman1@gmail.com" }]
 keywords = [
     "chess",
@@ -62,6 +62,5 @@ Issues = "https://github.com/chessformer-lens/chessformer_lens/issues"
 [tool.setuptools.packages.find]
 include = ["chessformer_lens*"]
 
-[tool.setuptools.package-data]
-# The pieces rasterised offline for the matplotlib figure layer.
-chessformer_lens = ["piece_art/*.png", "piece_art/regenerate.py"]
+# No package-data: the pieces rasterised offline for the matplotlib figure layer
+# are carried as base64 inside piece_art.py, so the wheel is pure Python.

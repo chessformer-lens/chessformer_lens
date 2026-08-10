@@ -1,10 +1,10 @@
 ## Chessformer_lens
-##### A toolkit + visualizer designed for mech interp enthusiasts working with chess models that treat each square as a token—which allows for beautiful board readable attention patterns.
+#### A toolkit + visualizer library designed for mechanstic interpretability of transformer based chess models.
 
 
-This project was spurred by the surprising lack of infrastructure for analyzing chess engines. Chessformer_lens is both an interface for interactive engine visualization and rigorous mechanistic interpretability functionality—especially inspired by Neel Nanda's fantastic transformer_lens library.
+This project was spurred by the surprising lack of infrastructure for analyzing chess engines. Chessformer_lens is both an interface for interactive visualization and rigorous  interpretability functionality—especially inspired by Neel Nanda's transformer_lens library.
 
-(The Maia-3 engine interpreter is completed; Leela will be completed soon; and eventually other tokenization schemes will be tackled).
+(The **Maia-3** model interpreter is completed; **Leela** will be completed soon. Both of these treat each square as a token—which allows for beautiful board readable attention patterns. Eventually other tokenization schemes will be tackled).
 <-------------------------------------------------------------------->
 
 ![Hero Image](Screenshots/Screenshot1.png)
@@ -22,24 +22,33 @@ This repo's core is **one engine** with **three frontends**:
 - `interp_widget.py`
 
 Users are encouraged to read the user guides for each of these modules which can be found at the top of the respective scripts.
+![alt text](Screenshots/Screenshot9.png)
+*interp_plot.py functions **plot_logit_curve** and **plot_carrier_heads***
 
-
-## Quickstart in colab:
+## Quickstart in colab or notebook:
 <-------------------------------------------------------------------->
+Recall that FEN is the modern notation for a chess position
 ```python
 !pip install -q git+https://github.com/CSSLab/maia3
 !pip install -q "chessformer_lens[plot] @ git+https://github.com/chessformer-lens/chessformer_lens"
 
-#Interact with the attention widget
 import chess
 from chessformer_lens import MaiaEngine
 import chessformer_lens.interp_widget as iw
 
-eng = MaiaEngine()                      
-board = "...fill in FEN for position..."
-board = chess.Board(board)                   
+eng = MaiaEngine()          
+# Opera Game FEN right at legendary queen sacrifice 
+fen = "4kb1r/p2n1ppp/4q3/4p1B1/4P3/1Q6/PPP2PPP/2KR4 w k - 0 16" 
+# [or insert another FEN string]
 
-iw.attention_widget(eng, board, 1500,layer=4,head=3) # click between different layers and heads in the widget
+try:
+    board = chess.board(fen)
+except ValueError as e:
+    print("Invalid FEN: {e})     
+
+#Interact with the attention widget
+#click between different layers and heads in the widget
+iw.attention_widget(eng, board, 1500,layer=4,head=3) 
 ```
 <-------------------------------------------------------------------->
 ## The app
@@ -53,12 +62,10 @@ evolve with model depth. The model loads on a background thread so the window op
 <-------------------------------------------------------------------->
 
 ### Run locally
-`chessformer_lens` is a normal Python package, but it needs one thing installed
-first: `engine.py` imports `maia3`: the Maia-3 model code, which is **not on
-PyPI**, so it can't be declared as a dependency and has to come from GitHub.
-The install also installs torch, numpy, python-chess, huggingface-hub and
-ipython for `engine.py` and the widgets. 
+`chessformer_lens` is a normal Python package, but `engine.py` currently needs `maia3`: the Maia-3 model code, installed first. 
+Below also installs torch, numpy, python-chess, huggingface-hub and ipython.
 
+**In terminal:**
 ```bash
 pip install git+https://github.com/CSSLab/maia3
 pip install "chessformer_lens[all] @ git+https://github.com/chessformer-lens/chessformer_lens"
@@ -74,29 +81,26 @@ MAIA3_ALIAS=5m chessformer-lens
 <!-- understand about set `MAIA3_DEVICE=mps` (Apple Silicon) or run on
 CUDA to speed higher parameter models up. Model weights: <https://huggingface.co/UofTCSSLab> -->
 
-### Example usage directly from engine
-See the residual stream film and move microscope for the famous Paul Morphy "Opera Game"
+### Example practical usage in python
+Quick interpretability demo: **attention layer 5 head 5 is causally linked to detecting knight forks**
 ```python
-import chess
-from chessformer_lens import MaiaEngine
-import chessformer_lens.interp_plot as ip
+#Gather a couple of positions with knight forks and ablate every head in the model to see which impacts the output most
+knight_forks = [
+['1r2k3/3qn3/3p4/p2P1Pp1/PpP3Np/1P3Q1P/3K1PP1/7R w - - 0 37', 'g4f6'], 
+['5b2/6p1/3p2k1/2p3pn/7r/8/P2NKPQ1/R6R b - - 2 25','h5f4'],
+['6k1/5p1p/p3p1p1/1p2n3/1P1q4/P2p2P1/3Q1N1P/6K1 b - - 2 37', 'e5f3'],
+['rn1q1knr/pb2p1b1/6p1/5pN1/1pPP3p/1P6/P1B2PPP/1RQ2RK1 w - - 2 20', 'g5e6'],
+['5r1k/3nrBp1/b1pp1n1p/p3q2P/Pp2PN2/3PB1Q1/1PP3P1/2KR3R w - - 1 22', 'f4g6'], 
+['6k1/1pq2ppp/p7/3p4/1P1Nn3/P2QPP2/1B4Pb/7K b - - 1 26', 'e4f2'], 
+['4r1k1/6b1/3p2pp/3Pnp2/4N2Q/6P1/P1q2P1P/4R1K1 b - - 0 26', 'e5f3'], 
+['5rk1/pp5p/2p1p1p1/6N1/3PQBP1/2q4P/P7/3n3K b - - 1 25', 'd1f2'], 
+['r2q1rk1/ppp3p1/3ppn1B/2b1p3/3nP3/3P2QN/PPP2PPP/RN3RK1 b - - 2 11', 'd4e2'],
+['r1b2rk1/1pp2p1p/4p1p1/2PqP3/p1nPN2B/P1PQ4/6PP/R4RK1 w - - 2 21', 'e4f6']]
 
-#opera game FEN right at legendary queen sacrifice 
-fen = "4kb1r/p2n1ppp/4q3/4p1B1/4P3/1Q6/PPP2PPP/2KR4 w k - 0 16" 
-import matplotlib.pyplot as plt
-
-eng = MaiaEngine('23m')
-board = chess.Board(fen)                   
-move = eng.to_move(board,'Qb8+')
-ip.plot_position(eng, board,2600)
-plt.show()
-print("\n\n")
-ip.plot_residual_film(eng, board, 2600) #exceptional Elo rating to match Morphy's skill
-plt.show()
-print("\n\n")
-ip.plot_move_microscope(eng, board, 2600, move)     # one move's depth curve + carrier heads
-plt.show()
-plt.close()
+for fen, move in knight_forks:
+    board = chess.Board(fen)
+    display_board(board, move=move)
+    show(ip.plot_carrier_heads(eng, board, 2400, move))
 ```
 
 ### Code layout: all found within the chessformer_lens package
@@ -113,7 +117,7 @@ plt.close()
 
 ### Notes
 
-**Please don't hesitate to give me feedback by email or at davidlitman.com**. I intend for this to be a useful and intuitive tool for the community.
+Please don't hesitate to give me feedback by email or at **davidlitman.com**. I intend for this to be a useful and intuitive tool for the community.
 
 
 Maia-3 comes from:

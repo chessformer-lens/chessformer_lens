@@ -22,9 +22,28 @@ SOFTWARE.
 
 ---
 
-NOTE ON DEPENDENCIES AND BUNDLED ARTWORK
+THIRD-PARTY NOTICES
 
 The MIT license above covers the source code in this repository. It does not,
-and cannot, relicense third-party work. See THIRD-PARTY-NOTICES.md for the
-required attributions and for what applies if you redistribute this project
-bundled together with its dependencies.
+and cannot, relicense third-party work.
+
+BUNDLED ARTWORK — the cburnett chess piece set by Colin M.L. Burnett, obtained
+via python-chess's chess.svg.PIECES and redistributed here as the base64 PNGs in
+chessformer_lens/piece_art.py. Triple-licensed by its author under GFDL / BSD /
+GPL; this project uses it under the BSD option, which is compatible with MIT.
+Attribution to Colin M.L. Burnett is required, and is given here and in
+chessformer_lens/pieces.py. (pieces.py itself contains no artwork — it reads
+chess.svg.PIECES at import time.)
+
+DEPENDENCIES — python-chess (GPL-3.0-or-later) and maia3 (AGPL-3.0) are
+installed by pip and no code from either is copied into this repository, so
+using this project, and redistributing its source under MIT, are unaffected.
+Redistributing a BUNDLE that ships them alongside it — a Docker image, a conda
+package, a frozen binary, a vendored copy — makes that bundle a combined work,
+which must then satisfy GPL-3.0, and AGPL-3.0 including its network-use clause
+if maia3 is in it. Get a combined artifact or a hosted service reviewed rather
+than relying on this summary.
+
+MODEL WEIGHTS — Maia-3 checkpoints are downloaded at runtime from
+https://huggingface.co/UofTCSSLab and are not covered by this license. Check the
+model card before redistributing weights.
