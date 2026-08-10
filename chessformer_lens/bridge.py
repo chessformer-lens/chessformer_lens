@@ -22,6 +22,13 @@ from .engine import MaiaEngine
 # directory the app is launched from, so an installed copy is never written to.
 ACT_DIR = Path.cwd() / "activations"
 
+# Dumping a snapshot on every evaluation is how you get a real game's
+# activations into a notebook, but it is also a few hundred KB per move AND per
+# drag of the rating slider — an evening of play is gigabytes. Off unless asked:
+#     CHESSFORMER_SAVE_ACTIVATIONS=1 chessformer-lens
+SAVE_ACTIVATIONS = os.environ.get(
+    "CHESSFORMER_SAVE_ACTIVATIONS", "").strip().lower() in {"1", "true", "yes", "on"}
+
 
 def side_name(turn):
     return "white" if turn == chess.WHITE else "black"
@@ -92,7 +99,7 @@ class MaiaApi:
             "num_heads": self.engine.cfg.num_heads if self.ready else None,
             "dim_vit": self.engine.cfg.dim_vit if self.ready else None,
             "gen_size": self.engine.cfg.gab_gen_size if self.ready else None,
-            "activation_dir": str(ACT_DIR),
+            "activation_dir": str(ACT_DIR) if SAVE_ACTIVATIONS else None,
         }
 
     # ----- state ------------------------------------------------------------
@@ -130,7 +137,7 @@ class MaiaApi:
         with self._lock:
             res = self.engine.evaluate(b, self_elo=int(elo))
             act_file = None
-            if save and not b.is_game_over():
+            if save and SAVE_ACTIVATIONS and not b.is_game_over():
                 fname = f"ply{len(b.move_stack):03d}_{side_name(b.turn)}_elo{int(elo)}.pt"
                 act_file = self.engine.save_activations(fname, meta={
                     "fen": b.fen(),

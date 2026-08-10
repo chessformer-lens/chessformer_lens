@@ -1,7 +1,7 @@
 # App Guide:
 
 **Play or Set up a Position**
-![alt text](../Screenshots/Screenshot7.png)
+![Playing a game: the board, the last-move arrow, and the move list](../Screenshots/Screenshot7.png)
 Click to move your pieces. Select an Elo for the engine (Maia-3 is created to mimic how HUMANS play at that strength, with all of our innate biases)
 and use `New game`, and a dropdown:`You play White` / `You play Black` / `Set up position`.
 It is also possible to `paste a FEN to load` a position with the `Load` button. 
@@ -28,14 +28,18 @@ Select a square on the right to set the query for the three boards, labeled:
 -`geometric attention (GAB)`
 -`final head attention matrix (scaled softmax(QKᵀ + GAB))`
 `Ablate this head` gives the top 8 moves by |Δp|.
-![alt text](../Screenshots/Screenshot2.png)
+![Live attention: the QKᵀ, GAB and final attention boards for one query square](../Screenshots/Screenshot2.png)
 Unique to the app and Maia-3, hover over any attention square and the GAB drawer decomposes that square pair live, with every head clickable to open that template:
- ![alt text](../Screenshots/Screenshot8.png)
+ ![The GAB drawer decomposing one square pair, head by head](../Screenshots/Screenshot8.png)
 
 **The Three Drawers**
-![alt text](../Screenshots/Screenshot4.png)
-![alt text](../Screenshots/Screenshot5.png)+![alt text](../Screenshots/Screenshot3.png)
-![alt text](../Screenshots/Screenshot6.png)
+![The residual-stream filmstrip across depth](../Screenshots/Screenshot4.png)
+
+![The move microscope: depth curves for up to four moves](../Screenshots/Screenshot5.png)
+
+![The carrier-head grid, Δlogit = ablated − clean](../Screenshots/Screenshot3.png)
+
+![The GAB generator drawer and its template vocabulary](../Screenshots/Screenshot6.png)
 One open at a time, each peeking at the bottom with a `▲ pull up` grip, `Escape` closes.
 
 `Residual stream across depth · this position` — creates a filmstrip of mini

@@ -1,6 +1,6 @@
-#Everything the app needs, from a clone: `pip install -r requirements.txt`.
-#The first line installs the Maia-3 model code straight from GitHub so there is
-#nothing else to clone. It lives here because it is not on PyPI'''
+# Everything the app needs, from a clone: `pip install -r requirements.txt`.
+# The first line installs the Maia-3 model code straight from GitHub so there is
+# nothing else to clone. It lives here because it is not on PyPI.
 
 maia3 @ git+https://github.com/CSSLab/maia3
 

@@ -23,7 +23,7 @@ residual stream at every layer.
                         runs
   qk_scores             one block's scaled QKᵀ logits
   gab_bias              one block's generated bias
-  gab_coeffs            the coefficients head h applies to the GAB bank with
+  gab_coeffs            the coefficients head h applies to the GAB bank
   gab_templates         the static square-pair template bank every layer shares
   head_writes           exact residual writes of one block's attention
 
@@ -37,7 +37,7 @@ residual stream at every layer.
   compare_residual      the same position at two ratings, differenced — where
                         skill diverges inside the stream, not just in the
                         output
-  depth_points          the readout points as [{label, kind}]—the x axis in the below polts
+  depth_points          the readout points as [{label, kind}]—the x axis in the plots below
   move_logit_lens       one move's depth curve: logit, probability and rank at
                         every readout point
   logit_per_depth       that curve's raw logit alone, unmasked
@@ -131,7 +131,7 @@ class MaiaEngine:
         """Build the model and install the permanent capture hooks.
 
         Resolves the checkpoint (downloading it from Hugging Face on first
-        use), creates `activation_dir`, and registers forward hooks that copy
+        use), notes `activation_dir` for later, and registers forward hooks that copy
         every sub-layer's output to CPU on each forward. That copy is what
         makes the read paths work; it also costs a handful of device->host
         transfers per forward.
@@ -158,8 +158,9 @@ class MaiaEngine:
         self.all_moves_dict = {m: i for i, m in enumerate(self.all_moves)}
         self.idx_to_move = {i: m for m, i in self.all_moves_dict.items()}
 
+        # Not created here: `save_activations` makes it on first write, so
+        # importing the engine in a notebook leaves no directory behind.
         self.activation_dir = Path(activation_dir)
-        self.activation_dir.mkdir(parents=True, exist_ok=True)
 
         self._activations: dict[str, torch.Tensor] = {}
         self._hooks: list = []
@@ -942,9 +943,13 @@ class MaiaEngine:
     def save_activations(self, filename: str, meta: dict | None = None) -> str:
         """Persist the most recent forward's residual-stream snapshot, plus a
         `meta` entry. Each tensor is (64, dim_vit), on CPU. Keys are every name
-        in `hook_points` — see `_register_hooks` for what each one is."""
+        in `hook_points` — see `_register_hooks` for what each one is.
+
+        `activation_dir` is created here, on the first save, rather than in
+        __init__."""
         snap = {k: v.squeeze(0).clone() for k, v in self._activations.items()}
         snap["meta"] = meta or {}
+        self.activation_dir.mkdir(parents=True, exist_ok=True)
         path = self.activation_dir / filename
         torch.save(snap, path)
         return str(path)
