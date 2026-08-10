@@ -8,13 +8,20 @@
 ## Case study: Knight Fork Carrier Head
 **Download chessformer_lens locally:**
 
+
+Pip install:
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install git+https://github.com/CSSLab/maia3
 pip install "chessformer_lens[all] @ git+https://github.com/chessformer-lens/chessformer_lens"
-# Or clone and then `pip install -r requirements.txt` 
 ```
 
+Clone install:
+```bash
+git clone https://github.com/chessformer-lens/chessformer_lens
+cd chessformer_lens
+`pip install -r requirements.txt` 
+```
 
 Quick interpretability demo (n=10): **attention layer 5 head 5 seems to be the carrier head for knight forks**
 
@@ -23,7 +30,6 @@ In python:
 # Gather ten positions with knights forking King and Queen, then ablate every
 # head in the model to see which one is most causally linked to the output.
 import chess
-import numpy as np
 import matplotlib.pyplot as plt
 from chessformer_lens import MaiaEngine
 import chessformer_lens.interp_plot as ip
@@ -43,12 +49,11 @@ knight_forks = [
 {"fen": 'r1b2rk1/1pp2p1p/4p1p1/2PqP3/p1nPN2B/P1PQ4/6PP/R4RK1 w - - 2 21',"move": 'e4f6'}]
 
 for pos in knight_forks:
-    ip.plot_board(chess.Board(pos["fen"]), move=pos["move"])
-    plt.show()
-    ip.plot_carrier_heads(eng, chess.Board(pos["fen"]), 2400, pos["move"])
+    ip.plot_move_report(eng, chess.Board(pos["fen"]), 2400, pos["move"])
     plt.show()
 plt.close()
 ```
+
 ![alt text](Screenshots/screenshot10.png)![alt text](Screenshots/screenshot11.png)
 
 ---
@@ -76,8 +81,6 @@ Users are encouraged to read the user guides for each of these modules which can
 ---
 ## Quickstart in colab or notebook:
 
-
-
 Recall that FEN is the modern notation for a chess position
 ```python
 !pip install -q git+https://github.com/CSSLab/maia3
@@ -101,7 +104,6 @@ except ValueError as e:
 #click between different layers and heads in the widget
 iw.attention_widget(eng, board, 1500,layer=4,head=3) 
 ```
-
 
 ---
 ## The app

@@ -320,7 +320,12 @@ function buildChips(el, n, cur, pick){
 _ATTENTION_PAGE = _CSS + r"""
 <style>
   .attset{display:flex;flex-direction:column;gap:12px}
-  .row{display:grid;grid-template-columns:200px 1fr;gap:16px;align-items:start}
+  /* The position is what the three attention boards are read against, so it
+     scales with them rather than sitting at a fixed width: 1.25fr against the
+     3fr the pair splits three ways makes it the largest board on the page. A
+     fixed 200px looked right in a narrow cell and tiny in a wide Colab one,
+     where each attention board grew past 300px and the position did not. */
+  .row{display:grid;grid-template-columns:minmax(200px,1.25fr) 3fr;gap:16px;align-items:start}
   .attpair{display:flex;gap:10px}
   .attpair>div{flex:1;min-width:0}
   @media (max-width:760px){ .row{grid-template-columns:1fr} }

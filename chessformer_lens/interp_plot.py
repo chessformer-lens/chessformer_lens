@@ -17,6 +17,9 @@ The app's views as matplotlib figures — same layouts, same colours, same words
   plot_carrier_heads    the carrier grid · Δlogit = ablated − clean; costs
                         ~num_blocks·(num_heads+1) forward passes where the
                         microscope's curve costs one
+  plot_move_report      one move end to end: the position, its depth curve and
+                        its carrier grid as three panels of one figure — the
+                        one to sweep a set of positions with
   plot_attention        "Live attention · this position": semantic QKᵀ, geometric
                         GAB, and the head's final attention, for one query square
   plot_attention_layer  the same three, for every head in a layer at once —
@@ -764,6 +767,50 @@ def _carrier_grid(ax, eng, board, elo, uci, oppo_elo):
             f"b{no_carrier} excluded (writes straight to the logits)",
             fontsize=6.8, color=MUTED, family=MONO, va="top", linespacing=1.7)
     return g
+
+
+def plot_move_report(eng, board: chess.Board, elo: int = 1500, uci=None, *,
+                     oppo_elo=None, figsize=(15, 5.2)):
+    """One position and move on the board, its logit through depth, and the heads
+    that carry it."""
+    (uci, san), = _curve_moves(eng, board, elo, uci, oppo_elo)
+    data = eng.move_logit_lens(board, elo, uci, oppo_elo)
+    steps = data["steps"]
+
+    fig = _fig(figsize)
+    gs = GridSpec(1, 3, figure=fig, width_ratios=[1, 1.45, 1.05], wspace=.2,
+                  left=.06, right=.97, top=.78, bottom=.18)
+    ax_b, ax_c, ax_g = (fig.add_subplot(gs[0, i]) for i in range(3))
+    draw_board(ax_b, board)
+    mv = chess.Move.from_uci(uci)
+    for sq in (mv.from_square, mv.to_square):        # the app's played-move highlight
+        f, r = chess.square_file(sq), chess.square_rank(sq)
+        ax_b.add_patch(plt.Rectangle((f - .5, r - .5), 1, 1, lw=0,
+                                     fc=(*_hex(HL), .28), zorder=3))
+#
+    _depth_axes(ax_c, [_depth_label(s) for s in steps],
+                [(san, [s["logit"] for s in steps], ACCENT, 2.2)], ylabel="logit")
+    ranks = [s["rank"] for s in steps]
+    snap = -1
+    if ranks[-1] == 1:
+        snap = len(ranks) - 1
+        while snap > 0 and ranks[snap - 1] == 1:
+            snap -= 1
+    if snap > 0:
+        ax_c.axvline(snap, color=QRING, ls=(0, (4, 3)), lw=1.2, zorder=2)
+        late = snap > len(steps) * .6
+        ax_c.text(snap + (-.15 if late else .15), ax_c.get_ylim()[1],
+                  f"top from {_depth_label(steps[snap])}",
+                  color=QRING, fontsize=8, family=MONO, va="top",
+                  ha="right" if late else "left")
+    _hint(ax_c, f"logit through depth · rank 1 of {data['n_legal']} legal moves "
+                f"= the top move", y=1.03, size=8.5)
+    _carrier_grid(ax_g, eng, board, elo, uci, oppo_elo)
+
+    _curve_header(fig, "Move report", [(uci,san)], elo,
+                  "the position · the move's logit through depth · "
+                  "the heads that carry it")
+    return fig
 
 
 # ---------------------------------------------------------------------------
