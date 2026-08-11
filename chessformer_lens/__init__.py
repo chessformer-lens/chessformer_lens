@@ -23,7 +23,7 @@ try:  # populated once the distribution is installed
 
     __version__ = version("chessformer-lens")
 except Exception:  # running from a source checkout without an install
-    __version__ = "0.1.2"
+    __version__ = "0.1.3"
 
 # Attribute -> the submodule it lives in. Resolved lazily so that `import
 # chessformer_lens` (and `__version__`) costs nothing: engine.py pulls in torch

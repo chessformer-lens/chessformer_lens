@@ -8,7 +8,7 @@ type: software
 license: MIT
 repository-code: "https://github.com/chessformer-lens/chessformer_lens"
 url: "https://github.com/chessformer-lens/chessformer_lens"
-version: 0.1.2
+version: 0.1.3
 date-released: "2026-08-10"
 doi: "10.5281/zenodo.21877655"
 identifiers:
