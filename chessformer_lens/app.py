@@ -46,7 +46,16 @@ def main():
         width=1400, height=840, min_size=(1360, 780),
         background_color="#0e1014",   # matches ui.py's --bg
     )
-    webview.start()
+    try:
+        webview.start()
+    except Exception as exc:
+        # pywebview renders through a system webview that pip cannot install
+        # "Alternatively, skip the app and use the notebook panels: "
+        # "chessformer_lens.interp_widget.attention_widget()."
+        if sys.platform.startswith("linux"):
+            sys.exit(
+                f"Could not open the app window: {exc}\n\n")
+        raise
 
 
 if __name__ == "__main__":

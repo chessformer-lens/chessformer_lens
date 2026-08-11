@@ -25,7 +25,7 @@ ACT_DIR = Path.cwd() / "activations"
 # Dumping a snapshot on every evaluation is how you get a real game's
 # activations into a notebook, but it is also a few hundred KB per move AND per
 # drag of the rating slider — an evening of play is gigabytes. Off unless asked:
-#     CHESSFORMER_SAVE_ACTIVATIONS=1 chessformer-lens
+#     CHESSFORMER_SAVE_ACTIVATIONS=1 chessformer_lens
 SAVE_ACTIVATIONS = os.environ.get(
     "CHESSFORMER_SAVE_ACTIVATIONS", "").strip().lower() in {"1", "true", "yes", "on"}
 

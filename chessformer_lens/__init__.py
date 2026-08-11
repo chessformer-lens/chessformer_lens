@@ -8,7 +8,7 @@ One engine, three frontends:
     from chessformer_lens import interp_plot as ip     # read-once views as figures
     from chessformer_lens import interp_widget as iw   # the two live panels, in a notebook
 
-    chessformer-lens                                   # the native app
+    chessformer_lens                                   # the native app
 
 `interp_plot` needs matplotlib and the app needs pywebview; both are extras
 (`pip install 'chessformer_lens[plot,app]'`). Importing this package pulls in

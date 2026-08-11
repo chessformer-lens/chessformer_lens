@@ -39,7 +39,10 @@ classifiers = [
 # Install it alongside this package -- see the README, or requirements.txt:
 #     pip install git+https://github.com/CSSLab/maia3
 dependencies = [
-    "torch",
+    # >=2.4 is maia3's floor, not ours: maia3/models.py imports torch.nn.RMSNorm,
+    # which was added in 2.4. Note this rules out Intel Macs, whose last wheel
+    # was 2.2.2.
+    "torch>=2.4",
     "numpy",
     "python-chess",
     "huggingface-hub",
@@ -52,7 +55,8 @@ plot = ["matplotlib"]        # the static figure layer (interp_plot.py, piece_ar
 all = ["chessformer_lens[app,plot]"]
 
 [project.scripts]
-chessformer-lens = "chessformer_lens.app:main"
+chessformer_lens = "chessformer_lens.app:main"
+chessformer-lens = "chessformer_lens.app:main"   # the pre-0.1.2 name, kept working
 
 [project.urls]
 Homepage = "https://github.com/chessformer-lens/chessformer_lens"

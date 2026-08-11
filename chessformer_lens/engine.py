@@ -76,11 +76,33 @@ from pathlib import Path
 import chess
 import torch
 
-from maia3.models import MAIA3Model  # noqa: F401
-from maia3.uci import load_model, sample_from_logits
-from maia3.dataset import tokenize_board, get_historical_tokens, get_legal_moves_mask
-from maia3.utils import get_all_possible_moves, mirror_move
-from maia3.model_registry import resolve_model_spec, apply_model_config, resolve_checkpoint_path
+# maia3 is the one dependency pip cannot fetch for us: it is not on PyPI, and
+# PyPI rejects direct git URLs in dependency metadata. Every entry point into
+# this package (bridge.py, app.py, the lazy names in __init__.py) reaches
+# maia3 through this module, so this is the single boundary where a missing
+# install should be turned into an instruction rather than a traceback.
+try:
+    from maia3.models import MAIA3Model  # noqa: F401
+    from maia3.uci import load_model, sample_from_logits
+    from maia3.dataset import tokenize_board, get_historical_tokens, get_legal_moves_mask
+    from maia3.utils import get_all_possible_moves, mirror_move
+    from maia3.model_registry import resolve_model_spec, apply_model_config, resolve_checkpoint_path
+except ModuleNotFoundError as exc:
+    if exc.name != "maia3" and not str(exc.name or "").startswith("maia3."):
+        raise
+    raise ModuleNotFoundError(
+        "chessformer_lens needs the Maia-3 model code, which is not on PyPI "
+        "and so is not installed by `pip install chessformer_lens`.\n\n"
+        "    pip install git+https://github.com/CSSLab/maia3\n"
+    ) from exc
+except ImportError as exc:
+    # maia3 imports torch.nn.RMSNorm, which only exists from torch 2.4.
+    if "RMSNorm" not in str(exc):
+        raise
+    raise ImportError(
+        f"Maia-3 needs torch >= 2.4; this environment has {torch.__version__}.\n"
+        "    pip install --upgrade 'torch>=2.4'"
+    ) from exc
 
 __all__ = ["MaiaEngine", "build_cfg", "pick_device"]
 
@@ -145,9 +167,21 @@ class MaiaEngine:
         if self.cfg.checkpoint_path is None:
             # Use the checkpoint from the local HF cache if present, otherwise
             # download it from Hugging Face — so the app runs on a fresh machine.
-            self.cfg.checkpoint_path = resolve_checkpoint_path(
-                self.spec, local_files_only=False
-            )
+            # Say so before the download starts: it is hundreds of MB
+            try:
+                self.cfg.checkpoint_path = resolve_checkpoint_path(
+                    self.spec, local_files_only=True
+                )
+            except Exception:
+                print(f"chessformer_lens: {alias} weights are not in the local "
+                      f"Hugging Face cache; downloading them now (this is a "
+                      f"one-time, several-hundred-MB fetch for the larger "
+                      f"models).\n  from:  https://huggingface.co/UofTCSSLab\n"
+                      f"  cache: {os.environ.get('HF_HOME') or '~/.cache/huggingface'}",
+                      flush=True)
+                self.cfg.checkpoint_path = resolve_checkpoint_path(
+                    self.spec, local_files_only=False
+                )
 
         self.device = self.cfg.device
         self.model = load_model(self.cfg)   # builds MAIA3Model(cfg), loads weights, .eval()

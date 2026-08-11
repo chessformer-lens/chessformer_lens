@@ -1,6 +1,8 @@
-# Chessformer_lens
+# chessformer_lens
 
 #### A toolkit + visualizer library  for mechanistic interpretability of transformer based chess models.
+
+`pip install chessformer_lens`, then `import chessformer_lens` or launch `chessformer_lens`.
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21877655.svg)](https://doi.org/10.5281/zenodo.21877655)
 
@@ -53,7 +55,6 @@ knight_forks = [
 for pos in knight_forks:
     ip.plot_move_report(eng, chess.Board(pos["fen"]), 2400, pos["move"])
     plt.show()
-plt.close()
 ```
 
 ![A knight-fork position's move report](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/screenshot10.png)![A second knight-fork move report](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/screenshot11.png)
@@ -112,7 +113,7 @@ iw.attention_widget(eng, board, 1500,layer=4,head=3)
 
 
 
-To me, the app is the pièce de résistance and usage should be rather intuitive, nonetheless, a detailed guide can be found in [`app_README.md`](chessformer_lens/app_README.md).
+To me, the app is the pièce de résistance and usage should be rather intuitive, nonetheless, a detailed guide can be found in [`app_README.md`](https://github.com/chessformer-lens/chessformer_lens/blob/main/chessformer_lens/app_README.md).
 
 
 Play a transformer-based chess bot ("chessformer") and watch
@@ -122,10 +123,10 @@ evolve with model depth. The model loads on a background thread so the window op
 
 ```bash
 #Various ways to launch, note that higher parameter models have 16 and 32 heads per layer, and 512 and 1024 dim of the model (d_model):
-chessformer-lens
-chessformer-lens 23m               
-chessformer-lens --model maia3-79m 
-MAIA3_ALIAS=5m chessformer-lens   
+chessformer_lens
+chessformer_lens 23m               
+chessformer_lens --model maia3-79m 
+MAIA3_ALIAS=5m chessformer_lens   
 ```
 
 
@@ -143,7 +144,7 @@ CUDA to speed higher parameter models up. Model weights: <https://huggingface.co
 - `bridge.py` — the game state + the JSON API the UI calls.
 - `ui.py` — the whole interface (HTML/CSS/JS) as one string including guide to change template.
 - `pieces.py` — SVG piece set as data URIs.
-- `app.py` — app launcher (native window via pywebview); the `chessformer-lens` command is its `main()`.
+- `app.py` — app launcher (native window via pywebview); the `chessformer_lens` command is its `main()`.
 
 ---
 ### Notes
