@@ -21,11 +21,11 @@ residual stream at every layer.
   attention             the 64×64 components of one (layer, head): semantic
                         QKᵀ, geometric GAB, and the softmax the model actually
                         runs
-  qk_scores             one block's scaled QKᵀ logits
-  gab_bias              one block's generated bias
+  qk_scores             one layer's scaled QKᵀ logits
+  gab_bias              one layer's generated bias
   gab_coeffs            the coefficients head h applies to the GAB bank
   gab_templates         the static square-pair template bank every layer shares
-  head_writes           exact residual writes of one block's attention
+  head_writes           exact residual writes of one layer's attention
 
   
   ablate_head           forward pass with one head's write removed, exactly
@@ -60,8 +60,15 @@ expects from a registry alias, and `pick_device` resolves the torch device
 
 Every tensor a read path returns is on CPU, in the model's canonical
 side-to-move frame (square = rank*8 + file). Depth reads the same as in the
-figures: `emb`, then `aN`/`mN` for block N's attention and MLP sub-layers, then
+figures: `emb`, then `aN`/`mN` for layer N's attention and MLP sub-layers, then
 `enc` — `depth_points` hands you that axis directly.
+
+One naming note: the checkpoint's own config calls a layer a *block*, so the
+config field (`cfg.num_blocks`) and the capture keys (`block_NN`) keep that
+word. Everything facing a reader — labels, figures, the app — says layer:
+`LN` for the layer and `hN` for a head, so one head reads `L3·h5`. `aN`/`mN`
+name depth points only, where the point of the label is which sub-layer of
+layer N did the writing.
 
 It imports cleanly into a notebook; plotting lives next door in interp_plot.py
 (static figures) and interp_widget.py (interactive panels), and the standalone
@@ -362,7 +369,7 @@ class MaiaEngine:
         entries do reflect the patch. Take your clean cache before you patch,
         not after.
 
-        Example — halve block 5's whole attention write:
+        Example — halve layer 5's whole attention write:
             self.run_with_hooks(board, 1500, fwd_hooks=[("attn_05", lambda a: a * 0.5)])
         """
         def make(fn):
@@ -438,8 +445,8 @@ class MaiaEngine:
 
     @staticmethod
     def _qk_from_x(blk, x):
-        """Scaled QK^T content logits of one MHA block from its input x:
-        (1, H, 64, 64), using the block's own in-projection."""
+        """Scaled QK^T content logits of one MHA layer from its input x:
+        (1, H, 64, 64), using the layer's own in-projection."""
         H = blk.num_heads
         d = x.size(-1)
         dh = d // H
@@ -468,9 +475,9 @@ class MaiaEngine:
           coeffs       = the smolgen mixing coefficients that generated this
                          head's gab (see gab_coeffs())
 
-        Computed directly from the residual stream entering the block, using
-        the block's own projections and GAB generator — no re-implementation
-        of the model. Requires a GAB block: with use_gab=False there are no
+        Computed directly from the residual stream entering the layer, using
+        the layer's own projections and GAB generator — no re-implementation
+        of the model. Requires a GAB layer: with use_gab=False there are no
         smolgen submodules and the _sq_bias call raises AttributeError.
         Matrices are in the side-to-move frame; square = rank*8 + file."""
         L = int(layer)
@@ -504,9 +511,9 @@ class MaiaEngine:
 
     @staticmethod
     def _smolgen_coeffs(blk, x):
-        """Replicate one block's smolgen generator up to the mixing coefficients:
+        """Replicate one layer's smolgen generator up to the mixing coefficients:
         (1, H, gen_size). Sanity-checked on the spot: mixing the shared
-        templates with these coefficients must reproduce the block's own
+        templates with these coefficients must reproduce the layer's own
         _sq_bias() (asserted, so the check vanishes under python -O)."""
         B = x.size(0)
         if blk.sm1 is not None:                                # per-square path
@@ -543,7 +550,7 @@ class MaiaEngine:
 
     @torch.no_grad()
     def gab_coeffs(self, board, self_elo, oppo_elo=None, layer=0):
-        """The smolgen mixing coefficients of one block for this position:
+        """The smolgen mixing coefficients of one layer for this position:
         (H, gen_size). Row h holds the weights with which head h mixes the
         static `gab_templates()` into its 64x64 bias:
             gab_bias(layer, h) == (coeffs[h, :, None, None] * gab_templates()).sum(0)
@@ -553,25 +560,25 @@ class MaiaEngine:
         x = self._block_input(board, self_elo, oppo_elo, L)
         blk = self.model.transformer.layers[L].self_attn
         if not blk.use_gab:
-            raise RuntimeError(f"block {L} has no GAB (use_gab=False)")
+            raise RuntimeError(f"layer {L} has no GAB (use_gab=False)")
         return self._smolgen_coeffs(blk, x)[0].cpu()
 
     @torch.no_grad()
     def gab_bias(self, board, self_elo, oppo_elo=None, layer=0, head=None):
-        """The generated geometric attention bias of one block for this position:
+        """The generated geometric attention bias of one layer for this position:
         (H, 64, 64), or (64, 64) for a single `head`. bias[h][q][k] is added to
         the scaled QK^T logit of query q, key k before the softmax."""
         L = int(layer)
         x = self._block_input(board, self_elo, oppo_elo, L)
         blk = self.model.transformer.layers[L].self_attn
         if not blk.use_gab:
-            raise RuntimeError(f"block {L} has no GAB (use_gab=False)")
+            raise RuntimeError(f"layer {L} has no GAB (use_gab=False)")
         gab = blk._sq_bias(x)[0].cpu()
         return gab if head is None else gab[int(head)]
 
     @torch.no_grad()
     def qk_scores(self, board, self_elo, oppo_elo=None, layer=0, head=None):
-        """The raw content half of attention — scaled QK^T logits — of one block
+        """The raw content half of attention — scaled QK^T logits — of one layer
         for this position: (H, 64, 64), or (64, 64) for a single `head`.
         softmax(qk_scores + gab_bias) is the attention the model actually runs."""
         L = int(layer)
@@ -583,14 +590,14 @@ class MaiaEngine:
     # ----- per-head attention writes (for true head ablation) ---------------
     @torch.no_grad()
     def head_writes(self, board, self_elo, oppo_elo=None, layer=0):
-        """Exact per-head residual-stream writes of one block's attention:
+        """Exact per-head residual-stream writes of one layer's attention:
         (H, 64, dim).
 
         Head h's write is (A_h V_h) W_O^{(h)} — its attention-weighted values
         pushed through its own dh-column block of the output projection. This
         is the tensor a true head ablation must subtract: the hooked attn_NN
         activation is post-out_proj, where the heads are already mixed across
-        every channel. Recomputed from the block's own weights (same approach
+        every channel. Recomputed from the layer's own weights (same approach
         as `attention()`), and asserted on the spot to sum back — with the
         out_proj bias — to this forward's attn_NN activation."""
         L = int(layer)
@@ -617,7 +624,7 @@ class MaiaEngine:
             recon = recon + blk.mha.out_proj.bias
         target = self._activations[f"attn_{L:02d}"][0].to(self.device)
         assert torch.allclose(recon, target, atol=1e-4, rtol=1e-4), \
-            f"head_writes reconstruction failed for block {L} — do not trust the ablation"
+            f"head_writes reconstruction failed for layer {L} — do not trust the ablation"
         return writes.cpu()
 
     def ablate_head(self, board, self_elo, layer, head, oppo_elo=None,
@@ -665,14 +672,14 @@ class MaiaEngine:
 
           delta = the per-square magnitude of the vector each structure writes
                   into the stream, in execution order: the input embedding
-                  (`emb`), then for every block the self-attention write
-                  (`bN attn` = ||sa_out||) and the feed-forward write
-                  (`bN mlp` = ||ff_out||). Each entry is tagged with its `kind`
+                  (`emb`), then for every layer the self-attention write
+                  (`aN` = ||sa_out||) and the feed-forward write
+                  (`mN` = ||ff_out||). Each entry is tagged with its `kind`
                   ('emb'/'attn'/'mlp') so the UI can mark what is writing at
                   each point. 1 + 2·num_blocks entries.
 
           moves = logit lens on the running residual stream at every readout
-                  point (see `_lens_steps`): emb, then per block the
+                  point (see `_lens_steps`): emb, then per layer the
                   post-attention and post-MLP points, then a final `enc`
                   readout. Decode each through the policy head, take the top
                   legal move, and watch the prediction form sub-layer by
@@ -692,13 +699,13 @@ class MaiaEngine:
 
         delta = [{"label": "emb", "kind": "emb", "norm": per_sq_norm("embed_in")}]
         for i in range(nb):
-            delta.append({"label": f"b{i} attn", "kind": "attn",
+            delta.append({"label": f"a{i}", "kind": "attn",
                           "norm": per_sq_norm(f"attn_{i:02d}")})
-            delta.append({"label": f"b{i} mlp", "kind": "mlp",
+            delta.append({"label": f"m{i}", "kind": "mlp",
                           "norm": per_sq_norm(f"mlp_{i:02d}")})
 
         # ---- moves: per-sub-layer logit lens on the running residual stream ----
-        # Same resolution as delta: emb, then (post-attn, post-mlp) per block, enc.
+        # Same resolution as delta: emb, then (post-attn, post-mlp) per layer, enc.
         legal = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
         moves = [{"label": lab, "kind": kind,
                   **self._lens_move(self._activations[name][0], board, legal)}
@@ -709,12 +716,14 @@ class MaiaEngine:
     # ----- skill diff on internals ------------------------------------------
     def _lens_steps(self):
         """The readout points of the running residual stream, in order: emb, then
-        per block the post-attention and post-MLP points, then enc — so
-        2·num_blocks + 2 of them (18 on every current Maia-3 size)."""
+        per layer the post-attention and post-MLP points, then enc — so
+        2·num_blocks + 2 of them (18 on every current Maia-3 size). The labels
+        are the app-wide depth names: `aN`/`mN` for layer N's attention and MLP
+        sub-layers (see interp_plot._depth_label)."""
         steps = [("embed_in", "emb", "emb")]
         for i in range(self.cfg.num_blocks):
-            steps.append((f"postattn_{i:02d}", f"b{i} attn", "attn"))
-            steps.append((f"block_{i:02d}",    f"b{i} mlp",  "mlp"))
+            steps.append((f"postattn_{i:02d}", f"a{i}", "attn"))
+            steps.append((f"block_{i:02d}",    f"m{i}", "mlp"))
         steps.append(("encoder_out", "enc", "enc"))
         return steps
 

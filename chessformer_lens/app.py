@@ -1,5 +1,7 @@
 """
 App Guide: see app_README.md
+
+From repo run: python -m chessformer_lens.app
 """
 import argparse
 import os

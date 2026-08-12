@@ -1,9 +1,9 @@
 """
 The app's two interactive panels, each as a self-contained notebook cell.
 
-  attention_widget  the scaled QKᵀ logits and the generated GAB of every block
+  attention_widget  the scaled QKᵀ logits and the generated GAB of every layer
                     and head, fp16 (~1.4 MB); the JS takes softmax(QKᵀ + GAB)
-                    itself, so every block, head and query square is live
+                    itself, so every layer, head and query square is live
   gab_widget        the static template bank plus every head's mixing
                     coefficients (~750 KB); `gab_bias == coeffs @ templates`
                     holds exactly (engine.gab_coeffs asserts it), so the JS
@@ -87,7 +87,7 @@ def _common(eng, board: chess.Board, elo: int, oppo_elo) -> dict:
 
 def attention_payload(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None) -> dict:
     """The attention panel's data: scaled QKᵀ and the generated GAB for every
-    block and head, base64 fp16 (n_blocks, n_heads, 64, 64) each — the JS takes
+    layer and head, base64 fp16 (n_blocks, n_heads, 64, 64) each — the JS takes
     the softmax itself. Plus every key from `_common`."""
     nb = eng.cfg.num_blocks
     qk = np.stack([eng.qk_scores(board, elo, oppo_elo, layer=L).numpy() for L in range(nb)])
@@ -97,10 +97,10 @@ def attention_payload(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None
 
 def gab_payload(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None) -> dict:
     """The GAB drawer's data: the static template bank (base64 fp16
-    (gen, 64, 64)) and [block][head][gen] generated mixing coefficients. Plus
+    (gen, 64, 64)) and [layer][head][gen] generated mixing coefficients. Plus
     every key from `_common`.
 
-    A single block built without GAB comes back as null coefficients; a model
+    A single layer built without GAB comes back as null coefficients; a model
     built entirely without GAB has no template bank at all, so gab_templates()
     raises RuntimeError here — use `attention_widget` on those."""
     coeffs = []
@@ -148,7 +148,7 @@ def attention_widget_html(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=
 
 def gab_widget_html(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
                     layer: int = 0, head: int = 0) -> str:
-    """"How L·H's GAB is generated" as a standalone HTML page."""
+    """"How L·h's GAB is generated" as a standalone HTML page."""
     return _page(_GAB_PAGE, gab_payload(eng, board, elo, oppo_elo=oppo_elo), layer, head)
 
 
@@ -303,11 +303,14 @@ function marks(){
   });
 }
 function buildChips(el, n, cur, pick){
+  // Same naming as the app: L = layer, h = head — the head picked here is the one
+  // the readouts call L{layer}·h{head}.
+  const pre = el.id === 'layerChips' ? 'L' : 'h';
   el.innerHTML = '';
   for(let i = 0; i < n; i++){
     const b = document.createElement('div');
     b.className = 'chip' + (i === cur ? ' active' : '');
-    b.textContent = i;
+    b.textContent = pre + i;
     b.onclick = () => pick(i);
     el.appendChild(b);
   }
@@ -420,7 +423,7 @@ renderAll();
 """
 
 # --------------------------------------------------------------------------
-# How L·H's GAB is generated
+# How L·h's GAB is generated
 # --------------------------------------------------------------------------
 _GAB_PAGE = _CSS + r"""
 <style>
@@ -463,7 +466,7 @@ _GAB_PAGE = _CSS + r"""
 
 <div class="card">
   <div class="mlhead">
-    <span class="mltitle">How <b id="gabhead">L0·H0</b>'s GAB is generated</span>
+    <span class="mltitle">How <b id="gabhead">L0·h0</b>'s GAB is generated</span>
     <span class="mlhint">a generator reads this position and emits, per head, a bias of the
       <span id="gabNcoeff">64</span> coefficients over a static bank of
       <span id="gabNtmpl">64</span> 64×64 square-pair templates shared by every layer</span>
@@ -534,7 +537,7 @@ function defaultGabTarget(){                       // strongest |GAB| target for
 }
 function renderGabReadout(){
   const el = $('gabreadout'), c = coeffs();
-  if(!c){ el.textContent = 'this block was built without GAB'; return; }
+  if(!c){ el.textContent = 'this layer was built without GAB'; return; }
   if(k === null) k = defaultGabTarget();
   const terms = []; let total = 0;
   for(let g = 0; g < N; g++){ const v = c[g] * T[g*4096 + q*64 + k]; terms.push({i: g, v}); total += v; }
@@ -605,7 +608,7 @@ function renderTemplateDetail(){
       `<div class="gtlbl">its row at query ${nameOf(q)}</div></div>` +
     `<div class="gdinfo"><button class="gdclose" id="gdclose">close</button>` +
       `template <b>#${i}</b> — static stencil, shared by every layer &amp; head.` +
-      (v === null ? '' : ` In L${layer}·H${head} on this board (elo ${D.elo}) its coefficient is ` +
+      (v === null ? '' : ` In L${layer}·h${head} on this board (elo ${D.elo}) its coefficient is ` +
         `<b>${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(3)}</b> — #${rank} of ${N} by |coeff|.`) +
     `</div>`;
   paintTemplate($('gdcv'), i);
@@ -623,7 +626,7 @@ function toggleTemplate(i){
 }
 function onHover(){ renderGabReadout(); marks(); }
 function renderAll(){
-  $('gabhead').textContent = 'L' + layer + '·H' + head;
+  $('gabhead').textContent = 'L' + layer + '·h' + head;
   buildChips($('layerChips'), NB, layer, i => { layer = i; k = null; renderAll(); });
   buildChips($('headChips'),  NH, head,  i => { head  = i; k = null; renderAll(); });
   renderGabReadout();

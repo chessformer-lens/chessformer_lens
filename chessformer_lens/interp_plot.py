@@ -24,7 +24,7 @@ The app's views as matplotlib figures — same layouts, same colours, same words
                         GAB, and the head's final attention, for one query square
   plot_attention_layer  the same three, for every head in a layer at once —
                         3·num_heads boards on one comparable scale
-  plot_gab_mixture      "How L·H's GAB is generated": the decomposition readout,
+  plot_gab_mixture      "How L·h's GAB is generated": the decomposition readout,
                         the generated mixing coefficients, and the template bank
   plot_gab_templates    the template vocabulary on its own
   plot_skill_diff       where two ratings diverge inside the stream, per square
@@ -32,7 +32,7 @@ The app's views as matplotlib figures — same layouts, same colours, same words
 `plot_attention` and `plot_gab_mixture` are the same two panels `interp_widget`
 ships as live widgets, rendered as one slice: take the figure when you want a
 single frame for a paper or a static export, take the widget when you want to
-sweep blocks, heads and query squares.
+sweep layers, heads and query squares.
 
 Every plotter takes `figsize` and returns the Figure; the defaults are tuned to
 the app's proportions, and the ones that wrap a row of boards size themselves
@@ -44,7 +44,7 @@ diff are in the model's own canonical side-to-move frame — that is the frame t
 engine returns those tensors in, and the app draws them the same way.
 
 Depth reads the same on every figure that has it: `emb`, then `aN`/`mN` for
-block N's attention and MLP sub-layers, then `enc` (see `_depth_label`).
+layer N's attention and MLP sub-layers, then `enc` (see `_depth_label`).
 """
 from __future__ import annotations
 
@@ -103,18 +103,14 @@ def _canon(square: int, turn: bool) -> int:
 
 def _depth_label(step) -> str:
     """A readout point -> its compact depth label: 'emb', then 'a0'/'m0' for
-    block 0's attention and MLP sub-layers, ..., 'enc'. The label names the
+    layer 0's attention and MLP sub-layers, ..., 'enc'. The label names the
     writer at every point, so nothing else (marker colour, say) has to.
 
-    Takes any dict carrying the engine's {label, kind} pair, so the microscope's
+    The engine already labels its readout points this way (`_lens_steps`), so
+    this is a pass-through kept as the one place the figures name depth. Takes
+    any dict carrying the engine's {label, kind} pair, so the microscope's
     `steps`, the film's `delta` and the skill diff's `steps` all label alike."""
-    kind = step["kind"]
-    if kind in ("emb", "enc"):
-        return step["label"]
-    # "b0 attn" -> "0"; parsed rather than counted so a caller can label a
-    # subset of points without the block numbers sliding.
-    n = step["label"].split()[0].lstrip("b")
-    return ("a" if kind == "attn" else "m") + n
+    return step["label"]
 
 
 def _fig(figsize):
@@ -563,7 +559,7 @@ def _curve_header(fig, title, moves, elo, hint):
         (f"  {moves[0][0]} · elo {elo}", dict(fontsize=8.5, color=MUTED, family=MONO)),
     ])
     fig.text(.06, _inch_y(fig, .52), hint, fontsize=8, color=MUTED, family=MONO, va="top")
-    fig.text(.06, _inch_y(fig, .74), "aN / mN = block N's attention / MLP sub-layer",
+    fig.text(.06, _inch_y(fig, .74), "aN / mN = layer N's attention / MLP sub-layer",
              fontsize=7.5, color=MUTED, family=MONO, va="top", alpha=.8)
 
 
@@ -706,7 +702,7 @@ def plot_move_microscope(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
              f"rank 1 of {pm['n_legal']} legal moves = currently the top move",
              fontsize=8, color=MUTED, family=MONO, va="top")
     fig.text(.06, _inch_y(fig, .74),
-             "aN / mN = block N's attention / MLP sub-layer",
+             "aN / mN = layer N's attention / MLP sub-layer",
              fontsize=7.5, color=MUTED, family=MONO, va="top", alpha=.8)
     return fig
 
@@ -726,8 +722,9 @@ def plot_carrier_heads(eng, board: chess.Board, elo: int = 1500, uci: str | None
 
 
 def _carrier_grid(ax, eng, board, elo, uci, oppo_elo):
-    """The app's ablation grid: num_heads columns x num_blocks rows, coloured by
-    Δlogit = ablated − clean, with the final block excluded from the scale."""
+    """The app's ablation grid: num_heads columns x one row per layer (`LN·hH`),
+    coloured by Δlogit = ablated − clean, with the final layer excluded from the
+    scale."""
     g = eng.ablate_grid(board, elo, uci, oppo_elo)
     d = np.array(g["deltas"])
     nb, nh = d.shape
@@ -755,16 +752,16 @@ def _carrier_grid(ax, eng, board, elo, uci, oppo_elo):
         ax.text(h + .5, -.15, f"h{h}", ha="center", va="bottom", fontsize=7,
                 color=MUTED, family=MONO)
     for L in range(nb):
-        ax.text(-.15, L + .5, f"b{L}", ha="right", va="center", fontsize=7,
+        ax.text(-.15, L + .5, f"L{L}", ha="right", va="center", fontsize=7,
                 color=MUTED, family=MONO)
     ax.text(0, -.85, "carrier heads · Δlogit = ablated − clean", fontsize=8.5,
             color=MUTED, family=MONO, fontweight="600")
     v = d[sL, sH]
     ax.text(0, nb + .55,                      # the drawer's .mlnote, wrapped to the grid
-            f"base logit {g['base_logit']:.2f} · strongest b{sL}·h{sH} {v:+.2f}\n"
+            f"base logit {g['base_logit']:.2f} · strongest L{sL}·h{sH} {v:+.2f}\n"
             f"blue = ablating the head drops {g['san']}'s logit (carrier)\n"
             f"orange = raises it (suppressor)\n"
-            f"b{no_carrier} excluded (writes straight to the logits)",
+            f"L{no_carrier} excluded (writes straight to the logits)",
             fontsize=6.8, color=MUTED, family=MONO, va="top", linespacing=1.7)
     return g
 
@@ -857,7 +854,7 @@ def plot_attention(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
 
     fig.text(.03, _inch_y(fig, .26), "Live attention · this position", fontsize=11.5,
              color=TEXT, fontweight="600", va="top")
-    fig.text(.03, _inch_y(fig, .52), f"Layer {layer} · Head {head} · query "
+    fig.text(.03, _inch_y(fig, .52), f"L{layer}·h{head} · query "
              f"{_canon_name(q, board.turn)} · elo {elo}",
              fontsize=8.5, color=MUTED, family=MONO, va="top")
     # Two legends, each under the boards it describes: diverging for the
@@ -898,7 +895,7 @@ def plot_attention_layer(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
 
     Kwargs:
       oppo_elo      the opponent's rating; defaults to `elo` for both sides.
-      layer         which block to open up.
+      layer         which layer to open up.
       query         square name ('e4') whose attention row is drawn; defaults to
                     the from-square of the model's move.
       target        square name to rank heads by, and to ring on every board.
@@ -996,7 +993,7 @@ def _legbar(fig, x, y, w, cmap, left, right, h=.018):
 def plot_gab_mixture(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
                      layer: int = 0, head: int = 0, query: str | None = None,
                      target: str | None = None, top: int = 4, figsize=(12, 7.4)):
-    """"How L·H's GAB is generated" — the app's drawer as a figure: the pair
+    """"How L·h's GAB is generated" — the app's drawer as a figure: the pair
     decomposition readout, the generated mixing coefficients, and the template
     vocabulary with each template's live coefficient.
 
@@ -1093,7 +1090,7 @@ def plot_gab_mixture(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
                         color="#f0a35e" if coeffs[i] >= 0 else "#6fb3ff")
     _runs(fig, .04, _inch_y(fig, .28), [
         ("How ", dict(fontsize=11.5, color=TEXT, fontweight="600")),
-        (f"L{layer}·H{head}", dict(fontsize=11.5, color=ACCENT2, fontweight="600")),
+        (f"L{layer}·h{head}", dict(fontsize=11.5, color=ACCENT2, fontweight="600")),
         ("'s GAB is generated", dict(fontsize=11.5, color=TEXT, fontweight="600")),
     ])
     fig.text(.04, _inch_y(fig, .54), f"a generator reads this position and emits, per "

@@ -26,6 +26,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     --text:#e7eaf0; --muted:#8b93a3; --accent:#6ea8fe; --accent2:#7bd88f;
     --sq-light:#c9d1dc; --sq-dark:#6b7686;
     --hl:rgba(245,213,107,.28); --sel:#7bd88f; --win:#5fb878; --draw:#6b7480; --loss:#d9606a;
+    --abl:#ff5d6c;   /* single-head ablation — its overlay on the policy chart */
     --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
     --dock:112px;   /* height of the always-visible bottom drawer previews */
   }
@@ -93,8 +94,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     font-family:var(--mono);color:#0d130d}
   .wdl div{display:flex;align-items:center;justify-content:center;min-width:0}
   .wdl .w{background:var(--win)} .wdl .d{background:#6b7480;color:#10141a} .wdl .l{background:var(--loss)}
-  .wdl.cmp{flex-direction:column;height:42px;gap:2px;font-size:9px}
-  .wdl .wdlrow{display:flex;flex:1;min-width:0;justify-content:flex-start;border-radius:4px;overflow:hidden}
+  /* height grows with the number of rows: 2 ratings, or a clean/ablated pair, or both */
+  .wdl.cmp{flex-direction:column;height:auto;gap:2px;font-size:9px}
+  .wdl .wdlrow{display:flex;flex:1;min-height:20px;min-width:0;justify-content:flex-start;border-radius:4px;overflow:hidden}
   .wdltag{flex:0 0 30px;display:flex;align-items:center;padding-left:2px;
     color:var(--muted);font-family:var(--mono);background:var(--chart-bg)}
 
@@ -117,6 +119,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .dualbar .bar{display:block;height:7px;min-width:2px;border-radius:4px}
   .dualbar .bar.a{background:var(--accent)}
   .dualbar .bar.b{background:var(--accent2)}
+  .dualbar .bar.r{background:var(--abl)}      /* ablated policy */
   .delta.up{color:var(--accent2)} .delta.down{color:var(--loss)}
 
   /* architecture diagram */
@@ -132,17 +135,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background:var(--panel2);cursor:pointer;font-family:var(--mono);color:var(--text)}
   .chip:hover{border-color:var(--accent)}
   .chip.active{background:var(--accent);color:#0a1220;border-color:var(--accent);font-weight:700}
-  /* single-head ablation */
+  /* single-head ablation — a toggle; its result is the red overlay on the policy chart */
   .ablrow{display:flex;align-items:center;gap:8px;margin-top:2px}
   #ablbtn{padding:4px 10px;font-size:11px}
+  #ablbtn:hover{border-color:var(--abl)}
+  #ablbtn.on{background:var(--abl);color:#1a0c0e;border-color:var(--abl);font-weight:700}
   .ablnote{font-size:9px;color:var(--muted);font-family:var(--mono)}
-  #ablout{margin:0 0 8px;font-family:var(--mono)}
-  .ablhead{font-size:9px;color:var(--muted);margin-bottom:5px;line-height:1.4}
-  .ablitem{display:grid;grid-template-columns:56px 1fr 44px;gap:8px;font-size:11px;padding:2px 0}
-  .ablitem .vals{color:var(--muted);text-align:right}
-  .ablitem .abldelta{text-align:right}
-  .abldelta.up{color:var(--accent2)} .abldelta.down{color:var(--loss)}
-  .ablwdl{font-size:9px;color:var(--muted);margin-top:5px}
+  .ablnote.err{color:var(--loss)}
   .attcap{font-size:10px;color:var(--muted);margin-bottom:10px;line-height:1.45}
   .attset{display:flex;flex-direction:column;gap:12px}
   .attlabel{font-size:10px;color:var(--muted);font-family:var(--mono);margin-bottom:4px;text-align:center;font-weight:600}
@@ -280,13 +279,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
     border:1px solid var(--line);border-radius:8px}
   .mlgridbox{flex:0 0 auto;align-self:flex-start;overflow:auto}
   /* grid-template-columns/rows + width are set per model in renderAblGrid so the
-     heatmap has exactly num_heads columns × num_blocks rows (6/8/16/32 heads). */
+     heatmap has exactly num_heads columns × one row per layer (6/8/16/32 heads). */
   #ablgrid{display:grid;gap:1px;margin-top:4px}
   #ablgrid .agc{aspect-ratio:1/1;border-radius:2px;position:relative}
   #ablgrid .agc.cell{cursor:pointer}
   #ablgrid .agc.cell:hover{outline:1px solid var(--accent)}
   #ablgrid .agc.strong{outline:2px solid #ff5d6c;z-index:1}
-  /* final block: excluded from carrier attribution — dimmed, striped */
+  /* final layer: excluded from carrier attribution — dimmed, striped */
   #ablgrid .agc.cell.excl{background:repeating-linear-gradient(45deg,#151a22,#151a22 3px,#1c222c 3px,#1c222c 6px);opacity:.5}
   #ablgrid .agl{display:flex;align-items:center;justify-content:center;aspect-ratio:auto;
     font-size:8px;font-family:var(--mono);color:var(--muted)}
@@ -387,9 +386,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div class="attctrls">
         <div class="chiprow"><span class="lbl">Layer</span><div class="chips" id="layerChips"></div></div>
         <div class="chiprow"><span class="lbl">Head</span><div class="chips" id="headChips"></div></div>
-        <div class="ablrow"><button id="ablbtn">Ablate this head</button><span class="ablnote">removes its exact residual write</span></div>
+        <div class="ablrow"><button id="ablbtn">Ablate this head</button><span class="ablnote" id="ablnote">removes its exact residual write — red bars on the policy chart</span></div>
       </div>
-      <div id="ablout"></div>
       <div class="attcap">Click a square to set the query.</div>
       <div class="attset">
         <div class="attpair">
@@ -411,7 +409,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <div id="gablens" class="drawer d2">
   <div class="mlhead">
-    <span class="mltitle">How <b id="gabhead">L0·H0</b>'s GAB is generated</span>
+    <span class="mltitle">How <b id="gabhead">L0·h0</b>'s GAB is generated</span>
     <span class="mlhint">a generator reads this position and emits, per head, a bias of the <span id="gabNcoeff">64</span> coefficients over a static bank of <span id="gabNtmpl">64</span> 64×64 square-pair templates shared by every layer</span>
     <button id="gabclose">✕ close</button>
   </div>
@@ -433,8 +431,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
   <div class="residlegend">
     <span class="lg-emb">emb (input)</span>
-    <span class="lg-attn">attn add</span>
-    <span class="lg-mlp">MLP add</span>
+    <span class="lg-attn">aN = layer N attn add</span>
+    <span class="lg-mlp">mN = layer N MLP add</span>
     <span class="lg-enc">enc (final norm)</span>
   </div>
   <div class="film" id="film"></div>
@@ -527,7 +525,7 @@ function setModelInfo(){
   const i=MODEL_INFO;
   $('modelinfo').textContent =
     `${i.alias||i.target||'Maia3'} · ${i.device||'cpu'} · `+
-    `${i.num_blocks||8} blocks × ${i.num_heads||8} heads × ${i.dim_vit||256}d`;
+    `${i.num_blocks||8} layers × ${i.num_heads||8} heads × ${i.dim_vit||256}d`;
   setGabLabels();
 }
 
@@ -782,30 +780,50 @@ function askPromo(base, promos){
 }
 
 /* ---- panels ---- */
+let lastPolArgs=null;         // last renderPolicy call, so overlays can repaint it
 function renderPolicy(pol, wdl, actfile, playedUci){
+  lastPolArgs=[pol,wdl,actfile,playedUci];
   const box=$('policy'); box.innerHTML='';
-  $('wdl').classList.remove('cmp');
-  $('poltitle').textContent = pol ? `Policy over ${pol.length} legal moves` : 'Policy over legal moves';
+  const abl=ablPolicy();      // {uci: p_ablated} while the ablation toggle is live
+  $('wdl').classList.toggle('cmp', !!abl);
+  $('poltitle').textContent = abl
+    ? `Policy · clean (blue) vs L${ablData.layer}·h${ablData.head} ablated (red)`
+    : (pol ? `Policy over ${pol.length} legal moves` : 'Policy over legal moves');
   if(pol && pol.length){
     pol.slice(0,MAXPOL).forEach((m,i)=>{
       const row=document.createElement('div');
-      row.className='prow'+(i===0?' top':'')+(playedUci&&m.uci===playedUci?' played':'');
+      row.className='prow'+(abl?' cmp':(i===0?' top':''))+(playedUci&&m.uci===playedUci?' played':'');
       row.dataset.uci=m.uci;
       row.onclick=()=>openMoveLens(m.uci, m.san);
-      // bar width = the move's actual probability mass (0–100%), so the track reads as a true slider
-      row.innerHTML=`<span class="san">${m.san}</span>`+
-        `<span class="barwrap"><span class="bar" style="width:${Math.max(1.5,(m.p*100)).toFixed(1)}%"></span></span>`+
-        `<span class="pct">${(m.p*100).toFixed(1)}%</span>`;
+      if(abl){
+        // same shape as the second-rating compare, but the overlay is the ablated pass
+        const pb=abl[m.uci]||0, dlt=(pb-m.p)*100, cls=dlt>=0?'up':'down';
+        row.title=`clean: ${(m.p*100).toFixed(1)}% · ablated: ${(pb*100).toFixed(1)}%`;
+        row.innerHTML=`<span class="san">${m.san}</span>`+
+          `<span class="dualbar"><span class="bar a" style="width:${Math.max(1,m.p*100).toFixed(1)}%"></span>`+
+          `<span class="bar r" style="width:${Math.max(1,pb*100).toFixed(1)}%"></span></span>`+
+          `<span class="pct delta ${cls}">${dlt>=0?'+':''}${dlt.toFixed(1)}</span>`;
+      } else {
+        // bar width = the move's actual probability mass (0–100%), so the track reads as a true slider
+        row.innerHTML=`<span class="san">${m.san}</span>`+
+          `<span class="barwrap"><span class="bar" style="width:${Math.max(1.5,(m.p*100)).toFixed(1)}%"></span></span>`+
+          `<span class="pct">${(m.p*100).toFixed(1)}%</span>`;
+      }
       box.appendChild(row);
     });
     if(pol.length>MAXPOL){ box.insertAdjacentHTML("beforeend",
-      `<div style="font-size:10px;color:var(--muted);margin-top:5px">+${pol.length-MAXPOL} more legal moves</div>`); }
+      `<div style="font-size:10px;color:var(--muted);margin-top:5px">+${pol.length-MAXPOL} more legal moves`+
+      (abl?` · Δ = p(ablated) − p(clean)`:'')+`</div>`); }
   }
   if(wdl){
-    const w=Math.round(wdl.win*100), d=Math.round(wdl.draw*100), l=Math.max(0,100-w-d);
-    $('wdl').innerHTML=`<div class="w" style="width:${w}%">${w>8?w+'%':''}</div>`+
-      `<div class="d" style="width:${d}%">${d>8?d+'%':''}</div>`+
-      `<div class="l" style="width:${l}%">${l>8?l+'%':''}</div>`;
+    if(abl){
+      $('wdl').innerHTML = wdlRowHtml('clean', wdl) + wdlRowHtml('abl', ablData.wdl_abl);
+    } else {
+      const w=Math.round(wdl.win*100), d=Math.round(wdl.draw*100), l=Math.max(0,100-w-d);
+      $('wdl').innerHTML=`<div class="w" style="width:${w}%">${w>8?w+'%':''}</div>`+
+        `<div class="d" style="width:${d}%">${d>8?d+'%':''}</div>`+
+        `<div class="l" style="width:${l}%">${l>8?l+'%':''}</div>`;
+    }
   }
   $('actfile').textContent = actfile ? '↳ saved '+actfile.split('/').slice(-1)[0] : '';
   markLensedRows();
@@ -1034,7 +1052,7 @@ function renderTemplateDetail(){
     `</div>`+
     `<div class="gdinfo">template <b>#${i}</b> — static stencil, shared by every layer &amp; head.`+
     (c===null ? '' :
-      ` In L${attLayer}·H${attHead} on this board (elo ${elo}) its coefficient is `+
+      ` In L${attLayer}·h${attHead} on this board (elo ${elo}) its coefficient is `+
       `<b>${c>=0?'+':'−'}${Math.abs(c).toFixed(3)}</b> — #${rank} of ${lastAtt.coeffs.length} by |coeff|.`)+
     `</div>`;
   $('gdclose').onclick=()=>toggleTemplate(i);
@@ -1047,7 +1065,7 @@ function renderTemplateDetail(){
   }
 }
 function renderSmolgen(){
-  const gh=$('gabhead'); if(gh) gh.textContent='L'+attLayer+'·H'+attHead;
+  const gh=$('gabhead'); if(gh) gh.textContent='L'+attLayer+'·h'+attHead;
   renderCoeffStrip();
   renderGabReadout();
   renderGalleryBadges();
@@ -1056,7 +1074,7 @@ function renderSmolgen(){
 async function updateAttention(){
   if(!API || !cur || cur.game_over) return;
   ensureAttUi(MODEL_INFO);
-  ablExpire();
+  updateAblation();          // keeps the red policy overlay in step with the picked head
   try{
     const d = await API.attention(elo, attLayer, attHead);
     if(d && !d.error){
@@ -1069,37 +1087,58 @@ async function updateAttention(){
   }catch(e){ console.warn('[maia] attention update failed', e); }
 }
 
-/* ---- exact single-head ablation (engine.ablate_head) ---- */
-let lastAblKey=null;
+/* ---- exact single-head ablation (engine.ablate_head) ----
+   A toggle, not a readout: while it is on, the ablated pass is drawn over the
+   policy chart in red, exactly the way the second rating is drawn in green.
+   The result is cached against fen|elo|layer|head and refetched whenever any of
+   those change (board move, elo slider, another head picked). ---- */
+let ablOn=false, ablData=null, ablKey=null, ablBusy=false, ablDirty=false;
+const ABLNOTE='removes its exact residual write — red bars on the policy chart';
 function ablKeyNow(){ return cur ? `${cur.fen}|${elo}|${attLayer}|${attHead}` : null; }
-function ablExpire(){ if(lastAblKey && lastAblKey!==ablKeyNow()){ $('ablout').innerHTML=''; lastAblKey=null; } }
-const wdlStr=w=>`${Math.round(w.win*100)}/${Math.round(w.draw*100)}/${Math.round(w.loss*100)}`;
-$('ablbtn').onclick=async()=>{
-  if(!API || !cur || busy || cur.game_over) return;
-  const btn=$('ablbtn'); btn.disabled=true; btn.textContent='ablating…';
+// the overlay the policy chart should draw right now, or null (off / stale / failed)
+function ablPolicy(){ return (ablOn && ablData && ablKey===ablKeyNow()) ? ablData.p : null; }
+function ablNote(msg, err){ const n=$('ablnote'); if(!n) return; n.textContent=msg; n.classList.toggle('err', !!err); }
+function repaintPolicy(){
+  if(cmpOn){ if(lastCmp) renderCompare(lastCmp); }
+  else if(lastPolArgs) renderPolicy.apply(null, lastPolArgs);
+}
+async function updateAblation(){
+  const btn=$('ablbtn'); if(!btn) return;
+  btn.classList.toggle('on', ablOn);
+  btn.textContent = ablOn ? '✓ Ablating this head' : 'Ablate this head';
+  if(!ablOn){ ablData=null; ablKey=null; ablNote(ABLNOTE); repaintPolicy(); return; }
+  if(!API || !cur || cur.game_over) return;
+  const key=ablKeyNow();
+  if(ablData && ablKey===key) return;            // cached for this board/elo/head
+  if(ablBusy){ ablDirty=true; return; }          // a stale request is in flight
+  ablBusy=true; ablNote(`ablating L${attLayer}·h${attHead}…`);
   try{
     const d=await API.ablate(elo, attLayer, attHead);
-    if(!d || d.error){ $('ablout').innerHTML=`<div class="ablhead">⚠ ${d?d.error:'ablation failed'}</div>`; return; }
-    lastAblKey=ablKeyNow();
-    const rows=d.rows.slice(0,8);
-    let h=`<div class="ablhead">block ${d.layer} · head ${d.head} write removed — top ${rows.length} moves by |Δp| · elo ${elo}</div>`;
-    for(const r of rows){
-      const dlt=(r.p_abl-r.p)*100, cls=dlt>=0?'up':'down';
-      h+=`<div class="ablitem"><span class="san">${r.san}</span>`+
-         `<span class="vals">${(r.p*100).toFixed(1)} → ${(r.p_abl*100).toFixed(1)}%</span>`+
-         `<span class="abldelta ${cls}">${dlt>=0?'+':''}${dlt.toFixed(1)}</span></div>`;
+    if(!d || d.error){
+      ablData=null; ablKey=null;
+      ablNote('⚠ '+(d && d.error ? d.error : 'ablation failed'), true);
+    } else {
+      const p={}; for(const r of d.rows) p[r.uci]=r.p_abl;
+      ablData={layer:d.layer, head:d.head, p:p, wdl_abl:d.wdl_abl}; ablKey=key;
+      ablNote(`L${d.layer}·h${d.head} write removed · red = ablated`);
     }
-    h+=`<div class="ablwdl">W/D/L ${wdlStr(d.wdl)} → ${wdlStr(d.wdl_abl)}</div>`;
-    $('ablout').innerHTML=h;
+    repaintPolicy();
   }catch(e){
     console.warn('[maia] ablation failed', e);
-    $('ablout').innerHTML='<div class="ablhead">⚠ ablation failed — see console</div>';
-  }finally{ btn.disabled=false; btn.textContent='Ablate this head'; }
-};
+    ablData=null; ablKey=null; ablNote('⚠ ablation failed — see console', true); repaintPolicy();
+  }finally{
+    ablBusy=false;
+    if(ablDirty){ ablDirty=false; updateAblation(); }
+  }
+}
+$('ablbtn').onclick=()=>{ ablOn=!ablOn; updateAblation(); };
 function buildChips(id, n, current, onpick){
   const el=$(id); if(!el) return;
   const count = Math.max(0, Number(n) || 0);
   if(!count) return;
+  // Bare indices — the row's own "Layer"/"Head" label says which is which. The
+  // L3·h5 form is still the app-wide name everywhere a head is named on its own
+  // (carrier grid, ablation status). (aN/mN name depth points, not heads.)
   el.innerHTML='';
   for(let i=0;i<count;i++){
     const b=document.createElement('div');
@@ -1222,9 +1261,13 @@ function wdlRowHtml(tag, w){
     `<div class="d" style="width:${D}%">${D>12?D+'%':''}</div>`+
     `<div class="l" style="width:${L}%">${L>12?L+'%':''}</div></div>`;
 }
+let lastCmp=null;             // last compare payload, so overlays can repaint it
 function renderCompare(d){
+  lastCmp=d;
   const box=$('policy'); box.innerHTML='';
-  $('poltitle').textContent=`Policy · ${d.elo_a} (blue) vs ${d.elo_b} (green)`;
+  const abl=ablPolicy();      // the ablated pass runs at rating A; drawn as a third bar
+  $('poltitle').textContent=`Policy · ${d.elo_a} (blue) vs ${d.elo_b} (green)`+
+    (abl?` · L${ablData.layer}·h${ablData.head} ablated (red)`:'');
   const rows=d.rows||[];
   rows.slice(0,MAXPOL).forEach(r=>{
     const dlt=(r.p_b-r.p_a)*100, cls=dlt>=0?'up':'down';
@@ -1232,17 +1275,22 @@ function renderCompare(d){
     row.className='prow cmp';
     row.dataset.uci=r.uci;
     row.onclick=()=>openMoveLens(r.uci, r.san);
-    row.title=`${d.elo_a}: ${(r.p_a*100).toFixed(1)}% · ${d.elo_b}: ${(r.p_b*100).toFixed(1)}%`;
+    const pAbl=abl?(abl[r.uci]||0):0;
+    row.title=`${d.elo_a}: ${(r.p_a*100).toFixed(1)}% · ${d.elo_b}: ${(r.p_b*100).toFixed(1)}%`+
+      (abl?` · ablated: ${(pAbl*100).toFixed(1)}%`:'');
     row.innerHTML=`<span class="san">${r.san}</span>`+
       `<span class="dualbar"><span class="bar a" style="width:${Math.max(1,r.p_a*100).toFixed(1)}%"></span>`+
-      `<span class="bar b" style="width:${Math.max(1,r.p_b*100).toFixed(1)}%"></span></span>`+
+      `<span class="bar b" style="width:${Math.max(1,r.p_b*100).toFixed(1)}%"></span>`+
+      (abl?`<span class="bar r" style="width:${Math.max(1,pAbl*100).toFixed(1)}%"></span>`:'')+
+      `</span>`+
       `<span class="pct delta ${cls}">${dlt>=0?'+':''}${dlt.toFixed(1)}</span>`;
     box.appendChild(row);
   });
   if(rows.length>MAXPOL){ box.insertAdjacentHTML("beforeend",
     `<div style="font-size:10px;color:var(--muted);margin-top:5px">+${rows.length-MAXPOL} more legal moves · Δ = p(${d.elo_b}) − p(${d.elo_a})</div>`); }
   const wdl=$('wdl'); wdl.classList.add('cmp');
-  wdl.innerHTML = wdlRowHtml(d.elo_a, d.wdl_a) + wdlRowHtml(d.elo_b, d.wdl_b);
+  wdl.innerHTML = wdlRowHtml(d.elo_a, d.wdl_a) + wdlRowHtml(d.elo_b, d.wdl_b)
+    + (abl?wdlRowHtml('abl', ablData.wdl_abl):'');
   $('actfile').textContent='';
   markLensedRows();
 }
@@ -1253,9 +1301,9 @@ function renderCompare(d){
    every head, sign = ablated − clean (the app-wide convention: what the
    intervention did — negative means the head was supporting the move). */
 const KIND_COL={emb:'#8a93a3',attn:'#f0a35e',mlp:'#6fb3ff',enc:'#5ac878'};
-// final block — excluded from carrier attribution (writes straight to the logits).
-// Derived from the loaded model so it tracks num_blocks across sizes.
-function noCarrierBlock(){ return ((MODEL_INFO && MODEL_INFO.num_blocks) || 8) - 1; }
+// final layer — excluded from carrier attribution (writes straight to the logits).
+// Derived from the loaded model so it tracks the layer count across sizes.
+function noCarrierLayer(){ return ((MODEL_INFO && MODEL_INFO.num_blocks) || 8) - 1; }
 const MLMAX=4;                                     // how many moves you can overlay at once
 const MLCOLORS=['#6ea8fe','#7bd88f','#f0a35e','#c98bff'];
 let mlMoves=[];        // [{uci, san, color, steps, n_legal}] — the moves being compared
@@ -1393,11 +1441,13 @@ function drawMlChart(){
   } else {                                          // one color per move
     for(const m of series) m.steps.forEach((s,i)=>{ h+=`<circle cx="${X(i)}" cy="${Y(s.logit)}" r="2.4" fill="${m.color}"><title>${tip(s,m.n_legal,m.san+' · ')}</title></circle>`; });
   }
+  // Depth ticks: emb, aN/mN per layer, enc. Both sub-layers get a tick when they
+  // fit; on deep models only the mN (end-of-layer) points are named, so the axis
+  // stays readable and still reads one tick per layer.
+  const perStep=iw/Math.max(1,A.length-1), tickAll=perStep>=20;
   A.forEach((s,i)=>{
-    if(s.kind==='emb'||s.kind==='enc'||s.kind==='mlp'){
-      const t = s.kind==='mlp' ? s.label.replace(' mlp','') : s.label;
-      h+=`<text x="${X(i)}" y="${HH-10}" fill="#8b93a3" font-size="9" text-anchor="middle" font-family="monospace">${t}</text>`;
-    }
+    if(!tickAll && s.kind==='attn') return;
+    h+=`<text x="${X(i)}" y="${HH-10}" fill="#8b93a3" font-size="9" text-anchor="middle" font-family="monospace">${s.label}</text>`;
   });
   if(single && B) h+=`<text x="${W-MR}" y="${MT-4}" font-size="9" text-anchor="end" font-family="monospace"><tspan fill="#6ea8fe">━ ${elo}</tspan> <tspan fill="#7bd88f">━ ${cmpElo}</tspan></text>`;
   svg.innerHTML=h;
@@ -1410,7 +1460,7 @@ function renderAblGrid(g){
   el.innerHTML='';
   const nb=g ? g.deltas.length : ((MODEL_INFO&&MODEL_INFO.num_blocks)||8),
         nh=g ? g.deltas[0].length : ((MODEL_INFO&&MODEL_INFO.num_heads)||8);
-  // Size the grid (num_heads columns × num_blocks rows) to fill the open,
+  // Size the grid (num_heads columns × one row per layer) to fill the open,
   // full-width microscope drawer: make the cells as large as possible while the
   // whole grid still fits on screen — bounded by a share of the width (so the
   // depth chart keeps room) and by the viewport height. Scales across model
@@ -1425,27 +1475,27 @@ function renderAblGrid(g){
   // Pin the box (and thus #mlnote, which would otherwise ask for its whole
   // sentence on one line and stretch the box wider) to exactly the grid's width.
   const box=$('mlgridbox'); if(box) box.style.width=gridW+'px';
-  // The final block writes straight into the logits, so ablating its heads always
+  // The final layer writes straight into the logits, so ablating its heads always
   // looks like a huge Δ and drowns out the earlier structure — leave it out of the
   // carrier attribution (colour scale + "strongest" pick), just dim it in the grid.
-  const NO_CARRIER_BLOCK=noCarrierBlock();
-  const skip=L=>L===NO_CARRIER_BLOCK;
+  const NO_CARRIER_LAYER=noCarrierLayer();
+  const skip=L=>L===NO_CARRIER_LAYER;
   let m=1e-9, sL=-1, sH=-1;
   if(g) g.deltas.forEach((row,L)=>{ if(skip(L)) return;
     row.forEach((v,hh)=>{ const a=Math.abs(v); if(a>m){ m=a; sL=L; sH=hh; } }); });
   el.appendChild(Object.assign(document.createElement('div'),{className:'agc agl'}));
   for(let hh=0;hh<nh;hh++){ const d=document.createElement('div'); d.className='agc agl'; d.textContent='h'+hh; el.appendChild(d); }
   for(let L=0;L<nb;L++){
-    const lb=document.createElement('div'); lb.className='agc agl'; lb.textContent='b'+L; el.appendChild(lb);
+    const lb=document.createElement('div'); lb.className='agc agl'; lb.textContent='L'+L; el.appendChild(lb);
     for(let hh=0;hh<nh;hh++){
       const d=document.createElement('div'); d.className='agc cell'+(skip(L)?' excl':'');
       if(g){
         const v=g.deltas[L][hh];
         if(skip(L)){
-          d.title=`b${L}·h${hh}  Δ ${v>=0?'+':''}${v.toFixed(2)} — excluded from carrier attribution`;
+          d.title=`L${L}·h${hh}  Δ ${v>=0?'+':''}${v.toFixed(2)} — excluded from carrier attribution`;
         } else {
           d.style.background=divmap(v/m);
-          d.title=`b${L}·h${hh}  Δ ${v>=0?'+':''}${v.toFixed(2)} — ${v<0?'supports':'suppresses'} ${g.san}`;
+          d.title=`L${L}·h${hh}  Δ ${v>=0?'+':''}${v.toFixed(2)} — ${v<0?'supports':'suppresses'} ${g.san}`;
           if(L===sL && hh===sH) d.classList.add('strong');
         }
         d.onclick=((L2,H2)=>()=>{             // jump the attention panel to this head
@@ -1460,10 +1510,10 @@ function renderAblGrid(g){
     }
   }
   if(g && sL>=0) $('mlnote').innerHTML=
-    `base logit ${g.base_logit.toFixed(2)} · strongest b${sL}·h${sH} `+
+    `base logit ${g.base_logit.toFixed(2)} · strongest L${sL}·h${sH} `+
     `${g.deltas[sL][sH]>=0?'+':''}${g.deltas[sL][sH].toFixed(2)} · `+
     `blue = ablating the head drops ${g.san}'s logit (carrier) ·orange = raises it (suppressor) · `+
-    `b${NO_CARRIER_BLOCK} excluded (writes straight to the logits) · click a cell to open that head`;
+    `L${NO_CARRIER_LAYER} excluded (writes straight to the logits) · click a cell to open that head`;
 }
 
 /* re-fit the carrier-head grid to the window while the microscope is open */
