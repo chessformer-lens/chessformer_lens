@@ -6,7 +6,7 @@
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21877655.svg)](https://doi.org/10.5281/zenodo.21877655)
 
-![The app: board, policy, live attention and the GAB decomposition](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot1.png)
+![The app: board, policy, live attention and the GAB decomposition](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot7.png)
 
 ---
 ## Case study: Knight Fork Carrier Head

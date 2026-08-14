@@ -1,5 +1,5 @@
 """
-App Guide: see app_README.md
+App Guide: see app_guide.md
 
 From repo run: python -m chessformer_lens.app
 """
