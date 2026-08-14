@@ -151,7 +151,8 @@ class MaiaEngine:
     """Hook-based interpretability engine for a Maia-3 checkpoint.
 
     Exposes read paths (run_with_cache, logit_lens, residual_stream, attention,
-    gab_*) and intervention paths (run_with_hooks, ablate_head, ablate_grid).
+    gab_*) and intervention paths (run_with_hooks, ablate_head, ablate_grid,
+    ablate_grid_batch).
     Every tensor a read path returns is on CPU, in the model's canonical
     side-to-move frame (square = rank*8 + file)."""
 
@@ -299,6 +300,24 @@ class MaiaEngine:
         return logits_move[0].float(), logits_value[0].float()
 
     @torch.no_grad()
+    def _forward_batch(self, boards, self_elo, oppo_elo=None):
+        """`_forward` over a list of boards in one pass: (B, 4352) move logits.
+
+        The capture hooks fire as usual, so afterwards `_activations` holds this
+        batch's (B, 64, dim) tensors rather than one position's (1, 64, dim).
+        The read paths index [0] and so would only ever see the first board —
+        this is for the intervention paths, which stay batch-aware throughout."""
+        oppo_elo = self_elo if oppo_elo is None else oppo_elo
+        self._activations = {}
+
+        tokens = torch.cat([self.tokens(b) for b in boards], dim=0)
+        elos = torch.full((len(boards),), 0, dtype=torch.long, device=self.device)
+        self_elos, oppo_elos = elos + int(self_elo), elos + int(oppo_elo)
+
+        logits_move, _, _ = self.model(tokens, self_elos, oppo_elos)
+        return logits_move.float()
+
+    @torch.no_grad()
     def evaluate(self, board: chess.Board, self_elo: int, oppo_elo: int | None = None):
         """One forward pass. Returns the full normalized policy over legal moves
         (descending), the WDL for the side to move, and stashes activations."""
@@ -347,6 +366,19 @@ class MaiaEngine:
         cache = {k: v.squeeze(0).clone() for k, v in self._activations.items()}
         return out, cache
 
+    @staticmethod
+    def _patch_hook(fn):
+        """Wrap `fn(activation) -> activation | None` as a forward hook, leaving
+        the module's other outputs alone (self_attn returns (out, None))."""
+        def hook(_module, _inp, out):
+            is_tuple = isinstance(out, tuple)
+            t = out[0] if is_tuple else out
+            new = fn(t)
+            if new is None:
+                return out
+            return (new, *out[1:]) if is_tuple else new
+        return hook
+
     def run_with_hooks(self, board: chess.Board, self_elo: int, oppo_elo: int | None = None,
                        *, fwd_hooks=(), return_type: str = "policy"):
         """Forward pass with temporary intervention hooks — activation patching,
@@ -372,20 +404,10 @@ class MaiaEngine:
         Example — halve layer 5's whole attention write:
             self.run_with_hooks(board, 1500, fwd_hooks=[("attn_05", lambda a: a * 0.5)])
         """
-        def make(fn):
-            def hook(_module, _inp, out):
-                is_tuple = isinstance(out, tuple)
-                t = out[0] if is_tuple else out
-                new = fn(t)
-                if new is None:
-                    return out
-                return (new, *out[1:]) if is_tuple else new
-            return hook
-
         handles = []
         try:
             for name, fn in fwd_hooks:
-                handles.append(self.hook_points[name].register_forward_hook(make(fn)))
+                handles.append(self.hook_points[name].register_forward_hook(self._patch_hook(fn)))
             if return_type == "logits":
                 return self._forward(board, self_elo, oppo_elo)
             return self.evaluate(board, self_elo, oppo_elo)
@@ -602,30 +624,39 @@ class MaiaEngine:
         out_proj bias — to this forward's attn_NN activation."""
         L = int(layer)
         x = self._block_input(board, self_elo, oppo_elo, L)    # (1, 64, dim) into block L
+        return self._head_writes_from_x(x, L)[0].cpu()
+
+    @torch.no_grad()
+    def _head_writes_from_x(self, x, layer):
+        """`head_writes`' algebra over a whole batch: `x` is the (B, 64, dim)
+        stream entering block `layer`, the result is (B, H, 64, dim) on the live
+        device. Batch of one is the single-position case, so `head_writes` is
+        this plus the forward pass that produces `x`."""
+        L = int(layer)
         blk = self.model.transformer.layers[L].self_attn
         H = blk.num_heads
-        d = x.size(-1)
+        B, _, d = x.shape
         dh = d // H
 
-        gab = blk._sq_bias(x)                                  # (1, H, 64, 64)
+        gab = blk._sq_bias(x)                                  # (B, H, 64, 64)
         W = blk.mha.in_proj_weight                             # (3d, d), order [q; k; v]
         b = blk.mha.in_proj_bias
         q, k, v = (x @ W[i * d:(i + 1) * d].t() +
                    (b[i * d:(i + 1) * d] if b is not None else 0) for i in range(3))
-        q, k, v = (t.view(1, 64, H, dh).transpose(1, 2) for t in (q, k, v))
+        q, k, v = (t.view(B, 64, H, dh).transpose(1, 2) for t in (q, k, v))
         attn = torch.softmax((q @ k.transpose(-2, -1)) / math.sqrt(dh) + gab, dim=-1)
 
         Wo = blk.mha.out_proj.weight                           # (dim, dim)
         per_head_out = Wo.view(d, H, dh).permute(1, 2, 0)      # (H, dh, dim)
-        writes = (attn @ v)[0] @ per_head_out                  # (H, 64, dim)
+        writes = (attn @ v) @ per_head_out                     # (B, H, 64, dim)
 
-        recon = writes.sum(0)
+        recon = writes.sum(1)
         if blk.mha.out_proj.bias is not None:
             recon = recon + blk.mha.out_proj.bias
-        target = self._activations[f"attn_{L:02d}"][0].to(self.device)
+        target = self._activations[f"attn_{L:02d}"].to(self.device)
         assert torch.allclose(recon, target, atol=1e-4, rtol=1e-4), \
             f"head_writes reconstruction failed for layer {L} — do not trust the ablation"
-        return writes.cpu()
+        return writes
 
     def ablate_head(self, board, self_elo, layer, head, oppo_elo=None,
                     return_type: str = "policy"):
@@ -960,27 +991,54 @@ class MaiaEngine:
 
         Returns {uci, san, base_logit, deltas: (num_blocks, num_heads) nested
         list}. Costs ~num_blocks·(num_heads+1) forward passes — seconds, not
-        milliseconds."""
-        info = self.move_info(board, uci)
-        idx = info["idx"]
-        base_logits, _ = self._forward(board, self_elo, oppo_elo)
-        base = float(base_logits[idx])
+        milliseconds. For many positions, `ablate_grid_batch` runs that same
+        count per batch rather than per position."""
+        return self.ablate_grid_batch([(board, uci)], self_elo, oppo_elo)[0]
+
+    @torch.no_grad()
+    def ablate_grid_batch(self, items, self_elo, oppo_elo=None, batch_size=32):
+        """`ablate_grid` over many positions: `items` is [(board, move)] and the
+        result is one ablate_grid dict per item, in order.
+
+        The arithmetic is the single-position one, position by position — the
+        positions are independent, so ablating a head is the same hook over a
+        stacked forward. What changes is the bookkeeping: a batch costs
+        ~num_blocks·(num_heads+1) forward passes in total instead of that many
+        each, and a batched forward is several times cheaper per position than a
+        batch of one. `batch_size` trades that against memory — the per-layer
+        head writes are (batch_size, H, 64, dim)."""
         nb, nh = self.cfg.num_blocks, self.cfg.num_heads
-        deltas = []
-        for L in range(nb):
-            writes = self.head_writes(board, self_elo, oppo_elo, layer=L)  # (H, 64, dim)
-            row = []
-            for h in range(nh):
-                w = writes[h]
-                abl_logits, _ = self.run_with_hooks(
-                    board, self_elo, oppo_elo,
-                    fwd_hooks=[(f"attn_{L:02d}", lambda a, w=w: a - w.to(a.device, a.dtype))],
-                    return_type="logits",
-                )
-                row.append(float(abl_logits[idx]) - base)     # ablated − clean
-            deltas.append(row)
-        return {"uci": info["uci"], "san": info["san"],
-                "base_logit": base, "deltas": deltas}
+        out = []
+        for start in range(0, len(items), batch_size):
+            chunk = items[start:start + batch_size]
+            boards = [b for b, _ in chunk]
+            infos = [self.move_info(b, m) for b, m in chunk]
+            rows = torch.arange(len(chunk), device=self.device)
+            idx = torch.tensor([i["idx"] for i in infos], device=self.device)
+
+            base = self._forward_batch(boards, self_elo, oppo_elo)[rows, idx]   # (B,)
+            deltas = torch.zeros(len(chunk), nb, nh)
+            for L in range(nb):
+                # the clean pass this layer's writes are read off; also what the
+                # ablated passes below are compared against, so it is re-run per
+                # layer rather than cached (an ablated forward overwrites it)
+                self._forward_batch(boards, self_elo, oppo_elo)
+                key = "embed_in" if L == 0 else f"block_{L - 1:02d}"
+                writes = self._head_writes_from_x(self._activations[key].to(self.device), L)
+                for h in range(nh):
+                    w = writes[:, h]
+                    handle = self.hook_points[f"attn_{L:02d}"].register_forward_hook(
+                        self._patch_hook(lambda a, w=w: a - w.to(a.device, a.dtype)))
+                    try:
+                        abl = self._forward_batch(boards, self_elo, oppo_elo)[rows, idx]
+                    finally:
+                        handle.remove()
+                    deltas[:, L, h] = (abl - base).cpu()      # ablated − clean
+
+            out += [{"uci": info["uci"], "san": info["san"],
+                     "base_logit": float(base[r]), "deltas": deltas[r].tolist()}
+                    for r, info in enumerate(infos)]
+        return out
 
     # ----- activation dump --------------------------------------------------
     def save_activations(self, filename: str, meta: dict | None = None) -> str:

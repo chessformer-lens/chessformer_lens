@@ -1179,3 +1179,9 @@ def plot_skill_diff(eng, board: chess.Board, elo_a: int = 1500, elo_b: int = 110
              "structure is how depth localizes it",
              fontsize=7.5, color=MUTED, family=MONO, va="top", alpha=.75)
     return fig
+
+
+
+
+
+
