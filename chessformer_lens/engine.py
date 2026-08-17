@@ -32,6 +32,8 @@ residual stream at every layer.
   ablate_grid           the carrier heatmap of one move: every head ablated in
                         turn, Δlogit = ablated − clean (negative = the head
                         carried it)
+  ablate_grid_batch     ablate_grid called with batches of many positions at once;
+                        minimizes unnecessary syncing to cpu to take advantage of gpus
   residual_stream       per-square views of how the stream is built up, one row
                         per readout point
   compare_residual      the same position at two ratings, differenced — where
@@ -63,15 +65,8 @@ side-to-move frame (square = rank*8 + file). Depth reads the same as in the
 figures: `emb`, then `aN`/`mN` for layer N's attention and MLP sub-layers, then
 `enc` — `depth_points` hands you that axis directly.
 
-One naming note: the checkpoint's own config calls a layer a *block*, so the
-config field (`cfg.num_blocks`) and the capture keys (`block_NN`) keep that
-word. Everything facing a reader — labels, figures, the app — says layer:
-`LN` for the layer and `hN` for a head, so one head reads `L3·h5`. `aN`/`mN`
-name depth points only, where the point of the label is which sub-layer of
-layer N did the writing.
-
-It imports cleanly into a notebook; plotting lives next door in interp_plot.py
-(static figures) and interp_widget.py (interactive panels), and the standalone
+engine.py imports cleanly into a notebook and is called by interp_plot.py
+(static figures),  interp_widget.py (interactive panels), and the standalone
 app in bridge.py/app.py/ui.py.
 """
 import math
@@ -83,11 +78,8 @@ from pathlib import Path
 import chess
 import torch
 
-# maia3 is the one dependency pip cannot fetch for us: it is not on PyPI, and
-# PyPI rejects direct git URLs in dependency metadata. Every entry point into
-# this package (bridge.py, app.py, the lazy names in __init__.py) reaches
-# maia3 through this module, so this is the single boundary where a missing
-# install should be turned into an instruction rather than a traceback.
+# maia3 is not on PyPI yet this package is entirely dependant on calls to it
+
 try:
     from maia3.models import MAIA3Model  # noqa: F401
     from maia3.uci import load_model, sample_from_logits
@@ -150,11 +142,10 @@ def build_cfg(alias="maia3-5m", device=None, checkpoint_path=None,
 class MaiaEngine:
     """Hook-based interpretability engine for a Maia-3 checkpoint.
 
-    Exposes read paths (run_with_cache, logit_lens, residual_stream, attention,
+    Provides read paths (run_with_cache, logit_lens, residual_stream, attention,
     gab_*) and intervention paths (run_with_hooks, ablate_head, ablate_grid,
     ablate_grid_batch).
-    Every tensor a read path returns is on CPU, in the model's canonical
-    side-to-move frame (square = rank*8 + file)."""
+    Every tensor a read path returns is on CPU."""
 
     def __init__(self, alias="maia3-5m", device=None, checkpoint_path=None,
                  activation_dir="activations", trust_checkpoint=False):
