@@ -205,6 +205,7 @@ class MaiaEngine:
         self.activation_dir = Path(activation_dir)
 
         self._activations: dict[str, torch.Tensor] = {}
+        self._capture_on_device = False   # see _register_hooks; ablate_grid_batch flips it
         self._hooks: list = []
         self.hook_points: dict[str, torch.nn.Module] = {}   # name -> module (read or patch)
         self._gab_templates: torch.Tensor | None = None     # lazy (gen, 64, 64) cache
@@ -226,11 +227,18 @@ class MaiaEngine:
         are the vectors *added* to the stream (dropout is identity in eval),
         while the other four are the stream itself. Everything is copied to
         CPU on the way out. `hook_points` records name -> module for all of
-        these, so `run_with_hooks` can patch anywhere you can read."""
+        these, so `run_with_hooks` can patch anywhere you can read.
+
+        `_capture_on_device` suspends that CPU copy. On unified memory it costs
+        nothing either way, but on a discrete GPU it is 34 pageable transfers
+        per forward pass — enough to dominate a sweep that runs hundreds of
+        them. Callers that set it must restore it, and must not read the
+        snapshot from a path that assumes CPU tensors (`save_activations`)."""
         def make_hook(name):
             def hook(_module, _inp, out):
                 t = out[0] if isinstance(out, tuple) else out
-                self._activations[name] = t.detach().to("cpu")
+                self._activations[name] = t.detach() if self._capture_on_device \
+                    else t.detach().to("cpu")
             return hook
 
         def add(name, module):
@@ -1009,35 +1017,47 @@ class MaiaEngine:
         head writes are (batch_size, H, 64, dim)."""
         nb, nh = self.cfg.num_blocks, self.cfg.num_heads
         out = []
-        for start in range(0, len(items), batch_size):
-            chunk = items[start:start + batch_size]
-            boards = [b for b, _ in chunk]
-            infos = [self.move_info(b, m) for b, m in chunk]
-            rows = torch.arange(len(chunk), device=self.device)
-            idx = torch.tensor([i["idx"] for i in infos], device=self.device)
+        # This method runs nb·(nh+1)+1 forward passes per chunk and reads only two
+        # of the captured tensors, both of which it sends straight back to the
+        # device. Leaving the capture on-device skips that round trip; on a
+        # discrete GPU it is the difference between a sweep that is transfer-bound
+        # and one that is compute-bound.
+        self._capture_on_device = True
+        try:
+            for start in range(0, len(items), batch_size):
+                chunk = items[start:start + batch_size]
+                boards = [b for b, _ in chunk]
+                infos = [self.move_info(b, m) for b, m in chunk]
+                rows = torch.arange(len(chunk), device=self.device)
+                idx = torch.tensor([i["idx"] for i in infos], device=self.device)
 
-            base = self._forward_batch(boards, self_elo, oppo_elo)[rows, idx]   # (B,)
-            deltas = torch.zeros(len(chunk), nb, nh)
-            for L in range(nb):
-                # the clean pass this layer's writes are read off; also what the
-                # ablated passes below are compared against, so it is re-run per
-                # layer rather than cached (an ablated forward overwrites it)
-                self._forward_batch(boards, self_elo, oppo_elo)
-                key = "embed_in" if L == 0 else f"block_{L - 1:02d}"
-                writes = self._head_writes_from_x(self._activations[key].to(self.device), L)
-                for h in range(nh):
-                    w = writes[:, h]
-                    handle = self.hook_points[f"attn_{L:02d}"].register_forward_hook(
-                        self._patch_hook(lambda a, w=w: a - w.to(a.device, a.dtype)))
-                    try:
-                        abl = self._forward_batch(boards, self_elo, oppo_elo)[rows, idx]
-                    finally:
-                        handle.remove()
-                    deltas[:, L, h] = (abl - base).cpu()      # ablated − clean
+                base = self._forward_batch(boards, self_elo, oppo_elo)[rows, idx]   # (B,)
+                # accumulated on-device and synced once below, so consecutive head
+                # passes pipeline instead of draining the launch queue each time
+                deltas = torch.zeros(len(chunk), nb, nh, device=self.device)
+                for L in range(nb):
+                    # the clean pass this layer's writes are read off; also what the
+                    # ablated passes below are compared against, so it is re-run per
+                    # layer rather than cached (an ablated forward overwrites it)
+                    self._forward_batch(boards, self_elo, oppo_elo)
+                    key = "embed_in" if L == 0 else f"block_{L - 1:02d}"
+                    writes = self._head_writes_from_x(self._activations[key].to(self.device), L)
+                    for h in range(nh):
+                        w = writes[:, h]
+                        handle = self.hook_points[f"attn_{L:02d}"].register_forward_hook(
+                            self._patch_hook(lambda a, w=w: a - w.to(a.device, a.dtype)))
+                        try:
+                            abl = self._forward_batch(boards, self_elo, oppo_elo)[rows, idx]
+                        finally:
+                            handle.remove()
+                        deltas[:, L, h] = abl - base      # ablated − clean
+                deltas = deltas.cpu()
 
-            out += [{"uci": info["uci"], "san": info["san"],
-                     "base_logit": float(base[r]), "deltas": deltas[r].tolist()}
-                    for r, info in enumerate(infos)]
+                out += [{"uci": info["uci"], "san": info["san"],
+                         "base_logit": float(base[r]), "deltas": deltas[r].tolist()}
+                        for r, info in enumerate(infos)]
+        finally:
+            self._capture_on_device = False
         return out
 
     # ----- activation dump --------------------------------------------------
