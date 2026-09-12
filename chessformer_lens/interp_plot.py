@@ -5,9 +5,6 @@ The app's views as matplotlib figures — same layouts, same colours, same words
                         Win / Draw / Loss bar — with a second rating overlaid
                         when you pass `elo_b`
   plot_board            just the position — no engine, no policy, no eval
-  plot_residual_film    "Residual stream across depth · this position": the
-                        per-square ‖Δ‖ each structure writes, with the logit-lens
-                        top move drawn on top of every readout point
   plot_logit_curve      one move's logit at every readout point (up to 4 moves
                         overlaid) — `eng.logit_per_depth` drawn
   plot_policy_curve     the same curve after the softmax over legal moves
@@ -26,10 +23,16 @@ The app's views as matplotlib figures — same layouts, same colours, same words
                         3·num_heads boards on one comparable scale
   plot_attention_atlas  one head's whole 64x64 matrix as 64 small boards, each
                         drawn at its own query square
-  plot_gab_mixture      "How L·h's GAB is generated": the decomposition readout,
+  plot_gab_mixture      "How LH's GAB is generated": the decomposition readout,
                         the generated mixing coefficients, and the template bank
   plot_gab_templates    the template vocabulary on its own
-  plot_skill_diff       where two ratings diverge inside the stream, per square
+  set_theme             "dark" (the app's palette, default) or "light" (for print)
+  save                  fig -> file with its background kept; .pdf keeps text as text
+
+Every plotter also takes `width` ("col" = 3.3 in, "page" = 6.9 in, or inches) to
+draw at a fixed physical width, and `titles=False` to drop the headline and hint
+lines and keep only the compact identifier line for a caption to carry.
+
 
 `plot_attention` and `plot_gab_mixture` are the same two panels `interp_widget`
 ships as live widgets, rendered as one slice: take the figure when you want a
@@ -53,38 +56,66 @@ from __future__ import annotations
 import chess
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib import font_manager
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 
 from .piece_art import draw_piece
 
 # ---------------------------------------------------------------------------
-# the app's palette (ui.py :root) — so a figure and the app read the same
+# palettes: "dark" is the app's :root (ui.py), "light" is for print
 # ---------------------------------------------------------------------------
-# The full :root set, mirrored even where a figure has no use for it (PANEL2).
-# Lifted one step from the original pitch-black values (2026-07), together
-# with ui.py, app.py and interp_widget.py. Hue and tier spacing are unchanged,
-# and MUTED still clears WCAG AA (4.5:1) on every tier. To go back to pitch
-# black everywhere, restore this line and the matching ones in ui.py (x2),
-# app.py (x2) and interp_widget.py:
-#   BG, PANEL, PANEL2, LINE = "#0e1014", "#161a21", "#1b2029", "#262c37"
-#   CHART_BG (below) -> "#0f131a" ; --chart-bg / background_color to match.
-BG, PANEL, PANEL2, LINE = "#181c24", "#20252f", "#262c38", "#333b4a"
-TEXT, MUTED = "#e7eaf0", "#8b93a3"
-ACCENT, ACCENT2 = "#6ea8fe", "#7bd88f"
-SQ_LIGHT, SQ_DARK = "#c9d1dc", "#6b7686"
-WIN, DRAW, LOSS = "#5fb878", "#6b7480", "#d9606a"
-HL, QRING = "#f5d56b", "#ff5d6c"
-CHART_BG = "#1a1f29"                                # pitch black: "#0f131a"
-KIND_COL = {"emb": "#8a93a3", "attn": "#f0a35e", "mlp": "#6fb3ff", "enc": "#5ac878"}
-MLCOLORS = ["#6ea8fe", "#7bd88f", "#f0a35e", "#c98bff"]   # compared moves
-MLMAX = 4                                                 # how many at once
+THEMES = {
+    "dark": dict(
+        BG="#0e1014", PANEL="#161a21", PANEL2="#1b2029", LINE="#262c37",
+        TEXT="#e7eaf0", MUTED="#8b93a3",
+        ACCENT="#6ea8fe", ACCENT2="#7bd88f",
+        SQ_LIGHT="#c9d1dc", SQ_DARK="#6b7686",
+        WIN="#5fb878", DRAW="#6b7480", LOSS="#d9606a", INK="#0d130d",
+        HL="#f5d56b", QRING="#ff5d6c", MOVE=("#d5d2bc", "#92917e"),
+        CHART_BG="#0f131a", COORD="#ffffff5c",
+        CHECKER=((1, 1, 1, .05), (0, 0, 0, .16)),
+        EXCL=("#151a22", "#2b3444"),
+        KIND_COL={"emb": "#8a93a3", "attn": "#f0a35e", "mlp": "#6fb3ff", "enc": "#5ac878"},
+        MLCOLORS=["#6ea8fe", "#7bd88f", "#f0a35e", "#c98bff"],
+        POS="#f0a35e", NEG="#6fb3ff",
+        _MID=(24, 28, 36), _BLUE=(64, 132, 234), _ORANGE=(244, 134, 58),
+    ),
+    "light": dict(
+        BG="#ffffff", PANEL="#f3f5f8", PANEL2="#e9ecf1", LINE="#d3d8e0",
+        TEXT="#161a21", MUTED="#454c58",
+        ACCENT="#2563c9", ACCENT2="#1c7f44",
+        SQ_LIGHT="#F7D0A5", SQ_DARK="#C78E53",
+        WIN="#3e9e5c", DRAW="#a0a7b2", LOSS="#d0505b", INK="#111418",
+        HL="#f0c419", QRING="#e03545", MOVE=("#cdd16a", "#aaa23b"),
+        CHART_BG="#ffffff", COORD="#0000007a",
+        CHECKER=((1, 1, 1, 0), (0, 0, 0, .075)),
+        EXCL=("#eceff3", "#b9c0cb"),
+        KIND_COL={"emb": "#6b7482", "attn": "#c46309", "mlp": "#2563c9", "enc": "#1c7f44"},
+        MLCOLORS=["#2563c9", "#1c7f44", "#c46309", "#7c3fcf"],
+        POS="#c46309", NEG="#2563c9",
+        _MID=(243, 245, 248), _BLUE=(37, 99, 201), _ORANGE=(196, 99, 9),
+    ),
+}
+MLMAX = 4
+_FONTS = {f.name for f in font_manager.fontManager.ttflist}
+MONO = next(f for f in ("JetBrains Mono", "IBM Plex Mono", "Menlo", "DejaVu Sans Mono") if f in _FONTS)
+SANS = next(f for f in ("Inter", "Helvetica Neue", "DejaVu Sans") if f in _FONTS)
+WIDTHS = {"col": 3.3, "page": 6.9}
+RING_OUT, RING_IN = "#ffffff", "#18181b"
 
-_MID, _BLUE, _ORANGE = (26, 31, 41), (64, 132, 234), (244, 134, 58)   # _MID == CHART_BG
-POLBAR = LinearSegmentedColormap.from_list("polbar", [ACCENT, ACCENT2])
-DIVMAP = LinearSegmentedColormap.from_list(
-    "divmap", [np.array(_BLUE) / 255, np.array(_MID) / 255, np.array(_ORANGE) / 255])
-MONO = "DejaVu Sans Mono"
+
+def set_theme(name: str = "dark"):
+    """Switch every figure drawn from here on to THEMES[name]."""
+    global DIVMAP
+    globals().update(THEMES[name])
+    plt.rcParams.update({"pdf.fonttype": 42, "ps.fonttype": 42,
+                         "font.sans-serif": [SANS, "DejaVu Sans"]})
+    DIVMAP = LinearSegmentedColormap.from_list(
+        "divmap", [np.array(_BLUE) / 255, np.array(_MID) / 255, np.array(_ORANGE) / 255])
+
+
+set_theme("dark")
 
 
 def _divmap(v: float) -> tuple:
@@ -115,29 +146,54 @@ def _depth_label(step) -> str:
     return step["label"]
 
 
-def _fig(figsize):
+_SCALE = 1.0
+
+
+def _fs(pt):
+    return max(6.0, pt * _SCALE)
+
+
+def _fig(figsize, width=None, titles=True):
+    global _SCALE
+    _SCALE = 1.0
+    if width is not None:
+        w = WIDTHS.get(width, width)
+        _SCALE = min(1.0, w / figsize[0])
+        figsize = (w, figsize[1] * w / figsize[0])
     fig = plt.figure(figsize=figsize, facecolor=BG)
+    fig._titles = titles
     return fig
+
+
+def _ftext(fig, *a, **kw):
+    if getattr(fig, "_titles", True):
+        fig.text(*a, **kw)
+
+
+def save(fig, path, *, dpi=300):
+    """Write the figure with its own background and a tight box; the format
+    follows the extension (.pdf keeps the text as text)."""
+    fig.savefig(path, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
 
 
 def _panel(ax, *, face=PANEL, radius=True):
     ax.set_facecolor(face)
     for s in ax.spines.values():
         s.set_color(LINE)
-    ax.tick_params(colors=MUTED, labelsize=8, length=0)
+    ax.tick_params(colors=MUTED, labelsize=_fs(8), length=0)
     return ax
 
 
-def _h2(ax, text, *, x=0.0, y=1.0, color=MUTED, size=9.5):
+def _h2(ax, text, *, x=0.0, y=1.0, color=MUTED, size=10.5):
     """The app's card heading: uppercase and muted. (The `.6px` tracking in
     ui.py has no matplotlib equivalent, so it isn't reproduced.)"""
     ax.text(x, y, text.upper(), transform=ax.transAxes, ha="left", va="bottom",
-            fontsize=size, color=color, fontweight="600", family="sans-serif")
+            fontsize=_fs(size), color=color, fontweight="600", family="sans-serif")
 
 
-def _hint(ax, text, *, x=0.0, y=1.0, size=7.5, color=MUTED):
+def _hint(ax, text, *, x=0.0, y=1.0, size=8.5, color=MUTED):
     ax.text(x, y, text, transform=ax.transAxes, ha="left", va="bottom",
-            fontsize=size, color=color, family=MONO)
+            fontsize=_fs(size), color=color, family=MONO)
 
 
 def _runs(fig, x, y, runs, *, va="top"):
@@ -146,6 +202,8 @@ def _runs(fig, x, y, runs, *, va="top"):
     so each run has to be measured to know where the next one starts.
     `runs` is [(text, kwargs)]; returns the x the line ended at, in figure
     fraction. `_twidth` is the axes-fraction counterpart."""
+    if not getattr(fig, "_titles", True):
+        return x
     r = fig.canvas.get_renderer()
     for text, kw in runs:
         t = fig.text(x, y, text, va=va, **kw)
@@ -156,7 +214,7 @@ def _runs(fig, x, y, runs, *, va="top"):
 def _inch_y(fig, inches_from_top):
     """Figure-fraction y that sits a fixed number of inches below the top edge —
     header blocks stay put instead of drifting with the figure's height."""
-    return 1 - inches_from_top / fig.get_size_inches()[1]
+    return 1 - inches_from_top * _SCALE / fig.get_size_inches()[1]
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +264,7 @@ def draw_board(ax, board: chess.Board, *, move=None, heat=None, cmap=None,
             face = cmap(float(heat[canon]))
             ax.add_patch(plt.Rectangle((x - .5, y - .5), 1, 1, lw=0, fc=face, zorder=1))
             if checker:                       # the app's faint checkerboard on top
-                over = (1, 1, 1, .05) if (f + r) % 2 else (0, 0, 0, .16)
+                over = CHECKER[0] if (f + r) % 2 else CHECKER[1]
                 ax.add_patch(plt.Rectangle((x - .5, y - .5), 1, 1, lw=0, fc=over, zorder=2))
         else:
             ax.add_patch(plt.Rectangle((x - .5, y - .5), 1, 1, lw=0, zorder=1,
@@ -218,23 +276,23 @@ def draw_board(ax, board: chess.Board, *, move=None, heat=None, cmap=None,
         frm, to, sym = move
         if to is not None:
             ax.add_patch(plt.Rectangle((to % 8 - .5, to // 8 - .5), 1, 1, lw=2.2,
-                                       ec=(90 / 255, 200 / 255, 120 / 255, .95),
-                                       fc="none", zorder=5))
+                                       ec=RING, fc="none", zorder=5))
         if frm is not None and sym:
             draw_piece(ax, sym, frm % 8, frm // 8, size=piece_size, zorder=6)
     if query is not None:
         qx, qy = (query % 8, query // 8) if canonical else _real_xy(query, turn)
-        ax.add_patch(plt.Rectangle((qx - .5, qy - .5), 1, 1, lw=2,
-                                   ec=QRING, fc="none", zorder=6))
+        for col, lw in ((RING_OUT, 4.5), (RING_IN, 2.0)):
+            ax.add_patch(plt.Rectangle((qx - .38, qy - .38), .76, .76, lw=lw,
+                                       ec=col, fc="none", zorder=6))
     if coords:
         for f in range(8):
             name = chess.FILE_NAMES[f]
-            ax.text(f + .40, -.46, name, ha="right", va="bottom", fontsize=5.5,
-                    color="#ffffff5c", family=MONO, zorder=7)
+            ax.text(f + .40, -.46, name, ha="right", va="bottom", fontsize=_fs(5.5),
+                    color=COORD, family=MONO, zorder=7)
         for r in range(8):
-            rank = r + 1 if (canonical or turn == chess.WHITE) else 8 - r
-            ax.text(-.46, r + .40, str(rank), ha="left", va="top", fontsize=5.5,
-                    color="#ffffff5c", family=MONO, zorder=7)
+            rank = 8 - r if (canonical and turn == chess.BLACK) else r + 1
+            ax.text(-.46, r + .40, str(rank), ha="left", va="top", fontsize=_fs(5.5),
+                    color=COORD, family=MONO, zorder=7)
 
 
 def _real_xy(canon: int, turn: bool):
@@ -253,7 +311,7 @@ def _canon_name(canon: int, turn: bool) -> str:
 # ---------------------------------------------------------------------------
 def plot_position(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
                   elo_b: int | None = None, played: str | None = None,
-                  max_moves: int = 14, figsize=(11, 6.2)):
+                  max_moves: int = 14, figsize=(11, 6.2), width=None, titles=True):
     """The app's left and right columns: the position, its policy, its eval.
 
     With `elo_b`, the policy becomes the app's compare mode —
@@ -272,9 +330,9 @@ def plot_position(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
         raise ValueError("no legal moves in this position")
     res_b = eng.evaluate(board, elo_b, oppo_elo) if elo_b is not None else None
 
-    fig = _fig(figsize)
+    fig = _fig(figsize, width, titles)
     gs = GridSpec(2, 2, figure=fig, width_ratios=[1, 1.15], height_ratios=[1, .17],
-                  hspace=.28, wspace=.16, left=.03, right=.97, top=.9, bottom=.06)
+                  hspace=.24, wspace=.10, left=.02, right=.98, top=.93, bottom=.05)
     ax_b = fig.add_subplot(gs[:, 0])
     ax_p = fig.add_subplot(gs[0, 1])
     ax_w = fig.add_subplot(gs[1, 1])
@@ -284,10 +342,10 @@ def plot_position(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
     for sq in (mv.from_square, mv.to_square):        # the app's played-move highlight
         f, r = chess.square_file(sq), chess.square_rank(sq)
         ax_b.add_patch(plt.Rectangle((f - .5, r - .5), 1, 1, lw=0,
-                                     fc=(*_hex(HL), .28), zorder=3))
+                                     fc=MOVE[0] if (f + r) % 2 else MOVE[1], zorder=3))
     ax_b.set_title(f"{'White' if board.turn else 'Black'} to move · {elo} Elo"
                    + (f" vs {elo_b}" if elo_b is not None else ""),
-                   fontsize=9.5, color=MUTED, pad=8, family=MONO)
+                   fontsize=_fs(10.5), color=MUTED, pad=8, family=MONO)
 
     # ---- policy ------------------------------------------------------------
     ax_p.axis("off")
@@ -298,7 +356,7 @@ def plot_position(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
         extra = len(pol) - len(rows)
         if extra > 0:
             ax_p.text(0, -.02, f"+{extra} more legal moves", transform=ax_p.transAxes,
-                      fontsize=7, color=MUTED, va="top")
+                      fontsize=_fs(7), color=MUTED, va="top")
     else:
         _h2(ax_p, f"Policy · {elo} (blue) vs {elo_b} (green)")
         pb = dict(res_b["policy"])
@@ -307,7 +365,7 @@ def plot_position(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
         extra = len(pol) - len(rows)
         if extra > 0:
             ax_p.text(0, -.02, f"+{extra} more legal moves · Δ = p({elo_b}) − p({elo})",
-                      transform=ax_p.transAxes, fontsize=7, color=MUTED, va="top")
+                      transform=ax_p.transAxes, fontsize=_fs(7), color=MUTED, va="top")
 
     # ---- win / draw / loss -------------------------------------------------
     ax_w.axis("off")
@@ -321,7 +379,7 @@ def plot_position(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
 
 
 def plot_board(board: chess.Board, *, move=None, title=None, elo=None,
-               figsize=(4.6, 4.9)):
+               figsize=(4.6, 4.9), width=None, titles=True):
     """Just the position — no engine, no policy, no eval.
 
     `plot_position`'s left column on its own, for the places a notebook or
@@ -335,7 +393,7 @@ def plot_board(board: chess.Board, *, move=None, title=None, elo=None,
       title   overrides the default "<side> to move" caption; pass "" for none.
       elo     appended to the default caption, matching plot_position's.
     """
-    fig = _fig(figsize)
+    fig = _fig(figsize, width, titles)
     ax = fig.add_subplot(111)
     draw_board(ax, board)
 
@@ -344,14 +402,14 @@ def plot_board(board: chess.Board, *, move=None, title=None, elo=None,
         for sq in (mv.from_square, mv.to_square):
             f, r = chess.square_file(sq), chess.square_rank(sq)
             ax.add_patch(plt.Rectangle((f - .5, r - .5), 1, 1, lw=0,
-                                       fc=(*_hex(HL), .28), zorder=3))
+                                       fc=MOVE[0] if (f + r) % 2 else MOVE[1], zorder=3))
 
     if title is None:
         title = f"{'White' if board.turn else 'Black'} to move"
         if elo is not None:
             title += f" · {elo} Elo"
     if title:
-        ax.set_title(title, fontsize=9.5, color=MUTED, pad=8, family=MONO)
+        ax.set_title(title, fontsize=_fs(10.5), color=MUTED, pad=8, family=MONO)
     fig.tight_layout()
     return fig
 
@@ -370,22 +428,20 @@ def _policy_rows(ax, board, rows, played):
         y = 1 - (i + .5) * step
         top = i == 0
         san = board.san(chess.Move.from_uci(uci))
-        ax.text(.005, y, san, transform=ax.transAxes, va="center", fontsize=size,
+        ax.text(.005, y, san, transform=ax.transAxes, va="center", fontsize=_fs(size),
                 family=MONO, color=ACCENT2 if top else TEXT,
                 fontweight="bold" if top else "normal")
         x0, w = .16, .68
         if pb is None:
             ax.add_patch(plt.Rectangle((x0, y - step * .30), w, step * .60,
                                        transform=ax.transAxes, fc=CHART_BG,
-                                       ec=HL if (played and uci == played) else LINE,
+                                       ec=ACCENT2 if (played and uci == played) else LINE,
                                        lw=1.4 if (played and uci == played) else .8,
                                        zorder=1))
-            bw = max(.012, pa) * w
-            ax.imshow(np.linspace(0, 1, 128).reshape(1, -1), cmap=POLBAR,
-                      aspect="auto", zorder=2, transform=ax.transAxes,
-                      extent=(x0, x0 + bw, y - step * .28, y + step * .28))
+            ax.add_patch(plt.Rectangle((x0, y - step * .28), max(.012, pa) * w, step * .56,
+                                       transform=ax.transAxes, fc=ACCENT2, lw=0, zorder=2))
             ax.text(.995, y, f"{pa * 100:.1f}%", transform=ax.transAxes, va="center",
-                    ha="right", fontsize=size - .5, family=MONO,
+                    ha="right", fontsize=_fs(size - .5), family=MONO,
                     color=ACCENT2 if top else MUTED)
         else:
             for j, (p, col) in enumerate(((pa, ACCENT), (pb, ACCENT2))):
@@ -395,7 +451,7 @@ def _policy_rows(ax, board, rows, played):
                                            fc=col, lw=0, zorder=2))
             d = (pb - pa) * 100
             ax.text(.995, y, f"{d:+.1f}", transform=ax.transAxes, va="center",
-                    ha="right", fontsize=size - .5, family=MONO,
+                    ha="right", fontsize=_fs(size - .5), family=MONO,
                     color=ACCENT2 if d >= 0 else LOSS)
 
 
@@ -404,96 +460,20 @@ def _wdl_bar(ax, wdl, *, y, h, tag=None):
     x0 = 0.0
     if tag is not None:
         ax.text(0, y + h / 2, tag, transform=ax.transAxes, va="center", ha="left",
-                fontsize=7, color=MUTED, family=MONO)
+                fontsize=_fs(7), color=MUTED, family=MONO)
         x0 = .075
     w, d = round(wdl["win"] * 100), round(wdl["draw"] * 100)
     l = max(0, 100 - w - d)
     span = 1 - x0
-    for val, col, ink in ((w, WIN, "#0d130d"), (d, DRAW, "#10141a"), (l, LOSS, "#0d130d")):
+    for val, col in ((w, WIN), (d, DRAW), (l, LOSS)):
         width = span * val / 100
         ax.add_patch(plt.Rectangle((x0, y), width, h, transform=ax.transAxes,
                                    fc=col, lw=0, clip_on=False))
         if val > (12 if tag else 8):
             ax.text(x0 + width / 2, y + h / 2, f"{val}%", transform=ax.transAxes,
-                    ha="center", va="center", fontsize=7.5, color=ink, family=MONO)
+                    ha="center", va="center", fontsize=_fs(7.5), color=INK, family=MONO)
         x0 += width
-
-
-# ---------------------------------------------------------------------------
-# residual stream across depth  (the app's film strip)
-# ---------------------------------------------------------------------------
-def plot_residual_film(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
-                       per_row: int = 9, figsize=None):
-    """"Residual stream across depth · this position" — per-square ‖Δ‖ each
-    structure writes into the residual stream with the logit-lens top move on top.
-
-    One mini board per readout point, in the app's order and colours: viridis heat
-    (emb on its own scale, attn + MLP sharing one), the moving piece drawn on the
-    lens move's from-square and a green ring on its destination. `enc` has no
-    additive write, so it shows the lens only. Canonical side-to-move frame.
-
-    Kwargs:
-      oppo_elo    the opponent's rating; defaults to `elo` for both sides.
-      per_row     boards per row before wrapping — the figure grows to fit."""
-    res = eng.residual_stream(board, elo, oppo_elo)
-    moves, delta = res["moves"], res["delta"]
-    n = len(moves)
-    rows = int(np.ceil(n / per_row))
-    figsize = figsize or (1.35 * min(n, per_row) + .6, 1.85 * rows + 1.05)
-
-    lo = hi = None
-    elo_lo = elo_hi = None
-    for c in delta:                                   # emb on its own scale
-        vals = c["norm"]
-        if c["kind"] == "emb":
-            elo_lo = min(vals) if elo_lo is None else min(elo_lo, min(vals))
-            elo_hi = max(vals) if elo_hi is None else max(elo_hi, max(vals))
-        else:
-            lo = min(vals) if lo is None else min(lo, min(vals))
-            hi = max(vals) if hi is None else max(hi, max(vals))
-    span, espan = (hi - lo) or 1, ((elo_hi - elo_lo) or 1) if elo_hi is not None else 1
-
-    fig = _fig(figsize)
-    gs = GridSpec(rows, per_row, figure=fig, hspace=.34, wspace=.10,
-                  left=.02, right=.98, top=.845 if rows > 1 else .78, bottom=.03)
-    viridis = plt.get_cmap("viridis")
-    for i, mvd in enumerate(moves):
-        ax = fig.add_subplot(gs[i // per_row, i % per_row])
-        d = delta[i] if i < len(delta) else None
-        kind = mvd["kind"]
-        if d is not None:
-            base = elo_lo if d["kind"] == "emb" else lo
-            sp = espan if d["kind"] == "emb" else span
-            heat = [(v - base) / sp for v in d["norm"]]
-            draw_board(ax, board, heat=heat, cmap=viridis, pieces=False,
-                       canonical=True, coords=False,
-                       move=(mvd["from"], mvd["to"], mvd["piece"]))
-        else:                                          # enc: lens only
-            draw_board(ax, board, heat=[0] * 64, cmap=lambda v: CHART_BG,
-                       pieces=False, canonical=True, coords=False,
-                       move=(mvd["from"], mvd["to"], mvd["piece"]))
-        col = KIND_COL.get(kind, MUTED)
-        ax.plot([-.5, 7.5], [7.62, 7.62], color=col, lw=3, clip_on=False, zorder=8)
-        label = _depth_label(mvd) + (f" {mvd['san']}" if mvd["san"] else "")
-        ax.text(3.5, -1.15, label, ha="center", va="top", fontsize=8,
-                color=col, family=MONO)
-
-    fig.text(.02, _inch_y(fig, .22), "Residual stream across depth · this position",
-             fontsize=11, color=TEXT, fontweight="600", va="top")
-    fig.text(.02, _inch_y(fig, .44), "per-square ‖Δ‖ each structure writes into the "
-             "residual stream with the logit-lens top move on top",
-             fontsize=8, color=MUTED, family=MONO, va="top")
-    y = _inch_y(fig, .68)                               # the drawer's .residlegend
-    x = .02
-    for key, txt in (("emb", "emb (input)"), ("attn", "attn add"),
-                     ("mlp", "MLP add"), ("enc", "enc (final norm)")):
-        fig.patches.append(plt.Rectangle((x, y - .004), .007, .010,
-                                         transform=fig.transFigure, fc=KIND_COL[key], lw=0))
-        x = _runs(fig, x + .011, y, [(txt, dict(fontsize=7.5, color=MUTED, family=MONO))],
-                  va="center") + .018
-    return fig
-
-
+        
 # ---------------------------------------------------------------------------
 # depth curves  (one move's logit / probability / rank across the readout points)
 # ---------------------------------------------------------------------------
@@ -511,16 +491,16 @@ def _depth_axes(ax, labels, curves, *, ylabel, invert=False, legend=False):
         ax.plot(x, y, color=color, lw=lw, zorder=3, label=name)
         if len(curves) > 1:
             ax.scatter(x, y, s=14, color=color, zorder=4)
-    ax.set_xticks(x, labels, fontsize=8, family=MONO)
-    ax.tick_params(colors=MUTED, labelsize=8, length=0)
+    ax.set_xticks(x, labels, fontsize=_fs(8), family=MONO)
+    ax.tick_params(colors=MUTED, labelsize=_fs(8), length=0)
     for lab in ax.get_yticklabels():
         lab.set_family(MONO)
     ax.set_xlim(-.4, len(labels) - .6)
-    ax.set_ylabel(ylabel, color=MUTED, fontsize=8, family=MONO)
+    ax.set_ylabel(ylabel, color=MUTED, fontsize=_fs(8), family=MONO)
     if invert:
         ax.invert_yaxis()
     if legend and len(curves) > 1:
-        leg = ax.legend(frameon=False, fontsize=8, loc="upper left", ncols=len(curves))
+        leg = ax.legend(frameon=False, fontsize=_fs(8), loc="upper left", ncols=len(curves))
         for t, (_, _, color, _) in zip(leg.get_texts(), curves):   # the app's .mlchip
             t.set_family(MONO)
             t.set_color(color)
@@ -556,17 +536,17 @@ def _curve_header(fig, title, moves, elo, hint):
     """The two-line header the curve figures share: title · primary move, then
     a monospace hint."""
     _runs(fig, .06, _inch_y(fig, .26), [
-        (f"{title} · ", dict(fontsize=11.5, color=TEXT, fontweight="600")),
-        (moves[0][1], dict(fontsize=11.5, color=ACCENT2, fontweight="600")),
-        (f"  {moves[0][0]} · elo {elo}", dict(fontsize=8.5, color=MUTED, family=MONO)),
+        (f"{title} · ", dict(fontsize=_fs(13), color=TEXT, fontweight="600")),
+        (moves[0][1], dict(fontsize=_fs(13), color=ACCENT2, fontweight="600")),
+        (f"  {moves[0][0]} · elo {elo}", dict(fontsize=_fs(10), color=MUTED, family=MONO)),
     ])
-    fig.text(.06, _inch_y(fig, .52), hint, fontsize=8, color=MUTED, family=MONO, va="top")
-    fig.text(.06, _inch_y(fig, .74), "aN / mN = layer N's attention / MLP sub-layer",
-             fontsize=7.5, color=MUTED, family=MONO, va="top", alpha=.8)
+    fig.text(.06, _inch_y(fig, .52), hint, fontsize=_fs(9.5), color=MUTED, family=MONO, va="top")
+    _ftext(fig, .06, _inch_y(fig, .74), "aN / mN = layer N's attention / MLP sub-layer",
+             fontsize=_fs(8.5), color=MUTED, family=MONO, va="top", alpha=.8)
 
 
 def plot_logit_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
-                     oppo_elo=None, figsize=(11, 4.4)):
+                     oppo_elo=None, figsize=(11, 4.4), width=None, titles=True):
     """"Logit through depth" — `eng.logit_per_depth` as a figure.
 
     The raw policy logit of one move (or up to MLMAX overlaid) at every readout
@@ -580,7 +560,7 @@ def plot_logit_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
     moves = _curve_moves(eng, board, elo, ucis, oppo_elo)
     curves = [(san, eng.logit_per_depth(board, elo, uci, oppo_elo), col, 2.2 if i == 0 else 1.5)
               for i, ((uci, san), col) in enumerate(zip(moves, MLCOLORS))]
-    fig = _fig(figsize)
+    fig = _fig(figsize, width, titles)
     ax = fig.add_axes([.06, .14, .91, .64])
     _depth_axes(ax, [_depth_label(p) for p in eng.depth_points()], curves,
                 ylabel="logit", legend=True)
@@ -591,14 +571,14 @@ def plot_logit_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
 
 
 def plot_policy_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
-                      oppo_elo=None, figsize=(11, 4.4)):
+                      oppo_elo=None, figsize=(11, 4.4), width=None, titles=True):
     """"Policy through depth" — `eng.policy_per_depth` as a figure: the move's
     probability, softmaxed over the legal moves only, at every readout point.
     Same chart as `plot_logit_curve` on the scale the app's policy list uses."""
     moves = _curve_moves(eng, board, elo, ucis, oppo_elo)
     curves = [(san, eng.policy_per_depth(board, elo, uci, oppo_elo), col, 2.2 if i == 0 else 1.5)
               for i, ((uci, san), col) in enumerate(zip(moves, MLCOLORS))]
-    fig = _fig(figsize)
+    fig = _fig(figsize, width, titles)
     ax = fig.add_axes([.06, .14, .91, .64])
     _depth_axes(ax, [_depth_label(p) for p in eng.depth_points()], curves,
                 ylabel="p(move)", legend=True)
@@ -609,7 +589,7 @@ def plot_policy_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
 
 
 def plot_rank_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
-                    oppo_elo=None, figsize=(11, 4.4)):
+                    oppo_elo=None, figsize=(11, 4.4), width=None, titles=True):
     """"Rank through depth" — `eng.rank_per_depth` as a figure: where the move
     sits among the legal moves at every readout point, 1 (the top move) at the
     top of the axis. The step where a curve reaches the dashed rank-1 line and
@@ -617,7 +597,7 @@ def plot_rank_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
     moves = _curve_moves(eng, board, elo, ucis, oppo_elo)
     curves = [(san, eng.rank_per_depth(board, elo, uci, oppo_elo), col, 2.2 if i == 0 else 1.5)
               for i, ((uci, san), col) in enumerate(zip(moves, MLCOLORS))]
-    fig = _fig(figsize)
+    fig = _fig(figsize, width, titles)
     ax = fig.add_axes([.06, .14, .91, .64])
     _depth_axes(ax, [_depth_label(p) for p in eng.depth_points()], curves,
                 ylabel="rank (1 = top move)", invert=True, legend=True)
@@ -638,7 +618,7 @@ def plot_rank_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
 # ---------------------------------------------------------------------------
 def plot_move_microscope(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
                          oppo_elo=None, elo_b: int | None = None,
-                         figsize=(11, 4.4)):
+                         figsize=(11, 4.4), width=None, titles=True):
     """"Move microscope" — one move's logit through depth.
 
     The depth curve alone; `plot_carrier_heads` draws the carrier grid
@@ -659,7 +639,7 @@ def plot_move_microscope(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
     data_b = (eng.move_logit_lens(board, elo_b, ucis[0], oppo_elo)
               if (single and elo_b is not None) else None)
 
-    fig = _fig(figsize)
+    fig = _fig(figsize, width, titles)
     ax = fig.add_axes([.06, .14, .91, .64])
 
     steps = series[0]["steps"]
@@ -674,7 +654,7 @@ def plot_move_microscope(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
         ax.scatter(x, [s["logit"] for s in data_b["steps"]], s=10, color=ACCENT2,
                    alpha=.85, zorder=3)
         ax.text(.995, 1.03, f"━ {elo}   ━ {elo_b}", transform=ax.transAxes, ha="right",
-                fontsize=8, family=MONO, color=ACCENT2)
+                fontsize=_fs(8), family=MONO, color=ACCENT2)
 
     if single:                                   # the snap
         ranks = [s["rank"] for s in steps]
@@ -687,44 +667,44 @@ def plot_move_microscope(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
             ax.axvline(snap, color=QRING, ls=(0, (4, 3)), lw=1.2, zorder=2)
             ax.text(snap + .15, ax.get_ylim()[1],
                     f"top from {_depth_label(steps[snap])}",
-                    color=QRING, fontsize=8, family=MONO, va="top")
+                    color=QRING, fontsize=_fs(8), family=MONO, va="top")
 
     pm = series[0]
     y = _inch_y(fig, .26)
     _runs(fig, .06, y, [
-        ("Move microscope · ", dict(fontsize=11.5, color=TEXT, fontweight="600")),
-        (pm["san"], dict(fontsize=11.5, color=ACCENT2, fontweight="600")),
+        ("Move microscope · ", dict(fontsize=_fs(13), color=TEXT, fontweight="600")),
+        (pm["san"], dict(fontsize=_fs(13), color=ACCENT2, fontweight="600")),
         (f"  {pm['uci']} · elo {elo}" + (f" vs {elo_b}" if data_b is not None else ""),
-         dict(fontsize=8.5, color=MUTED, family=MONO)),
+         dict(fontsize=_fs(10), color=MUTED, family=MONO)),
     ])
     fig.text(.06, _inch_y(fig, .52),
              "click policy move(s) to see each one's logits through depth"
              if len(series) > 1 else
              f"logit at each of the {len(steps)} readout points · "
              f"rank 1 of {pm['n_legal']} legal moves = currently the top move",
-             fontsize=8, color=MUTED, family=MONO, va="top")
-    fig.text(.06, _inch_y(fig, .74),
+             fontsize=_fs(9.5), color=MUTED, family=MONO, va="top")
+    _ftext(fig, .06, _inch_y(fig, .74),
              "aN / mN = layer N's attention / MLP sub-layer",
-             fontsize=7.5, color=MUTED, family=MONO, va="top", alpha=.8)
+             fontsize=_fs(8.5), color=MUTED, family=MONO, va="top", alpha=.8)
     return fig
 
 
 def plot_carrier_heads(eng, board: chess.Board, elo: int = 1500, uci: str | None = None,
-                       *, oppo_elo=None, figsize=(6.4, 5.6)):
+                       *, oppo_elo=None, figsize=(6.4, 5.6), width=None, titles=True):
     """"carrier heads · Δlogit = ablated − clean" on its own.
 
     `uci` defaults to the model's own move. Costs ~num_blocks·(num_heads+1)
     forward passes (72 on the 5M), so seconds, not ms."""
     if uci is None:
         uci = eng.evaluate(board, elo, oppo_elo)["policy"][0][0]
-    fig = _fig(figsize)
+    fig = _fig(figsize, width, titles)
     ax = fig.add_axes([.09, .16, .86, .74])
     _carrier_grid(ax, eng, board, elo, uci, oppo_elo)
     return fig
 
 
 def _carrier_grid(ax, eng, board, elo, uci, oppo_elo):
-    """The app's ablation grid: num_heads columns x one row per layer (`LN·hH`),
+    """The app's ablation grid: num_heads columns x one row per layer (`LNHH`),
     coloured by Δlogit = ablated − clean, with the final layer excluded from the
     scale."""
     g = eng.ablate_grid(board, elo, uci, oppo_elo)
@@ -743,40 +723,40 @@ def _carrier_grid(ax, eng, board, elo, uci, oppo_elo):
     for L in range(nb):
         for h in range(nh):
             if L == no_carrier:               # dimmed + striped, out of attribution
-                ax.add_patch(plt.Rectangle((h, L), 1, 1, fc="#151a22", ec="#2b3444",
+                ax.add_patch(plt.Rectangle((h, L), 1, 1, fc=EXCL[0], ec=EXCL[1],
                                            lw=0, hatch="////", alpha=.5))
                 continue
-            ax.add_patch(plt.Rectangle((h, L), 1, 1, ec=PANEL, lw=.6,
+            ax.add_patch(plt.Rectangle((h, L), 1, 1, ec=BG, lw=.6,
                                        fc=_divmap(d[L, h] / m)))
             if (L, h) == (sL, sH):
                 ax.add_patch(plt.Rectangle((h, L), 1, 1, fc="none", ec=QRING, lw=2, zorder=3))
     for h in range(nh):
-        ax.text(h + .5, -.15, f"h{h}", ha="center", va="bottom", fontsize=7,
+        ax.text(h + .5, -.15, f"H{h}", ha="center", va="bottom", fontsize=_fs(7),
                 color=MUTED, family=MONO)
     for L in range(nb):
-        ax.text(-.15, L + .5, f"L{L}", ha="right", va="center", fontsize=7,
+        ax.text(-.15, L + .5, f"L{L}", ha="right", va="center", fontsize=_fs(7),
                 color=MUTED, family=MONO)
-    ax.text(0, -.85, "carrier heads · Δlogit = ablated − clean", fontsize=8.5,
+    ax.text(0, -.85, "carrier heads · Δlogit = ablated − clean", fontsize=_fs(8.5),
             color=MUTED, family=MONO, fontweight="600")
     v = d[sL, sH]
     ax.text(0, nb + .55,                      # the drawer's .mlnote, wrapped to the grid
-            f"base logit {g['base_logit']:.2f} · strongest L{sL}·h{sH} {v:+.2f}\n"
+            f"base logit {g['base_logit']:.2f} · strongest L{sL}H{sH} {v:+.2f}\n"
             f"blue = ablating the head drops {g['san']}'s logit (carrier)\n"
             f"orange = raises it (suppressor)\n"
             f"L{no_carrier} excluded (writes straight to the logits)",
-            fontsize=6.8, color=MUTED, family=MONO, va="top", linespacing=1.7)
+            fontsize=_fs(6.8), color=MUTED, family=MONO, va="top", linespacing=1.7)
     return g
 
 
 def plot_move_report(eng, board: chess.Board, elo: int = 1500, uci=None, *,
-                     oppo_elo=None, figsize=(15, 5.2)):
+                     oppo_elo=None, figsize=(15, 5.2), width=None, titles=True):
     """One position and move on the board, its logit through depth, and the heads
     that carry it."""
     (uci, san), = _curve_moves(eng, board, elo, uci, oppo_elo)
     data = eng.move_logit_lens(board, elo, uci, oppo_elo)
     steps = data["steps"]
 
-    fig = _fig(figsize)
+    fig = _fig(figsize, width, titles)
     gs = GridSpec(1, 3, figure=fig, width_ratios=[1, 1.45, 1.05], wspace=.2,
                   left=.06, right=.97, top=.78, bottom=.18)
     ax_b, ax_c, ax_g = (fig.add_subplot(gs[0, i]) for i in range(3))
@@ -785,7 +765,7 @@ def plot_move_report(eng, board: chess.Board, elo: int = 1500, uci=None, *,
     for sq in (mv.from_square, mv.to_square):        # the app's played-move highlight
         f, r = chess.square_file(sq), chess.square_rank(sq)
         ax_b.add_patch(plt.Rectangle((f - .5, r - .5), 1, 1, lw=0,
-                                     fc=(*_hex(HL), .28), zorder=3))
+                                     fc=MOVE[0] if (f + r) % 2 else MOVE[1], zorder=3))
 #
     _depth_axes(ax_c, [_depth_label(s) for s in steps],
                 [(san, [s["logit"] for s in steps], ACCENT, 2.2)], ylabel="logit")
@@ -800,7 +780,7 @@ def plot_move_report(eng, board: chess.Board, elo: int = 1500, uci=None, *,
         late = snap > len(steps) * .6
         ax_c.text(snap + (-.15 if late else .15), ax_c.get_ylim()[1],
                   f"top from {_depth_label(steps[snap])}",
-                  color=QRING, fontsize=8, family=MONO, va="top",
+                  color=QRING, fontsize=_fs(8), family=MONO, va="top",
                   ha="right" if late else "left")
     _hint(ax_c, f"logit through depth · rank 1 of {data['n_legal']} legal moves "
                 f"= the top move", y=1.03, size=8.5)
@@ -817,7 +797,7 @@ def plot_move_report(eng, board: chess.Board, elo: int = 1500, uci=None, *,
 # ---------------------------------------------------------------------------
 def plot_attention(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
                    layer: int = 0, head: int = 0, query: str | None = None,
-                   figsize=(11.5, 4.6)):
+                   figsize=(11.5, 4.6), width=None, titles=True):
     """"Live attention · this position" — the app's three boards for one head:
     semantic attention (QKᵀ), geometric attention (GAB), and the head's final
     attention matrix. `query` is a square name; it defaults to the from-square of
@@ -837,11 +817,10 @@ def plot_attention(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
 
     qk, gab, attn = (np.array(att[k])[q] for k in ("qk", "gab", "attn"))
 
-    fig = _fig(figsize)
+    fig = _fig(figsize, width, titles)
     gs = GridSpec(1, 3, figure=fig, wspace=.08, left=.03, right=.97, top=.70, bottom=.14)
     viridis = plt.get_cmap("viridis")
-    labels = ["semantic attention (QKᵀ)", "geometric attention (GAB)",
-              "final head attention matrix (scaled softmax(QKᵀ + GAB))"]
+    labels = ["semantic · QKᵀ", "geometric · GAB", "attention · softmax(QKᵀ + GAB)"]
     for i, (row, lab) in enumerate(zip((qk, gab, attn), labels)):
         ax = fig.add_subplot(gs[0, i])
         if i < 2:
@@ -852,13 +831,13 @@ def plot_attention(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
             mx = float(row.max()) or 1
             draw_board(ax, board, heat=row / mx, cmap=viridis, pieces=False,
                        query=q, coords=True)
-        ax.set_title(lab, fontsize=8, color=MUTED, family=MONO, fontweight="600", pad=6)
+        ax.set_title(lab, fontsize=_fs(8), color=MUTED, family=MONO, fontweight="600", pad=6)
 
-    fig.text(.03, _inch_y(fig, .26), "Live attention · this position", fontsize=11.5,
+    _ftext(fig, .03, _inch_y(fig, .26), "Live attention · this position", fontsize=_fs(13),
              color=TEXT, fontweight="600", va="top")
-    fig.text(.03, _inch_y(fig, .52), f"L{layer}·h{head} · query "
+    fig.text(.03, _inch_y(fig, .52), f"L{layer}H{head} · query "
              f"{_canon_name(q, board.turn)} · elo {elo}",
-             fontsize=8.5, color=MUTED, family=MONO, va="top")
+             fontsize=_fs(10), color=MUTED, family=MONO, va="top")
     # Two legends, each under the boards it describes: diverging for the
     # pre-softmax logits, 0 -> max for the head's actual attention. The app ships
     # only the viridis one — a static figure has no hover readout, so the
@@ -866,15 +845,15 @@ def plot_attention(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
     span = (.97 - .03) / 3
     _legbar(fig, .03 + span * .55, .055, span * .9, DIVMAP, "−max", "+max")
     _legbar(fig, .03 + span * 2.08, .055, span * .82, plt.get_cmap("viridis"), "0", "max")
-    fig.text(.03 + span * 2.08, .028, "query's 64 weights (one per key square) sum to 1",
-             fontsize=7.5, color=MUTED, family=MONO, va="top")
+    _ftext(fig, .03 + span * 2.08, .028, "query's 64 weights (one per key square) sum to 1",
+             fontsize=_fs(8.5), color=MUTED, family=MONO, va="top")
     return fig
 
 
 def plot_attention_layer(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
                          layer: int = 0, query: str | None = None,
                          target: str | None = None,
-                         shared_scale: bool = True, figsize=None):
+                         shared_scale: bool = True, figsize=None, width=None, titles=True):
     """One whole layer's attention: 3 components x num_heads boards (24 on the
     5M) for a single query square — `plot_attention` widened from one head to
     all of them, so heads are compared side by side instead of one at a time.
@@ -924,7 +903,7 @@ def plot_attention_layer(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
     peak = int(data["attn"][:, t].argmax() if t is not None
                else data["attn"].max(axis=1).argmax())
     figsize = figsize or (1.28 * H + .5, 4.9)
-    fig = _fig(figsize)
+    fig = _fig(figsize, width, titles)
     gs = GridSpec(3, H, figure=fig, wspace=.06, hspace=.20,
                   left=.045, right=.985, top=.775, bottom=.125)
     viridis = plt.get_cmap("viridis")
@@ -945,7 +924,7 @@ def plot_attention_layer(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
                 ax.add_patch(plt.Rectangle((tx - .5, ty - .5), 1, 1, lw=1.8,
                                            ec=HL, fc="none", zorder=6))
             if r == 0:
-                ax.set_title(f"h{h}", fontsize=8, family=MONO, pad=4,
+                ax.set_title(f"H{h}", fontsize=_fs(8), family=MONO, pad=4,
                              color=ACCENT2 if h == peak else MUTED,
                              fontweight="600" if h == peak else "normal")
             if h == peak:                    # the layer's sharpest head, ringed
@@ -954,23 +933,23 @@ def plot_attention_layer(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
         # row label down the left edge, aligned to that row of boards
         fig.text(.038, (gs[r, 0].get_position(fig).y0
                         + gs[r, 0].get_position(fig).y1) / 2,
-                 row_titles[k], fontsize=8, color=MUTED, family=MONO,
+                 row_titles[k], fontsize=_fs(8), color=MUTED, family=MONO,
                  fontweight="600", rotation=90, ha="right", va="center")
 
-    fig.text(.045, _inch_y(fig, .26), f"Layer {layer} · every head's attention",
-             fontsize=11.5, color=TEXT, fontweight="600", va="top")
+    _ftext(fig, .045, _inch_y(fig, .26), f"Layer {layer} · every head's attention",
+             fontsize=_fs(13), color=TEXT, fontweight="600", va="top")
     if t is None:
-        pick = f"sharpest head h{peak}"
+        pick = f"sharpest head H{peak}"
     else:
         pct = 100 * float(data["attn"][peak, t])
         pick = (f"{_canon_name(q, board.turn)}→{_canon_name(t, board.turn)}: "
-                f"h{peak} at {pct:.1f}% ({pct / (100 / 64):.1f}× uniform)")
+                f"H{peak} at {pct:.1f}% ({pct / (100 / 64):.1f}× uniform)")
     fig.text(.045, _inch_y(fig, .52),
              f"query {_canon_name(q, board.turn)} · elo {elo} · {3 * H} boards "
              f"({H} heads × semantic / geometric / final) · "
              f"{'one scale per row' if shared_scale else 'per-panel scale'} · "
              f"{pick}",
-             fontsize=8.5, color=MUTED, family=MONO, va="top")
+             fontsize=_fs(10), color=MUTED, family=MONO, va="top")
     span = (.985 - .045) / 3
     _legbar(fig, .045 + span * .62, .045, span * .78, DIVMAP, "−max", "+max")
     _legbar(fig, .045 + span * 2.10, .045, span * .78, plt.get_cmap("viridis"), "0", "max")
@@ -984,9 +963,9 @@ def _legbar(fig, x, y, w, cmap, left, right, h=.018):
     for s in ax.spines.values():
         s.set_color(LINE)
     ax.text(-.04, .5, left, transform=ax.transAxes, ha="right", va="center",
-            fontsize=7, color=MUTED, family=MONO)
+            fontsize=_fs(7), color=MUTED, family=MONO)
     ax.text(1.04, .5, right, transform=ax.transAxes, ha="left", va="center",
-            fontsize=7, color=MUTED, family=MONO)
+            fontsize=_fs(7), color=MUTED, family=MONO)
 
 
 # ---------------------------------------------------------------------------
@@ -994,7 +973,7 @@ def _legbar(fig, x, y, w, cmap, left, right, h=.018):
 # ---------------------------------------------------------------------------
 def plot_attention_atlas(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
                          layer: int = 0, head: int = 0, component: str = "attn",
-                         shared_scale: bool = True, figsize=None):
+                         shared_scale: bool = True, pieces: bool = False, figsize=None, width=None, titles=True):
     """"Attention atlas": one head's whole 64x64 matrix, drawn as 64 small boards
     — `plot_attention` widened from one query square to all of them, with each
     board placed where its own query square sits on the real board.
@@ -1007,6 +986,7 @@ def plot_attention_atlas(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
                     sharper query row. False scales each panel to itself, which
                     shows every row's shape at the cost of comparability.
       layer, head   which head to open up.
+      pieces        draw the position on every panel too.
       oppo_elo      the opponent's rating; defaults to `elo` for both sides."""
     att = eng.attention(board, elo, oppo_elo, layer=layer, head=head)
     M = np.array(att[component])                          # (64, 64), row = query
@@ -1015,15 +995,15 @@ def plot_attention_atlas(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
     mag = np.abs(M) if div else M
     gmax = float(mag.max()) or 1.
 
-    fig = _fig(figsize or (11.2, 9.6))
+    fig = _fig(figsize or (11.2, 9.0), width, titles)
     gs = GridSpec(8, 8, figure=fig, hspace=.05, wspace=.05,
-                  left=.035, right=.735, top=.855, bottom=.035)
+                  left=.035, right=.735, top=.935, bottom=.035)
     for sq in chess.SQUARES:
         q = _canon(sq, board.turn)
         ax = fig.add_subplot(gs[7 - chess.square_rank(sq), chess.square_file(sq)])
         mx = gmax if shared_scale else (float(mag[q].max()) or 1.)
-        draw_board(ax, board, heat=M[q] / mx, cmap=cmap, pieces=False,
-                   coords=False, query=q)
+        draw_board(ax, board, heat=M[q] / mx, cmap=cmap, pieces=pieces,
+                   coords=False, query=q, piece_size=.8)
 
     # the position itself, once, at the size the atlas cannot afford
     key = fig.add_axes([.775, .445, .205, .205 * fig.get_figwidth() / fig.get_figheight()])
@@ -1031,16 +1011,14 @@ def plot_attention_atlas(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
     _hint(key, "the position — every panel is this board", x=0, y=-.10)
 
     peak = np.unravel_index(int(mag.argmax()), mag.shape)
-    fig.text(.035, _inch_y(fig, .26), "Attention atlas · every query square",
-             fontsize=11.5, color=TEXT, fontweight="600", va="top")
-    fig.text(.035, _inch_y(fig, .52),
-             f"L{layer}·h{head} · {component} · elo {elo} · 64 boards, each the "
+    fig.text(.035, _inch_y(fig, .24),
+             f"L{layer}H{head} · {component} · elo {elo} · 64 boards, each the "
              f"attention row of the square it sits on (ringed) · "
              f"{'one scale for all' if shared_scale else 'per-panel scale'} · "
              f"peak {_canon_name(int(peak[0]), board.turn)}→"
              f"{_canon_name(int(peak[1]), board.turn)}",
-             fontsize=8.5, color=MUTED, family=MONO, va="top")
-    _legbar(fig, .80, .35, .155, DIVMAP if div else plt.get_cmap("viridis"),
+             fontsize=_fs(10), color=MUTED, family=MONO, va="top")
+    _legbar(fig, .80, .045, .155, DIVMAP if div else plt.get_cmap("viridis"),
             "−max" if div else "0", "max")
     return fig
 
@@ -1050,8 +1028,8 @@ def plot_attention_atlas(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
 # ---------------------------------------------------------------------------
 def plot_gab_mixture(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
                      layer: int = 0, head: int = 0, query: str | None = None,
-                     target: str | None = None, top: int = 4, figsize=(12, 7.4)):
-    """"How L·h's GAB is generated" — the app's drawer as a figure: the pair
+                     target: str | None = None, top: int = 4, figsize=(12, 7.4), width=None, titles=True):
+    """"How LH's GAB is generated" — the app's drawer as a figure: the pair
     decomposition readout, the generated mixing coefficients, and the template
     vocabulary with each template's live coefficient.
 
@@ -1084,7 +1062,7 @@ def plot_gab_mixture(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
     total = float(gab[q, k])
     rest = total - sum(v for _, v in terms)
 
-    fig = _fig(figsize)
+    fig = _fig(figsize, width, titles)
     gs = GridSpec(4, 1, figure=fig, height_ratios=[.20, .22, .07, 1], hspace=.34,
                   left=.04, right=.97, top=.86, bottom=.03)
 
@@ -1098,31 +1076,31 @@ def plot_gab_mixture(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
     x = .015
     for txt, col in parts:
         c = col if isinstance(col, str) else tuple(v / 255 for v in col)
-        t = ax_r.text(x, .5, txt, transform=ax_r.transAxes, va="center", fontsize=9,
+        t = ax_r.text(x, .5, txt, transform=ax_r.transAxes, va="center", fontsize=_fs(9),
                       family=MONO, color=c, fontweight="bold" if txt[0] in "+-−" else "normal")
         x += _twidth(fig, t)
     for i, v in terms:
         t = ax_r.text(x, .5, f"{v:+.2f}", transform=ax_r.transAxes, va="center",
-                      fontsize=9, family=MONO,
+                      fontsize=_fs(9), family=MONO,
                       color=tuple(c / 255 for c in (_ORANGE if v >= 0 else _BLUE)))
         x += _twidth(fig, t)
         t = ax_r.text(x, .5, f"·#{i} ", transform=ax_r.transAxes, va="center",
-                      fontsize=9, family=MONO, color=ACCENT)
+                      fontsize=_fs(9), family=MONO, color=ACCENT)
         x += _twidth(fig, t)
     ax_r.text(x, .5, f" {rest:+.2f} rest", transform=ax_r.transAxes, va="center",
-              fontsize=9, family=MONO, color=MUTED, alpha=.6)
+              fontsize=_fs(9), family=MONO, color=MUTED, alpha=.6)
 
     # ---- coefficient strip -------------------------------------------------
     ax_c = fig.add_subplot(gs[1])
     _panel(ax_c, face=CHART_BG)
     m = float(np.abs(coeffs).max()) or 1
     ax_c.bar(np.arange(n), coeffs, width=.62,
-             color=["#f0a35e" if v >= 0 else "#6fb3ff" for v in coeffs])
+             color=[POS if v >= 0 else NEG for v in coeffs])
     ax_c.set_xlim(-.8, n - .2)
     ax_c.set_ylim(-m * 1.12, m * 1.12)
     ax_c.set_yticks([])
     ax_c.set_xticks(range(0, n, 8))
-    ax_c.tick_params(colors=MUTED, labelsize=7, length=0)
+    ax_c.tick_params(colors=MUTED, labelsize=_fs(7), length=0)
     for lab in ax_c.get_xticklabels():
         lab.set_family(MONO)
     ax_c.axhline(0, color=LINE, lw=.8)
@@ -1139,21 +1117,21 @@ def plot_gab_mixture(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
     for i in range(n):
         ax_t = fig.add_subplot(inner[i // per_row, i % per_row])
         s = float(np.abs(T[i]).max()) or 1
-        ax_t.imshow(T[i] / s, cmap=DIVMAP, vmin=-1, vmax=1, interpolation="nearest")
+        ax_t.imshow(_soft(T[i] / s), cmap=DIVMAP, vmin=-1, vmax=1, interpolation="nearest")
         ax_t.set_xticks([]); ax_t.set_yticks([])
         for sp in ax_t.spines.values():
             sp.set_color(ACCENT if i in [t[0] for t in terms] else LINE)
             sp.set_linewidth(1.6 if i in [t[0] for t in terms] else .6)
-        ax_t.set_xlabel(f"#{i} {coeffs[i]:+.2f}", fontsize=5.6, family=MONO, labelpad=2,
-                        color="#f0a35e" if coeffs[i] >= 0 else "#6fb3ff")
+        ax_t.set_xlabel(f"#{i} {coeffs[i]:+.2f}", fontsize=_fs(5.6), family=MONO, labelpad=2,
+                        color=POS if coeffs[i] >= 0 else NEG)
     _runs(fig, .04, _inch_y(fig, .28), [
-        ("How ", dict(fontsize=11.5, color=TEXT, fontweight="600")),
-        (f"L{layer}·h{head}", dict(fontsize=11.5, color=ACCENT2, fontweight="600")),
-        ("'s GAB is generated", dict(fontsize=11.5, color=TEXT, fontweight="600")),
+        ("How ", dict(fontsize=_fs(13), color=TEXT, fontweight="600")),
+        (f"L{layer}H{head}", dict(fontsize=_fs(13), color=ACCENT2, fontweight="600")),
+        ("'s GAB is generated", dict(fontsize=_fs(13), color=TEXT, fontweight="600")),
     ])
     fig.text(.04, _inch_y(fig, .54), f"a generator reads this position and emits, per "
              f"head, a bias of the {n} coefficients over a static bank of {n} 64×64 "
-             f"square-pair templates shared by every layer", fontsize=8, color=MUTED,
+             f"square-pair templates shared by every layer", fontsize=_fs(8), color=MUTED,
              family=MONO, va="top")
     return fig
 
@@ -1166,80 +1144,29 @@ def _twidth(fig, t):
     return bb.transformed(t.axes.transAxes.inverted()).width
 
 
-def plot_gab_templates(eng, *, per_row: int = 16, figsize=None):
+def _soft(M):
+    return np.sign(M) * np.sqrt(np.abs(M))
+
+
+def plot_gab_templates(eng, *, per_row: int = 16, figsize=None, width=None, titles=True):
     """"template vocabulary · the N static stencils (row = query sq, col = key sq)"
     — the whole shared bank, position-independent."""
     T = eng.gab_templates().numpy()
     n = len(T)
     rows = int(np.ceil(n / per_row))
-    fig = _fig(figsize or (per_row * .78, rows * .86 + .9))
-    gs = GridSpec(rows, per_row, figure=fig, hspace=.5, wspace=.1,
-                  left=.02, right=.98, top=.86, bottom=.03)
+    fig = _fig(figsize or (per_row * 1.05, rows * 1.15 + .9), width, titles)
+    gs = GridSpec(rows, per_row, figure=fig, hspace=.4, wspace=.1,
+                  left=.02, right=.98, top=1 - .85 / fig.get_figheight(), bottom=.03)
     for i in range(n):
         ax = fig.add_subplot(gs[i // per_row, i % per_row])
         s = float(np.abs(T[i]).max()) or 1
-        ax.imshow(T[i] / s, cmap=DIVMAP, vmin=-1, vmax=1, interpolation="nearest")
+        ax.imshow(_soft(T[i] / s), cmap=DIVMAP, vmin=-1, vmax=1, interpolation="nearest")
         ax.set_xticks([]); ax.set_yticks([])
         for sp in ax.spines.values():
             sp.set_color(LINE); sp.set_linewidth(.6)
-        ax.set_xlabel(f"#{i}", fontsize=6, family=MONO, color=MUTED, labelpad=2)
-    fig.text(.02, .965, "template vocabulary", fontsize=11.5, color=TEXT,
+        ax.set_xlabel(f"#{i}", fontsize=_fs(6), family=MONO, color=MUTED, labelpad=2)
+    _ftext(fig, .02, _inch_y(fig, .18), "template vocabulary", fontsize=_fs(13), color=TEXT,
              fontweight="600", va="top")
-    fig.text(.02, .925, f"the {n} static stencils (row = query sq, col = key sq) — "
-             f"shared by every layer", fontsize=8, color=MUTED, family=MONO, va="top")
+    fig.text(.02, _inch_y(fig, .46), f"the {n} static stencils (row = query sq, col = key sq) — "
+             f"shared by every layer · √-scaled for visibility", fontsize=_fs(9.5), color=MUTED, family=MONO, va="top")
     return fig
-
-
-# ---------------------------------------------------------------------------
-# skill diff on internals
-# ---------------------------------------------------------------------------
-def plot_skill_diff(eng, board: chess.Board, elo_a: int = 1500, elo_b: int = 1100, *,
-                    per_row: int = 9, figsize=None):
-    """Skill diff on internals: per-square ‖x_A − x_B‖ at every readout point,
-    with each rating's logit-lens move — where on the board, and at what depth,
-    the two skill levels diverge. Canonical side-to-move frame.
-
-    Both runs set the opponent's rating equal to their own, so each board is the
-    diff between two whole skill settings (see engine.compare_residual).
-    `per_row` sets how many boards before wrapping."""
-    d = eng.compare_residual(board, elo_a, elo_b)
-    steps = d["steps"]
-    n = len(steps)
-    rows = int(np.ceil(n / per_row))
-    figsize = figsize or (1.35 * min(n, per_row) + .6, 1.95 * rows + 1.05)
-
-    hi = max(max(s["norm"]) for s in steps) or 1
-    fig = _fig(figsize)
-    gs = GridSpec(rows, per_row, figure=fig, hspace=.42, wspace=.10,
-                  left=.02, right=.98, top=.845 if rows > 1 else .78, bottom=.03)
-    magma = plt.get_cmap("magma")
-    for i, s in enumerate(steps):
-        ax = fig.add_subplot(gs[i // per_row, i % per_row])
-        draw_board(ax, board, heat=[v / hi for v in s["norm"]], cmap=magma,
-                   pieces=False, canonical=True, coords=False)
-        col = KIND_COL.get(s["kind"], MUTED)
-        ax.plot([-.5, 7.5], [7.62, 7.62], color=col, lw=3, clip_on=False, zorder=8)
-        ax.text(3.5, -1.05, _depth_label(s), ha="center", va="top", fontsize=8,
-                color=col, family=MONO)
-        agree = s["same"]
-        ax.text(3.5, -2.15,
-                (s["move_a"]["san"] or "—") if agree else
-                f"{s['move_a']['san'] or '—'} / {s['move_b']['san'] or '—'}",
-                ha="center", va="top", fontsize=7.5, family=MONO,
-                color=MUTED if agree else QRING)
-    fig.text(.02, .965, f"Where {elo_a} and {elo_b} diverge inside the stream",
-             fontsize=11.5, color=TEXT, fontweight="600", va="top")
-    fig.text(.02, .928, f"per-square ‖x_{elo_a} − x_{elo_b}‖ at every readout point · "
-             f"under each board the logit-lens move of both runs "
-             f"(red = they disagree)", fontsize=8, color=MUTED, family=MONO, va="top")
-    fig.text(.02, .898, "Elo enters as an embedding on every square token, so at emb the "
-             "diff is one constant skill vector on all 64 squares (flat heat) — the "
-             "structure is how depth localizes it",
-             fontsize=7.5, color=MUTED, family=MONO, va="top", alpha=.75)
-    return fig
-
-
-
-
-
-

@@ -147,6 +147,12 @@ CUDA to speed higher parameter models up. Model weights: <https://huggingface.co
 - `app.py` — app launcher (native window via pywebview); the `chessformer_lens` command is its `main()`.
 
 ---
+### General color guide
+
+
+**Blue and orange** is used for diverging signed values; negative is blue, positive is orange. **Viridis** is used for magnitudes like attention weights. **Green** has to do with a specific chess move. **Red** has to do with undesirable things. The **black and white** halo lens denotes a query square. 
+ 
+---
 ### Notes
 
 
