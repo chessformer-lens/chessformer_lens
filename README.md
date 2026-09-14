@@ -155,17 +155,16 @@ These come with concise but detailed docstrings.
  
 ---
 ### Notes
-
+Created by David Litman
 
 Maia-3 comes from:
 Chessformer / Maia-3 (Monroe et al., ICLR 2026).
-Model weights: <https://huggingface.co/UofTCSSLab/Maia3-5M>
 
 
-The **Maia-3** model interpreter is completed; **Leela** will be completed soon. Both of these treat each square as a token—which allows for beautiful board readable attention patterns. Eventually other tokenization schemes will be tackled.
+The Maia-3 model interpreter is completed; Leela will be completed soon. Both of these treat each square as a token—which allows for beautiful board readable attention patterns. Eventually other tokenization schemes will be tackled.
 
 
-Please don't hesitate to give me feedback or thoughts by email or at **davidlitman.com**. I hope for this to be a useful and intuitive tool for the community.
+Please don't hesitate to give me feedback or thoughts by email or at [my personal website](https://davidlitman.com). I hope for this to be a useful and intuitive tool for the community.
 
 ---
 ### Citing
