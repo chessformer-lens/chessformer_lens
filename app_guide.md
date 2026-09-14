@@ -1,7 +1,7 @@
-# App Guide:
+# App Guide 
+*(If you cloned the repo look at Screenshots/chessformer_lens_demo.mp4)*:
 
 **Play or Set up a Position**
-![Playing a game: the board, the last-move arrow, and the move list](../Screenshots/Screenshot7.png)
 Click to move your pieces. Select an Elo for the engine (Maia-3 is created to mimic how HUMANS play at that strength, with all of our innate biases)
 and use `New game`, and a dropdown:`You play White` / `You play Black` / `Set up position` / `Random position`.
 It is also possible to `paste a FEN to load` a position with the `Load` button. 
@@ -18,7 +18,7 @@ moves are recorded in SAN notation.
 
 At the top in the center there is a `Win / Draw / Loss · side to move` stacked bar. 
 Under it is the `Maia rating (self_elo)` slider: 600-2800, step 25, default 1500; Dragging reevaluates the same position. 
-Under that is the scrollable ranked list: `Policy over N legal moves` — every legal move gets a row. 
+Under that is the scrollable ranked list: `Policy over N legal moves`: every legal move gets a row. 
 
 There is a `compare with a second rating` checkbox which reveals a `second rating` slider
 (default 1100). Setting it makes the policy rows become paired blue/green bars showing the compared policy and evaluation. This second rating does not affect the attention or GAB or residual panel app features.

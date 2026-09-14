@@ -1,56 +1,33 @@
 """
-
-The app's views as matplotlib figures — same layouts, same colours, same words.
   plot_position         the board, "Policy over N legal moves", and the
-                        Win / Draw / Loss bar — with a second rating overlaid
+                        Win / Draw / Loss bar with a second rating overlaid
                         when you pass `elo_b`
-  plot_board            just the position — no engine, no policy, no eval
+  plot_board            just the position without the engine, policy, or eval
   plot_logit_curve      one move's logit at every readout point (up to 4 moves
-                        overlaid) — `eng.logit_per_depth` drawn
+                        overlaid)
   plot_policy_curve     the same curve after the softmax over legal moves
   plot_rank_curve       the same as a rank, 1 = the top move at that depth
-  plot_move_microscope  "Move microscope": the logit curve as the app shows it —
+  plot_move_microscope  "Move microscope": the logit curve as the app shows it
                         with the snap marker, and one move at two ratings
   plot_carrier_heads    the carrier grid · Δlogit = ablated − clean; costs
-                        ~num_blocks·(num_heads+1) forward passes where the
-                        microscope's curve costs one
+                        ~num_blocks·(num_heads+1) forward passes
   plot_move_report      one move end to end: the position, its depth curve and
-                        its carrier grid as three panels of one figure — the
-                        one to sweep a set of positions with
+                        its carrier grid as three panels of one figure
   plot_attention        "Live attention · this position": semantic QKᵀ, geometric
                         GAB, and the head's final attention, for one query square
-  plot_attention_layer  the same three, for every head in a layer at once —
-                        3·num_heads boards on one comparable scale
+  plot_attention_layer  the same three, for every head in a layer at once
   plot_attention_atlas  one head's whole 64x64 matrix as 64 small boards, each
-                        drawn at its own query square
-  plot_gab_mixture      "How LH's GAB is generated": the decomposition readout,
-                        the generated mixing coefficients, and the template bank
-  plot_gab_templates    the template vocabulary on its own
-  set_theme             "dark" (the app's palette, default) or "light" (for print)
-  save                  fig -> file with its background kept; .pdf keeps text as text
+                        drawn at its own query square and an option to overlay
+                        the pieces
+  plot_gab_mixture      "How one head's GAB is generated": the generated linear 
+                        combination with the template bank
+  plot_gab_templates    the template bank on its own
+  set_theme             "light" (default,for print) or "dark" (the app's palette)
+                        You should in most cases be using "light."
 
-Every plotter also takes `width` ("col" = 3.3 in, "page" = 6.9 in, or inches) to
-draw at a fixed physical width, and `titles=False` to drop the headline and hint
-lines and keep only the compact identifier line for a caption to carry.
-
-
-`plot_attention` and `plot_gab_mixture` are the same two panels `interp_widget`
-ships as live widgets, rendered as one slice: take the figure when you want a
-single frame for a paper or a static export, take the widget when you want to
-sweep layers, heads and query squares.
-
-Every plotter takes `figsize` and returns the Figure; the defaults are tuned to
-the app's proportions, and the ones that wrap a row of boards size themselves
-from the model's depth.
-
-Frames follow the app: the attention boards and the position are drawn in real
-board orientation (White at the bottom), while the residual film and the skill
-diff are in the model's own canonical side-to-move frame — that is the frame the
-engine returns those tensors in, and the app draws them the same way.
-
-Depth reads the same on every figure that has it: `emb`, then `aN`/`mN` for
-layer N's attention and MLP sub-layers, then `enc` (see `_depth_label`).
+`interp_widget`, a different module, produces live widgets
 """
+
 from __future__ import annotations
 
 import chess
@@ -87,7 +64,7 @@ THEMES = {
         ACCENT="#2563c9", ACCENT2="#1c7f44",
         SQ_LIGHT="#F7D0A5", SQ_DARK="#C78E53",
         WIN="#3e9e5c", DRAW="#a0a7b2", LOSS="#d0505b", INK="#111418",
-        HL="#f0c419", QRING="#e03545", MOVE=("#cdd16a", "#aaa23b"),
+        HL="#f0c419", QRING="#e03545", MOVE=("#c1c463", "#beb64b"),
         CHART_BG="#ffffff", COORD="#0000007a",
         CHECKER=((1, 1, 1, 0), (0, 0, 0, .075)),
         EXCL=("#eceff3", "#b9c0cb"),
@@ -115,7 +92,7 @@ def set_theme(name: str = "dark"):
         "divmap", [np.array(_BLUE) / 255, np.array(_MID) / 255, np.array(_ORANGE) / 255])
 
 
-set_theme("dark")
+set_theme("light")
 
 
 def _divmap(v: float) -> tuple:
@@ -136,13 +113,9 @@ def _canon(square: int, turn: bool) -> int:
 
 def _depth_label(step) -> str:
     """A readout point -> its compact depth label: 'emb', then 'a0'/'m0' for
-    layer 0's attention and MLP sub-layers, ..., 'enc'. The label names the
-    writer at every point, so nothing else (marker colour, say) has to.
-
-    The engine already labels its readout points this way (`_lens_steps`), so
-    this is a pass-through kept as the one place the figures name depth. Takes
-    any dict carrying the engine's {label, kind} pair, so the microscope's
-    `steps`, the film's `delta` and the skill diff's `steps` all label alike."""
+    layer 0's attention and MLP sub-layers, ..., 'enc'. A pass-through of the
+    engine's own labels (`_lens_steps`), kept as the one place the figures name
+    depth; takes any dict carrying the engine's {label, kind} pair."""
     return step["label"]
 
 
@@ -212,8 +185,8 @@ def _runs(fig, x, y, runs, *, va="top"):
 
 
 def _inch_y(fig, inches_from_top):
-    """Figure-fraction y that sits a fixed number of inches below the top edge —
-    header blocks stay put instead of drifting with the figure's height."""
+    """Figure-fraction y a fixed number of inches below the top edge, so header
+    blocks stay put instead of drifting with the figure's height."""
     return 1 - inches_from_top * _SCALE / fig.get_size_inches()[1]
 
 
@@ -226,8 +199,6 @@ def _inch_y(fig, inches_from_top):
 
 
 def _empty_board(ax):
-    """Bare 8x8 axes: limits, equal aspect, no spines or ticks. Paints nothing —
-    the caller fills every square (see `draw_board`)."""
     ax.set_xlim(-0.5, 7.5)
     ax.set_ylim(-0.5, 7.5)
     ax.set_aspect("equal")
@@ -276,7 +247,7 @@ def draw_board(ax, board: chess.Board, *, move=None, heat=None, cmap=None,
         frm, to, sym = move
         if to is not None:
             ax.add_patch(plt.Rectangle((to % 8 - .5, to // 8 - .5), 1, 1, lw=2.2,
-                                       ec=RING, fc="none", zorder=5))
+                                       ec=ACCENT2, fc="none", zorder=5))
         if frm is not None and sym:
             draw_piece(ax, sym, frm % 8, frm // 8, size=piece_size, zorder=6)
     if query is not None:
@@ -312,9 +283,7 @@ def _canon_name(canon: int, turn: bool) -> str:
 def plot_position(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
                   elo_b: int | None = None, played: str | None = None,
                   max_moves: int = 14, figsize=(11, 6.2), width=None, titles=True):
-    """The app's left and right columns: the position, its policy, its eval.
-
-    With `elo_b`, the policy becomes the app's compare mode —
+    """With `elo_b`, the policy becomes the app's compare mode —
     "Policy · A (blue) vs B (green)", one thin bar per rating and the signed
     delta, and a Win / Draw / Loss row per rating.
 
@@ -380,12 +349,9 @@ def plot_position(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
 
 def plot_board(board: chess.Board, *, move=None, title=None, elo=None,
                figsize=(4.6, 4.9), width=None, titles=True):
-    """Just the position — no engine, no policy, no eval.
-
-    `plot_position`'s left column on its own, for the places a notebook or
-    paper only wants to show a board in the app's style (python-chess's
-    chess.svg only renders a light one). Takes no `eng`; nothing here runs
-    the model.
+    """`plot_position`'s left column on its own, for the places a notebook or
+    paper only wants a board in the app's style (python-chess's chess.svg only
+    renders a light one). Takes no `eng`; nothing here runs the model.
 
     Kwargs:
       move    a uci string or chess.Move to highlight, drawn with plot_position's
@@ -478,10 +444,9 @@ def _wdl_bar(ax, wdl, *, y, h, tag=None):
 # depth curves  (one move's logit / probability / rank across the readout points)
 # ---------------------------------------------------------------------------
 def _depth_axes(ax, labels, curves, *, ylabel, invert=False, legend=False):
-    """The app's depth chart: a dark panel, y grid, and the compact depth labels
-    (`emb`, `a0`/`m0`, ..., `enc`) on x. `labels` is one per readout point;
-    `curves` is [(name, values, colour, lw)] sharing that x axis, with None
-    values left as gaps. `invert` flips y for rank, where 1 belongs at the top."""
+    """The app's depth chart. `labels` is one compact depth label per readout
+    point; `curves` is [(name, values, colour, lw)] sharing that x axis, with
+    None values left as gaps. `invert` flips y for rank, where 1 is at the top."""
     x = np.arange(len(labels))
     _panel(ax, face=CHART_BG)
     ax.grid(axis="y", color=LINE, lw=.9)
@@ -547,13 +512,9 @@ def _curve_header(fig, title, moves, elo, hint):
 
 def plot_logit_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
                      oppo_elo=None, figsize=(11, 4.4), width=None, titles=True):
-    """"Logit through depth" — `eng.logit_per_depth` as a figure.
-
-    The raw policy logit of one move (or up to MLMAX overlaid) at every readout
-    point. Unmasked, so the curves are on one scale and comparable across
-    positions — `plot_policy_curve` is the same picture after the softmax over
-    legal moves. `plot_move_microscope` is this chart plus the snap marker and
-    the second-rating overlay.
+    """`eng.logit_per_depth` as a figure: the raw policy logit at every readout
+    point, unmasked, so the curves are on one scale and comparable across
+    positions.
 
     `ucis` is one move or a list, in any notation `eng.to_move` reads; it
     defaults to the model's own move."""
@@ -572,9 +533,9 @@ def plot_logit_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
 
 def plot_policy_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
                       oppo_elo=None, figsize=(11, 4.4), width=None, titles=True):
-    """"Policy through depth" — `eng.policy_per_depth` as a figure: the move's
-    probability, softmaxed over the legal moves only, at every readout point.
-    Same chart as `plot_logit_curve` on the scale the app's policy list uses."""
+    """`eng.policy_per_depth` as a figure: the move's probability, softmaxed
+    over the legal moves only, at every readout point — `plot_logit_curve` on
+    the scale the app's policy list uses."""
     moves = _curve_moves(eng, board, elo, ucis, oppo_elo)
     curves = [(san, eng.policy_per_depth(board, elo, uci, oppo_elo), col, 2.2 if i == 0 else 1.5)
               for i, ((uci, san), col) in enumerate(zip(moves, MLCOLORS))]
@@ -590,10 +551,10 @@ def plot_policy_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
 
 def plot_rank_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
                     oppo_elo=None, figsize=(11, 4.4), width=None, titles=True):
-    """"Rank through depth" — `eng.rank_per_depth` as a figure: where the move
-    sits among the legal moves at every readout point, 1 (the top move) at the
-    top of the axis. The step where a curve reaches the dashed rank-1 line and
-    stays there is the snap `plot_move_microscope` marks on the logit."""
+    """`eng.rank_per_depth` as a figure: where the move sits among the legal
+    moves at every readout point, 1 (the top move) at the top of the axis. The
+    step where a curve reaches the dashed rank-1 line and stays there is the
+    snap `plot_move_microscope` marks on the logit."""
     moves = _curve_moves(eng, board, elo, ucis, oppo_elo)
     curves = [(san, eng.rank_per_depth(board, elo, uci, oppo_elo), col, 2.2 if i == 0 else 1.5)
               for i, ((uci, san), col) in enumerate(zip(moves, MLCOLORS))]
@@ -619,20 +580,15 @@ def plot_rank_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
 def plot_move_microscope(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
                          oppo_elo=None, elo_b: int | None = None,
                          figsize=(11, 4.4), width=None, titles=True):
-    """"Move microscope" — one move's logit through depth.
-
-    The depth curve alone; `plot_carrier_heads` draws the carrier grid
-    separately, since the curve costs one forward pass and the grid
-    ~num_blocks·(num_heads+1).
-
-    `ucis` is one move or up to four to overlay (the app's MLMAX); the first
-    is the primary. `elo_b` overlays the primary move at a second rating and,
-    as in the app, only applies to a single move. The dashed line marks the
-    snap: the first point of the final rank-1 run.
+    """The depth curve alone; `plot_carrier_heads` draws the carrier grid. The
+    dashed line marks the snap: the first point of the final rank-1 run.
 
     Kwargs:
+      ucis        one move or up to four to overlay (the app's MLMAX); the
+                  first is the primary.
       oppo_elo    the opponent's rating; defaults to `elo` for both sides.
-      elo_b       overlay the primary move at a second rating (single move only)."""
+      elo_b       overlay the primary move at a second rating. As in the app,
+                  only applies to a single move."""
     ucis = _move_list(eng, board, elo, ucis, oppo_elo)
     series = [eng.move_logit_lens(board, elo, u, oppo_elo) for u in ucis]
     single = len(series) == 1
@@ -691,10 +647,8 @@ def plot_move_microscope(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
 
 def plot_carrier_heads(eng, board: chess.Board, elo: int = 1500, uci: str | None = None,
                        *, oppo_elo=None, figsize=(6.4, 5.6), width=None, titles=True):
-    """"carrier heads · Δlogit = ablated − clean" on its own.
-
-    `uci` defaults to the model's own move. Costs ~num_blocks·(num_heads+1)
-    forward passes (72 on the 5M), so seconds, not ms."""
+    """`uci` defaults to the model's own move. 72 forward passes on the 5M, so
+    seconds, not ms."""
     if uci is None:
         uci = eng.evaluate(board, elo, oppo_elo)["policy"][0][0]
     fig = _fig(figsize, width, titles)
@@ -750,8 +704,6 @@ def _carrier_grid(ax, eng, board, elo, uci, oppo_elo):
 
 def plot_move_report(eng, board: chess.Board, elo: int = 1500, uci=None, *,
                      oppo_elo=None, figsize=(15, 5.2), width=None, titles=True):
-    """One position and move on the board, its logit through depth, and the heads
-    that carry it."""
     (uci, san), = _curve_moves(eng, board, elo, uci, oppo_elo)
     data = eng.move_logit_lens(board, elo, uci, oppo_elo)
     steps = data["steps"]
@@ -798,16 +750,14 @@ def plot_move_report(eng, board: chess.Board, elo: int = 1500, uci=None, *,
 def plot_attention(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
                    layer: int = 0, head: int = 0, query: str | None = None,
                    figsize=(11.5, 4.6), width=None, titles=True):
-    """"Live attention · this position" — the app's three boards for one head:
-    semantic attention (QKᵀ), geometric attention (GAB), and the head's final
-    attention matrix. `query` is a square name; it defaults to the from-square of
-    the model's move. Real board orientation (White at the bottom).
+    """Real board orientation (White at the bottom).
 
     Kwargs:
       oppo_elo     the opponent's rating; defaults to `elo` for both sides.
       layer, head  which head to show — this is one slice of the space
                    `interp_widget.attention_widget` lets you sweep.
-      query        square name ('e4') whose attention row is drawn."""
+      query        square name ('e4') whose attention row is drawn; defaults to
+                   the from-square of the model's move."""
     att = eng.attention(board, elo, oppo_elo, layer=layer, head=head)
     if query is None:
         best = eng.evaluate(board, elo, oppo_elo)["policy"][0][0]
@@ -854,25 +804,12 @@ def plot_attention_layer(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
                          layer: int = 0, query: str | None = None,
                          target: str | None = None,
                          shared_scale: bool = True, figsize=None, width=None, titles=True):
-    """One whole layer's attention: 3 components x num_heads boards (24 on the
-    5M) for a single query square — `plot_attention` widened from one head to
-    all of them, so heads are compared side by side instead of one at a time.
-
+    """3 components x num_heads boards (24 on the 5M) for a single query square.
     Rows are semantic (QKᵀ), geometric (GAB), and the head's final attention;
     columns are heads. Real board orientation, like `plot_attention`.
 
-    `shared_scale` is what makes the grid comparable: each row is normalized by
-    one maximum across every head in it, so a bright square means that head
-    really is attending harder than its neighbours. Per-panel scaling would
-    make a flat head look as decisive as a sharp one; pass False for it when
-    you want each head's *shape* legible regardless of magnitude.
-
-    One head is ringed and named in the subtitle: with `target`, the head
-    attending hardest along that query->target pair; without it, the head with
-    the sharpest peak anywhere on the query's row. Those are often different
-    heads, so name the `target` whenever the question is about a specific pair
-    (a move's from- and to-square, say). The percentage it prints reads against
-    the uniform 1/64 ≈ 1.6% of a head that learned nothing.
+    One head is ringed and named in the subtitle. The percentage it prints
+    reads against the uniform 1/64 ≈ 1.6% of a head that learned nothing.
 
     Kwargs:
       oppo_elo      the opponent's rating; defaults to `elo` for both sides.
@@ -880,7 +817,17 @@ def plot_attention_layer(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
       query         square name ('e4') whose attention row is drawn; defaults to
                     the from-square of the model's move.
       target        square name to rank heads by, and to ring on every board.
-      shared_scale  see above.
+                    With it, the ringed head is the one attending hardest along
+                    that query->target pair; without it, the one with the
+                    sharpest peak anywhere on the query's row. Those are often
+                    different heads, so name it whenever the question is about a
+                    specific pair (a move's from- and to-square, say).
+      shared_scale  normalize each row by one maximum across every head in it,
+                    so a bright square means that head really is attending
+                    harder than its neighbours. False scales each panel to
+                    itself, which keeps a head's *shape* legible regardless of
+                    magnitude but makes a flat head look as decisive as a sharp
+                    one.
       figsize       defaults to a size that keeps the boards square."""
     H = eng.cfg.num_heads
     if query is None:
@@ -974,9 +921,7 @@ def _legbar(fig, x, y, w, cmap, left, right, h=.018):
 def plot_attention_atlas(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
                          layer: int = 0, head: int = 0, component: str = "attn",
                          shared_scale: bool = True, pieces: bool = False, figsize=None, width=None, titles=True):
-    """"Attention atlas": one head's whole 64x64 matrix, drawn as 64 small boards
-    — `plot_attention` widened from one query square to all of them, with each
-    board placed where its own query square sits on the real board.
+    """Each board is placed where its own query square sits on the real board.
 
     Kwargs:
       component     'attn' (default), 'attn_content', 'qk' or 'gab' — the same
@@ -1029,9 +974,9 @@ def plot_attention_atlas(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
 def plot_gab_mixture(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
                      layer: int = 0, head: int = 0, query: str | None = None,
                      target: str | None = None, top: int = 4, figsize=(12, 7.4), width=None, titles=True):
-    """"How LH's GAB is generated" — the app's drawer as a figure: the pair
-    decomposition readout, the generated mixing coefficients, and the template
-    vocabulary with each template's live coefficient.
+    """The app's drawer as a figure: the pair decomposition readout, the
+    generated mixing coefficients, and the template vocabulary with each
+    template's live coefficient.
 
     Kwargs:
       oppo_elo     the opponent's rating; defaults to `elo` for both sides.
@@ -1149,8 +1094,7 @@ def _soft(M):
 
 
 def plot_gab_templates(eng, *, per_row: int = 16, figsize=None, width=None, titles=True):
-    """"template vocabulary · the N static stencils (row = query sq, col = key sq)"
-    — the whole shared bank, position-independent."""
+    """The whole shared bank, position-independent. Row = query sq, col = key sq."""
     T = eng.gab_templates().numpy()
     n = len(T)
     rows = int(np.ceil(n / per_row))

@@ -57,8 +57,7 @@ for pos in knight_forks:
     plt.show()
 ```
 
-![A knight-fork position's move report](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/screenshot10.png)![A second knight-fork move report](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/screenshot11.png)
-
+![A knight-fork position's move report](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot10.png)
 ---
 
 There is wonderful prior chess-interp work, for instance: McGrath et al. on AlphaZero concepts, Jenner et al. on lookahead in Leela, Karvonen on chess-GPT—but there is no general infrastructure for rigorous interpretability work or interactive visualization for these models.
@@ -113,7 +112,7 @@ iw.attention_widget(eng, board, 1500,layer=4,head=3)
 
 
 
-To me, the app is the pièce de résistance and usage should be rather intuitive, nonetheless, a detailed guide can be found in [`app_README.md`](https://github.com/chessformer-lens/chessformer_lens/blob/main/chessformer_lens/app_README.md).
+To me, the app is the pièce de résistance and usage should be rather intuitive, nonetheless, a detailed guide can be found in [`app_README.md`](https://github.com/chessformer-lens/chessformer_lens/blob/main/app_guide.md).
 
 
 Play a transformer-based chess bot ("chessformer") and watch
@@ -146,6 +145,8 @@ CUDA to speed higher parameter models up. Model weights: <https://huggingface.co
 - `pieces.py` — SVG piece set as data URIs.
 - `app.py` — app launcher (native window via pywebview); the `chessformer_lens` command is its `main()`.
 
+These come with concise but detailed docstrings.
+
 ---
 ### General color guide
 
@@ -164,7 +165,7 @@ Model weights: <https://huggingface.co/UofTCSSLab/Maia3-5M>
 The **Maia-3** model interpreter is completed; **Leela** will be completed soon. Both of these treat each square as a token—which allows for beautiful board readable attention patterns. Eventually other tokenization schemes will be tackled.
 
 
-Please don't hesitate to give me feedback or thoughts by email or at **davidlitman.com**. I hope for this to be a useful and intuitive tool for the community!
+Please don't hesitate to give me feedback or thoughts by email or at **davidlitman.com**. I hope for this to be a useful and intuitive tool for the community.
 
 ---
 ### Citing

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chessformer_lens"
-version = "0.3.0"
+version = "1.0"
 description = "An interpretability lens and visualizer for square-token chess transformers (MAIA-3 backend; Lc0-BT next)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,7 +24,7 @@ keywords = [
     "ablation",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -44,7 +44,7 @@ dependencies = [
     # was 2.2.2.
     "torch>=2.4",
     "numpy",
-    "python-chess",
+    "chess",
     "huggingface-hub",
     "ipython",
     # Both frontends ship in the base install, so `pip install chessformer_lens`

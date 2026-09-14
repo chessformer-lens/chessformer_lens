@@ -1,6 +1,8 @@
 """Interpretability core for chessformers that treat the 64 squares as tokens.
 `MaiaEngine` loads a Maia-3 checkpoint, runs forward passes, and captures the
-residual stream at every layer.
+residual stream at every layer. 
+
+The next release will do the same for Leela (LC0 BT4)!
 
   evaluate              one forward pass yielding the full normalized policy over
                         legal moves (in descending order) and the W/D/L for the side to
@@ -36,7 +38,7 @@ residual stream at every layer.
                         minimizes unnecessary syncing to cpu to take advantage of gpus
   residual_stream       per-square views of how the stream is built up, one row
                         per readout point
-  compare_residual      the same position at two ratings, differenced — where
+  compare_residual      the same position at two ratings, differenced, where
                         skill diverges inside the stream, not just in the
                         output
   depth_points          the readout points as [{label, kind}]—the x axis in the plots below
@@ -226,10 +228,10 @@ class MaiaEngine:
         them. Callers that set it must restore it, and must not read the
         snapshot from a path that assumes CPU tensors (`save_activations`)."""
         def make_hook(name):
-            def hook(_module, _inp, out):
-                t = out[0] if isinstance(out, tuple) else out
+            def hook(_module, _inp, out): #classic PyTorch
+                t = out[0] if isinstance(out, tuple) else out #get first element of tuple
                 self._activations[name] = t.detach() if self._capture_on_device \
-                    else t.detach().to("cpu")
+                    else t.detach().to("cpu") #remove tensor from autograd and move it to cpu or not
             return hook
 
         def add(name, module):
