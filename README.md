@@ -60,9 +60,9 @@ for pos in knight_forks:
 ![A knight-fork position's move report](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot10.png)
 ---
 
-There is wonderful prior chess-interp work, for instance: McGrath et al. on AlphaZero concepts, Jenner et al. on lookahead in Leela, Karvonen on chess-GPT—but there is no general infrastructure for rigorous interpretability work or interactive visualization for these models.
+There is wonderful prior chess-interp work, for instance: [McGrath et al.](https://www.pnas.org/doi/10.1073/pnas.2206625119) on AlphaZero concepts, [Jenner et al.](https://arxiv.org/abs/2406.00877) on lookahead in Leela, [Karvonen](https://arxiv.org/abs/2403.15498) on chess-GPT, but there is no general infrastructure for rigorous interpretability work or interactive visualization for these models.
  
-Chessformer_lens is built to do both, especially inspired by Neel Nanda's transformer_lens library.
+Chessformer_lens is built to do both, especially inspired by Neel Nanda's [transformer_lens](https://github.com/TransformerLensOrg/TransformerLens) library.
 
 Chess is unusually suited for AI interpretability because it requires complex and structured reasoning in a compact domain, and it has a hierarchy of human concepts (squares -> threats -> tactics -> strategy) which can provide deep insight into how AI carves features.
 
