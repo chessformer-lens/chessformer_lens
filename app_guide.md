@@ -31,18 +31,18 @@ Select a square on the right to set the query for the three boards, labeled:
 -`final head attention matrix (scaled softmax(QKᵀ + GAB))`
 `Ablate this head` redraws the policy list with the ablated pass in red over the clean pass in blue, re-sorted by
 signed `Δ = p(ablated) − p(clean)` — the moves the head was suppressing rise to the top, the ones it was holding up sink.
-![Live attention: the QKᵀ, GAB and final attention boards for one query square](../Screenshots/Screenshot2.png)
+![Live attention: the QKᵀ, GAB and final attention boards for one query square](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot2.png)
 Unique to the app and Maia-3, hover over any attention square and the GAB drawer decomposes that square pair live, with every head clickable to open that template:
  ![The GAB drawer decomposing one square pair, head by head](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot7.png)
 
 **The Three Drawers**
-![The residual-stream filmstrip across depth](../Screenshots/Screenshot4.png)
+![The residual-stream filmstrip across depth](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot4.png)
 
-![The move microscope: depth curves for up to four moves](../Screenshots/Screenshot5.png)
+![The move microscope: depth curves for up to four moves](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot5.png)
 
-![The carrier-head grid, Δlogit = ablated − clean](../Screenshots/Screenshot3.png)
+![The carrier-head grid, Δlogit = ablated − clean](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot3.png)
 
-![The GAB generator drawer and its template vocabulary](../Screenshots/Screenshot6.png)
+![The GAB generator drawer and its template vocabulary](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot6.png)
 One open at a time, each peeking at the bottom with a `▲ pull up` grip, `Escape` closes.
 
 `Residual stream across depth · this position` — creates a filmstrip of mini
