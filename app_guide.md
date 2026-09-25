@@ -33,7 +33,7 @@ Select a square on the right to set the query for the three boards, labeled:
 signed `Δ = p(ablated) − p(clean)` — the moves the head was suppressing rise to the top, the ones it was holding up sink.
 ![Live attention: the QKᵀ, GAB and final attention boards for one query square](../Screenshots/Screenshot2.png)
 Unique to the app and Maia-3, hover over any attention square and the GAB drawer decomposes that square pair live, with every head clickable to open that template:
- ![The GAB drawer decomposing one square pair, head by head](../Screenshots/Screenshot8.png)
+ ![The GAB drawer decomposing one square pair, head by head]([../Screenshots/Screenshot8.png](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot8.png))
 
 **The Three Drawers**
 ![The residual-stream filmstrip across depth](../Screenshots/Screenshot4.png)
