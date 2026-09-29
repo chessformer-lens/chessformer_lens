@@ -1,12 +1,21 @@
 """Interpretability core for chessformers that treat the 64 squares as tokens.
-`MaiaEngine` loads a Maia-3 checkpoint, runs forward passes, and captures the
-residual stream at every layer. 
 
-The next release will do the same for Leela (LC0 BT4)!
+Two engines, one method surface. `ChessformerEngine` holds every read and
+intervention path below; the subclasses supply only the model, its input
+tokens and its move vocabulary:
+
+  MaiaEngine    a Maia-3 checkpoint (5M / 23M / 79M / 3M-ablation), conditioned
+                on a rating pair — `self_elo` / `oppo_elo` are real inputs
+  LeelaEngine   Leela Chess Zero BT4 (185M params, 15 layers x 32 heads x 1024d),
+                loaded from an ONNX export of the .pb.gz. It has no rating
+                input: every method keeps the same signature and simply ignores
+                `self_elo` / `oppo_elo`, so the frontends run unchanged
+                (`has_conditioning` tells them to hide the slider). It adds a
+                moves-left estimate, `evaluate()["mlh"]`.
 
   evaluate              one forward pass yielding the full normalized policy over
-                        legal moves (in descending order) and the W/D/L for the side to
-                        move
+                        legal moves (in descending order), the W/D/L for the side to
+                        move, and the moves-left estimate when the model has one
   select_move           pick a move at a rating (temperature 0 = argmax),
                         through the released engine's own sampler
   tokens                the position as the model's input tokens, padded to
@@ -36,6 +45,15 @@ The next release will do the same for Leela (LC0 BT4)!
                         carried it)
   ablate_grid_batch     ablate_grid called with batches of many positions at once;
                         minimizes unnecessary syncing to cpu to take advantage of gpus
+  carrier_neurons       the carrier table of one move at neuron grain: every MLP
+                        unit scored at once by attribution patching, with its
+                        per-square footprint; optionally the top ones re-measured
+                        by exact zero-ablation
+  neuron_activation     one MLP unit's activation on every square (and its write's size)
+  neuron_overview       every layer's most active MLP units on this position, for
+                        flipping through the network layer by layer
+  ablate_neuron         forward pass with one MLP unit's write removed exactly, on
+                        every square
   residual_stream       per-square views of how the stream is built up, one row
                         per readout point
   compare_residual      the same position at two ratings, differenced, where
@@ -58,14 +76,19 @@ The next release will do the same for Leela (LC0 BT4)!
   remove_hooks          detach the capture hooks, for a bare forward with no
                         CPU copies
 
-Module level, beside the class: `build_cfg` builds the args-namespace the model
-expects from a registry alias, and `pick_device` resolves the torch device
-(explicit > $MAIA3_DEVICE > cuda > cpu).
+Module level, beside the classes: `load_engine(alias)` builds either engine
+from one alias table (`resolve_engine` validates an alias without loading
+weights, `format_engine_list` prints the table; neither family is a default),
+`build_cfg` builds the args-namespace a Maia-3 model expects, and
+`pick_device` resolves the torch device (explicit > $CHESSFORMER_DEVICE >
+cuda > mps > cpu).
 
 Every tensor a read path returns is on CPU, in the model's canonical
-side-to-move frame (square = rank*8 + file). Depth reads the same as in the
-figures: `emb`, then `aN`/`mN` for layer N's attention and MLP sub-layers, then
-`enc` — `depth_points` hands you that axis directly.
+side-to-move frame (square = rank*8 + file) — the same frame for both models,
+Black mirrored vertically. Depth reads the same as in the figures: `emb`, then
+`aN`/`mN` for layer N's attention and MLP sub-layers, then — on Maia-3, whose
+heads read through a final LayerNorm — `enc`. `depth_points` hands you that
+axis directly (18 points on every Maia-3 size, 31 on BT4).
 
 engine.py imports cleanly into a notebook and is called by interp_plot.py
 (static figures),  interp_widget.py (interactive panels), and the standalone
@@ -79,15 +102,19 @@ from pathlib import Path
 
 import chess
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-# maia3 is not on PyPI yet this package is entirely dependant on calls to it
+# maia3 is not on PyPI, yet both engines depend on it: MaiaEngine for the model
+# and checkpoint plumbing, LeelaEngine for the encoder block class it shares.
 
 try:
-    from maia3.models import MAIA3Model  # noqa: F401
+    from maia3.models import MAIA3Model, EncoderOnlyBlock  # noqa: F401
     from maia3.uci import load_model, sample_from_logits
-    from maia3.dataset import tokenize_board, get_historical_tokens, get_legal_moves_mask
+    from maia3.dataset import tokenize_board, get_historical_tokens
     from maia3.utils import get_all_possible_moves, mirror_move
-    from maia3.model_registry import resolve_model_spec, apply_model_config, resolve_checkpoint_path
+    from maia3.model_registry import (MODEL_SPECS, ModelResolutionError, resolve_model_spec,
+                                      apply_model_config, resolve_checkpoint_path)
 except ModuleNotFoundError as exc:
     if exc.name != "maia3" and not str(exc.name or "").startswith("maia3."):
         raise
@@ -105,22 +132,28 @@ except ImportError as exc:
         "    pip install --upgrade 'torch>=2.4'"
     ) from exc
 
-__all__ = ["MaiaEngine", "build_cfg", "pick_device"]
+__all__ = ["ChessformerEngine", "MaiaEngine",
+           "load_engine", "resolve_engine", "format_engine_list",
+           "build_cfg", "pick_device"]
 
 
 def pick_device(explicit: str | None = None) -> str:
-    """Resolve a torch device: explicit argument > $MAIA3_DEVICE > cuda > cpu.
+    """Resolve a torch device: explicit argument > $CHESSFORMER_DEVICE > cuda >
+    mps > cpu. $MAIA3_DEVICE, the pre-1.1 name, still works.
 
-    MPS is never picked automatically — the 5M model on one position is instant
-    on CPU anyway, and this avoids the occasional MPS op gap. Set
-    MAIA3_DEVICE=mps to opt in."""
+    Apple-silicon MPS agrees with CPU to ~1e-5 on both engines (policy, head
+    ablation grid, carrier neurons). It nearly halves BT4's 495-pass head
+    sweep and is a wash on the 5M model, whose single forward is ~6 ms on
+    CPU. Set CHESSFORMER_DEVICE=cpu to opt out."""
     if explicit:
         return explicit
-    env = os.environ.get("MAIA3_DEVICE")
+    env = os.environ.get("CHESSFORMER_DEVICE") or os.environ.get("MAIA3_DEVICE")
     if env:
         return env
     if torch.cuda.is_available():
         return "cuda"
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
     return "cpu"
 
 
@@ -141,55 +174,36 @@ def build_cfg(alias="maia3-5m", device=None, checkpoint_path=None,
     return cfg, spec
 
 
-class MaiaEngine:
-    """Hook-based interpretability engine for a Maia-3 checkpoint.
+class ChessformerEngine:
+    """Hook-based interpretability engine over a square-token chess transformer.
 
     Provides read paths (run_with_cache, logit_lens, residual_stream, attention,
     gab_*) and intervention paths (run_with_hooks, ablate_head, ablate_grid,
-    ablate_grid_batch).
-    Every tensor a read path returns is on CPU."""
+    ablate_grid_batch). Every tensor a read path returns is on CPU.
 
-    def __init__(self, alias="maia3-5m", device=None, checkpoint_path=None,
-                 activation_dir="activations", trust_checkpoint=False):
-        """Build the model and install the permanent capture hooks.
+    Not built directly: `MaiaEngine` and `LeelaEngine` set the per-model members
+    (the block headed "per-model members" below) and hand off to __init__ here,
+    which builds the move tables and installs the capture hooks. Both models
+    expose the same encoder-block attributes, so everything above that seam is
+    shared code, not two ports.
 
-        Resolves the checkpoint (downloading it from Hugging Face on first
-        use), notes `activation_dir` for later, and registers forward hooks that copy
-        every sub-layer's output to CPU on each forward. That copy is what
-        makes the read paths work; it also costs a handful of device->host
-        transfers per forward.
+    Class-level capability flags, for frontends to degrade on rather than crash:
+      has_conditioning    the rating pair is a real input (Maia-3) or ignored (BT4)
+      has_generated_bias  attention carries a generated square-pair bias
+                          (GAB / smolgen), so the gab_* methods work
+      has_mlh             evaluate() carries a moves-left estimate"""
 
-        `device`: an explicit string wins; otherwise see `pick_device`.
-        `trust_checkpoint=True` loads with `weights_only=False`, i.e. it can
-        execute pickled code from the checkpoint file — only use it for
-        checkpoints you produced yourself."""
-        self.cfg, self.spec = build_cfg(alias, device, checkpoint_path, trust_checkpoint)
+    has_conditioning = True
+    has_generated_bias = True
+    has_mlh = False
 
-        if self.cfg.checkpoint_path is None:
-            # Use the checkpoint from the local HF cache if present, otherwise
-            # download it from Hugging Face — so the app runs on a fresh machine.
-            # Say so before the download starts: it is hundreds of MB
-            try:
-                self.cfg.checkpoint_path = resolve_checkpoint_path(
-                    self.spec, local_files_only=True
-                )
-            except Exception:
-                print(f"chessformer_lens: {alias} weights are not in the local "
-                      f"Hugging Face cache; downloading them now (this is a "
-                      f"one-time, several-hundred-MB fetch for the larger "
-                      f"models).\n  from:  https://huggingface.co/UofTCSSLab\n"
-                      f"  cache: {os.environ.get('HF_HOME') or '~/.cache/huggingface'}",
-                      flush=True)
-                self.cfg.checkpoint_path = resolve_checkpoint_path(
-                    self.spec, local_files_only=False
-                )
-
-        self.device = self.cfg.device
-        self.model = load_model(self.cfg)   # builds MAIA3Model(cfg), loads weights, .eval()
-        self.model.to(self.device)          # no-op if load_model already placed it; cheap insurance
-
-        # exact index <-> UCI mapping used by the released engine
-        self.all_moves = get_all_possible_moves()
+    def __init__(self, activation_dir="activations"):
+        """Finish construction once the subclass has set `cfg`, `spec`, `device`,
+        `model` and `all_moves`: build the index <-> uci tables, note
+        `activation_dir` for later, and register forward hooks that copy every
+        sub-layer's output to CPU on each forward. That copy is what makes the
+        read paths work; it also costs a handful of device->host transfers per
+        forward."""
         self.all_moves_dict = {m: i for i, m in enumerate(self.all_moves)}
         self.idx_to_move = {i: m for m, i in self.all_moves_dict.items()}
 
@@ -198,6 +212,7 @@ class MaiaEngine:
         self.activation_dir = Path(activation_dir)
 
         self._activations: dict[str, torch.Tensor] = {}
+        self._aux: dict = {}              # extra head outputs of the last forward (e.g. "mlh")
         self._capture_on_device = False   # see _register_hooks; ablate_grid_batch flips it
         self._hooks: list = []
         self.hook_points: dict[str, torch.nn.Module] = {}   # name -> module (read or patch)
@@ -206,17 +221,19 @@ class MaiaEngine:
 
     # ----- activation hooks -------------------------------------------------
     def _register_hooks(self):
-        """Install the permanent capture hooks: 4 per block plus 2, overwritten
-        on every forward, so the snapshot is always the most recent position.
+        """Install the permanent capture hooks: 4 per block plus the input and
+        (on Maia-3) the output norm, overwritten on every forward, so the
+        snapshot is always the most recent position.
 
           embed_in      the stream entering block 0 (token_projection out)
           attn_NN       block NN's attention write (self_attn out, post out_proj)
           postattn_NN   the running stream after attention (norm1 out)
           mlp_NN        block NN's MLP write (linear2 out)
           block_NN      the running stream after the whole block (post-LN)
-          encoder_out   after the final encoder norm
+          encoder_out   after the final encoder norm (Maia-3; BT4's heads read
+                        block_14 directly, so it has no such point)
 
-        This is a Post-LN model, x = norm(x + sublayer(x)), so attn_NN/mlp_NN
+        Both models are Post-LN, x = norm(x + sublayer(x)), so attn_NN/mlp_NN
         are the vectors *added* to the stream (dropout is identity in eval),
         while the other four are the stream itself. Everything is copied to
         CPU on the way out. `hook_points` records name -> module for all of
@@ -238,7 +255,7 @@ class MaiaEngine:
             self.hook_points[name] = module
             self._hooks.append(module.register_forward_hook(make_hook(name)))
 
-        add("embed_in", self.model.token_projection)
+        add("embed_in", self._embed_module())
         for i, blk in enumerate(self.model.transformer.layers):
             add(f"block_{i:02d}", blk)
             # Sub-layer writes (see the docstring): self_attn returns
@@ -250,81 +267,105 @@ class MaiaEngine:
             # output = norm1(x + sa_out)), so the logit lens can be read at the
             # mid-block point, not just post-block. (post-MLP point = block_NN.)
             add(f"postattn_{i:02d}", blk.norm1)
-        add("encoder_out", self.model.transformer.norm)
+        if self._final_norm() is not None:
+            add("encoder_out", self._final_norm())
 
     def remove_hooks(self):
         """Detach the capture hooks, for a bare forward with no CPU copies.
 
         `hook_points` stays populated so `run_with_hooks` keeps working, but
         the read paths will KeyError once `_activations` stops being refreshed.
-        There is no re-register; build a new MaiaEngine."""
+        There is no re-register; build a new engine."""
         for h in self._hooks:
             h.remove()
         self._hooks = []
 
-    # ----- tokenization -----------------------------------------------------
+    # ----- per-model members ------------------------------------------------
+    # The whole seam between the two models. Each subclass defines these (and
+    # `LeelaEngine` two of the vocabulary helpers further down); every public
+    # method is written against them.
+    def _embed_module(self) -> torch.nn.Module:
+        """The module whose output is the stream entering block 0 (`embed_in`)."""
+        raise NotImplementedError
+
+    def _final_norm(self):
+        """The final encoder norm the heads read through (`encoder_out` / `enc`),
+        or None when the heads read the last block directly."""
+        raise NotImplementedError
+
     def tokens(self, board: chess.Board) -> torch.Tensor:
-        """Single current position, padded to fill `history` (matches the
-        default `--use-uci-history` OFF behavior of the released engine)."""
-        hist = deque([tokenize_board(board)], maxlen=self.cfg.history)
-        toks = get_historical_tokens(
-            hist, self.cfg, base=0.0, inc=0.0, clk_left_before=0.0, clk_ponder=0.0
-        )
-        return toks.unsqueeze(0).to(self.device)
+        """The position as the model's input tensor, batch of one, on the device."""
+        raise NotImplementedError
 
-    def _idx_to_move(self, board: chess.Board, idx: int):
-        """Decode a policy index to a legal chess.Move, un-mirroring for Black.
-        Returns None if the index doesn't decode to a move that's legal here.
-        (Distinct from the `idx_to_move` attribute, the raw index -> uci table.)"""
-        uci = self.idx_to_move[int(idx)]
-        if board.turn == chess.BLACK:
-            uci = mirror_move(uci)
-        try:
-            mv = chess.Move.from_uci(uci)
-        except ValueError:
-            return None
-        return mv if mv in board.legal_moves else None
-
-    # ----- forward / policy -------------------------------------------------
-    @torch.no_grad()
     def _forward(self, board: chess.Board, self_elo: int, oppo_elo: int | None = None):
         """One raw forward pass. Resets and repopulates `self._activations` via the
-        hooks, and returns (logits_move (4352,), logits_value (3,)) as floats."""
-        oppo_elo = self_elo if oppo_elo is None else oppo_elo
-        self._activations = {}
+        hooks, stashes any extra head output in `self._aux`, and returns
+        (logits_move (n_moves,), logits_value (3,)) as floats."""
+        raise NotImplementedError
 
-        tokens = self.tokens(board)
-        self_elos = torch.tensor([int(self_elo)], dtype=torch.long, device=self.device)
-        oppo_elos = torch.tensor([int(oppo_elo)], dtype=torch.long, device=self.device)
-
-        logits_move, logits_value, _ = self.model(tokens, self_elos, oppo_elos)
-        return logits_move[0].float(), logits_value[0].float()
-
-    @torch.no_grad()
     def _forward_batch(self, boards, self_elo, oppo_elo=None):
-        """`_forward` over a list of boards in one pass: (B, 4352) move logits.
+        """`_forward` over a list of boards in one pass: (B, n_moves) move logits.
 
         The capture hooks fire as usual, so afterwards `_activations` holds this
         batch's (B, 64, dim) tensors rather than one position's (1, 64, dim).
         The read paths index [0] and so would only ever see the first board —
         this is for the intervention paths, which stay batch-aware throughout."""
-        oppo_elo = self_elo if oppo_elo is None else oppo_elo
-        self._activations = {}
+        raise NotImplementedError
 
-        tokens = torch.cat([self.tokens(b) for b in boards], dim=0)
-        elos = torch.full((len(boards),), 0, dtype=torch.long, device=self.device)
-        self_elos, oppo_elos = elos + int(self_elo), elos + int(oppo_elo)
+    def _move_logits(self, x):
+        """Full (n_moves,) move logits from one position's residual x (64, dim),
+        replicating the model's policy head. `x` must be exactly (64, dim)."""
+        raise NotImplementedError
 
-        logits_move, _, _ = self.model(tokens, self_elos, oppo_elos)
-        return logits_move.float()
+    @staticmethod
+    def _move_squares(idx):
+        """Canonical (from, to) squares for a policy-move index (handles promotions)."""
+        raise NotImplementedError
 
+    @staticmethod
+    def _wdl(logits_value) -> dict:
+        """The value head's three logits -> {"win", "draw", "loss"} for the side to move."""
+        raise NotImplementedError
+
+    # ----- policy index <-> move ---------------------------------------------
+    def _decode_idx(self, board: chess.Board, idx: int) -> chess.Move:
+        """Policy index -> chess.Move on the real board (un-mirroring for Black),
+        with no legality check. Raises ValueError on an undecodable uci."""
+        uci = self.idx_to_move[int(idx)]
+        if board.turn == chess.BLACK:
+            uci = mirror_move(uci)
+        return chess.Move.from_uci(uci)
+
+    def _idx_to_move(self, board: chess.Board, idx: int):
+        """Decode a policy index to a legal chess.Move, un-mirroring for Black.
+        Returns None if the index doesn't decode to a move that's legal here.
+        (Distinct from the `idx_to_move` attribute, the raw index -> uci table.)"""
+        try:
+            mv = self._decode_idx(board, idx)
+        except ValueError:
+            return None
+        return mv if mv in board.legal_moves else None
+
+    def _legal_mask(self, board: chess.Board) -> torch.Tensor:
+        """Boolean (n_moves,) mask of this position's legal moves in the policy
+        index space (Black mirrored). Moves outside the vocabulary are skipped."""
+        mask = torch.zeros(len(self.all_moves), dtype=torch.bool)
+        for mv in board.legal_moves:
+            try:
+                mask[self._move_index(board, mv)] = True
+            except KeyError:
+                pass
+        return mask
+
+    # ----- forward / policy -------------------------------------------------
     @torch.no_grad()
     def evaluate(self, board: chess.Board, self_elo: int, oppo_elo: int | None = None):
         """One forward pass. Returns the full normalized policy over legal moves
-        (descending), the WDL for the side to move, and stashes activations."""
+        (descending), the WDL for the side to move, the moves-left estimate
+        (None on Maia-3), and stashes activations."""
         logits, logits_value = self._forward(board, self_elo, oppo_elo)
 
-        legal_mask = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
+        legal_mask = self._legal_mask(board).to(self.device)
         policy = []
         if bool(legal_mask.any()):                  # may be empty for hand-edited positions
             logits = logits.masked_fill(~legal_mask, float("-inf"))
@@ -335,10 +376,10 @@ class MaiaEngine:
                     policy.append((mv.uci(), float(probs[idx])))
             policy.sort(key=lambda x: x[1], reverse=True)
 
-        loss, draw, win = torch.softmax(logits_value.float(), dim=-1).tolist()
         return {
             "policy": policy,                                   # [(uci, prob)] desc
-            "wdl": {"win": win, "draw": draw, "loss": loss},    # side-to-move perspective
+            "wdl": self._wdl(logits_value),                     # side-to-move perspective
+            "mlh": self._aux.get("mlh"),                        # expected plies to game end, or None
             "_logits": logits,                                  # masked, for sampling
         }
 
@@ -410,7 +451,8 @@ class MaiaEngine:
             for name, fn in fwd_hooks:
                 handles.append(self.hook_points[name].register_forward_hook(self._patch_hook(fn)))
             if return_type == "logits":
-                return self._forward(board, self_elo, oppo_elo)
+                with torch.no_grad():
+                    return self._forward(board, self_elo, oppo_elo)
             return self.evaluate(board, self_elo, oppo_elo)
         finally:
             for h in handles:
@@ -440,7 +482,7 @@ class MaiaEngine:
         if board is None:
             return logits
         if legal_only:
-            legal = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
+            legal = self._legal_mask(board).to(self.device)
             if bool(legal.any()):
                 logits = logits.masked_fill(~legal, float("-inf"))
         idx = int(torch.argmax(logits))
@@ -533,11 +575,20 @@ class MaiaEngine:
     # These methods expose the pieces of that factorization.
 
     @staticmethod
+    def _check_recon(recon, target, what):
+        """The decomposition sanity checks compare a re-derived tensor with the
+        model's own. Relative to the target's norm, because absolute float32
+        error scales with the activations — BT4's last layer runs at |x| ≈ 25,
+        where a fixed 1e-4 trips on accumulation-order noise of 1e-5 relative."""
+        err = (recon - target).norm() / (target.norm() + 1e-12)
+        assert float(err) < 1e-3, f"{what} — relative error {float(err):.2e}; do not trust the decomposition"
+
+    @staticmethod
     def _smolgen_coeffs(blk, x):
         """Replicate one layer's smolgen generator up to the mixing coefficients:
         (1, H, gen_size). Sanity-checked on the spot: mixing the shared
         templates with these coefficients must reproduce the layer's own
-        _sq_bias() (asserted, so the check vanishes under python -O)."""
+        _sq_bias() (asserted, so the check vanishes under python -O; see _check_recon)."""
         B = x.size(0)
         if blk.sm1 is not None:                                # per-square path
             y = blk.sm1(x).reshape(B, -1)                      # (B, 64*p)
@@ -549,9 +600,7 @@ class MaiaEngine:
         y = blk.ln2(y).view(B, blk.num_heads, blk.gen_size)    # (B, H, gen)
 
         recon = torch.einsum("bhi,oi->bho", y, blk.gab_weight).view(B, blk.num_heads, 64, 64)
-        target = blk._sq_bias(x)
-        assert torch.allclose(recon, target, atol=1e-4, rtol=1e-4), \
-            "smolgen coefficient reconstruction failed — do not trust the decomposition"
+        ChessformerEngine._check_recon(recon, blk._sq_bias(x), "smolgen coefficient reconstruction failed")
         return y
 
     @torch.no_grad()
@@ -655,8 +704,7 @@ class MaiaEngine:
         if blk.mha.out_proj.bias is not None:
             recon = recon + blk.mha.out_proj.bias
         target = self._activations[f"attn_{L:02d}"].to(self.device)
-        assert torch.allclose(recon, target, atol=1e-4, rtol=1e-4), \
-            f"head_writes reconstruction failed for layer {L} — do not trust the ablation"
+        self._check_recon(recon, target, f"head_writes reconstruction failed for layer {L}")
         return writes
 
     def ablate_head(self, board, self_elo, layer, head, oppo_elo=None,
@@ -681,22 +729,6 @@ class MaiaEngine:
                                    return_type=return_type)
 
     # ----- residual-stream evolution across depth ---------------------------
-    def _move_logits(self, x):
-        """Full (4352,) move logits from one position's residual x (64, dim),
-        replicating MAIA3Model.forward's policy head (64*64 moves + 256 promotions).
-
-        `x` must be exactly (64, dim) with no batch dim — a (1, 64, dim) input
-        produces garbage shapes silently. Callers that accept both strip it
-        first (see `logit_lens`)."""
-        hid = self.cfg.head_hid_dim
-        sq_from = self.model.proj_sq_from(x)                  # (64, hid)
-        sq_to = self.model.proj_sq_to(x)                      # (64, hid)
-        scores = (sq_from @ sq_to.t()) / math.sqrt(hid)      # (64, 64)
-        promo_bias = self.model.promo_bias_proj(sq_to[56:64]) * math.sqrt(hid)  # (8 files, 4 pieces)
-        promo = [scores[48 + ff, 56 + tf] + promo_bias[tf, pc]
-                 for ff in range(8) for tf in range(8) for pc in range(4)]      # (256,)
-        return torch.cat([scores.reshape(-1), torch.stack(promo)])             # (4352,)
-
     @torch.no_grad()
     def residual_stream(self, board, self_elo, oppo_elo=None):
         """Two per-square views of how the residual stream is built up, in the
@@ -738,7 +770,7 @@ class MaiaEngine:
 
         # ---- moves: per-sub-layer logit lens on the running residual stream ----
         # Same resolution as delta: emb, then (post-attn, post-mlp) per layer, enc.
-        legal = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
+        legal = self._legal_mask(board).to(self.device)
         moves = [{"label": lab, "kind": kind,
                   **self._lens_move(self._activations[name][0], board, legal)}
                  for name, lab, kind in self._lens_steps()]
@@ -748,15 +780,17 @@ class MaiaEngine:
     # ----- skill diff on internals ------------------------------------------
     def _lens_steps(self):
         """The readout points of the running residual stream, in order: emb, then
-        per layer the post-attention and post-MLP points, then enc — so
-        2·num_blocks + 2 of them (18 on every current Maia-3 size). The labels
-        are the app-wide depth names: `aN`/`mN` for layer N's attention and MLP
-        sub-layers (see interp_plot._depth_label)."""
+        per layer the post-attention and post-MLP points, then — when the model
+        has a final norm the heads read through — enc. So 2·num_blocks + 2 of
+        them on Maia-3 (18 on every size), 2·num_blocks + 1 on BT4 (31). The
+        labels are the app-wide depth names: `aN`/`mN` for layer N's attention
+        and MLP sub-layers (see interp_plot._depth_label)."""
         steps = [("embed_in", "emb", "emb")]
         for i in range(self.cfg.num_blocks):
             steps.append((f"postattn_{i:02d}", f"a{i}", "attn"))
             steps.append((f"block_{i:02d}",    f"m{i}", "mlp"))
-        steps.append(("encoder_out", "enc", "enc"))
+        if "encoder_out" in self.hook_points:
+            steps.append(("encoder_out", "enc", "enc"))
         return steps
 
     def _lens_move(self, activation, board, legal_mask):
@@ -789,10 +823,12 @@ class MaiaEngine:
         localizes it. Both runs use oppo_elo == self_elo, so both ratings'
         embeddings move — read the result as the diff between two whole skill
         settings, not one player's. Side-to-move frame; the `logit_lens`
-        caveat applies to move_a/move_b everywhere but `enc`."""
+        caveat applies to move_a/move_b everywhere but `enc`. On a model
+        without a rating input (LeelaEngine) both runs are identical and every
+        norm is zero."""
         _, cache_a = self.run_with_cache(board, int(elo_a))
         _, cache_b = self.run_with_cache(board, int(elo_b))
-        legal = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
+        legal = self._legal_mask(board).to(self.device)
         steps = []
         for name, lab, kind in self._lens_steps():
             xa, xb = cache_a[name], cache_b[name]
@@ -839,17 +875,6 @@ class MaiaEngine:
         rank, file = divmod(int(canon), 8)
         return chess.square(file, rank if turn == chess.WHITE else 7 - rank)
 
-    @staticmethod
-    def _move_squares(idx):
-        """Canonical (from, to) squares for a policy-move index (handles promotions).
-        Mirrors MAIA3Model.forward's move layout: first 64*64 are from*64+to, then
-        256 promotions ordered from_file*32 + to_file*4 + piece (rank7 -> rank8)."""
-        if idx < 64 * 64:
-            return idx // 64, idx % 64
-        idx -= 64 * 64
-        from_file, to_file = idx // 32, (idx % 32) // 4
-        return 48 + from_file, 56 + to_file          # rank-7 -> rank-8, canonical
-
     def to_move(self, board: chess.Board, move) -> chess.Move:
         """Any of the five forms above -> chess.Move on `board`: a chess.Move, a
         uci string, a SAN string, a policy index, or a (from, to) pair of
@@ -883,8 +908,7 @@ class MaiaEngine:
         idx = int(move)
         if idx not in self.idx_to_move:
             raise ValueError(f"policy index out of range: {idx}")
-        uci = self.idx_to_move[idx]
-        return chess.Move.from_uci(mirror_move(uci) if board.turn == chess.BLACK else uci)
+        return self._decode_idx(board, idx)
 
     def _move_index(self, board: chess.Board, move) -> int:
         """Policy index of a move on this board — this is where the Black mirror
@@ -946,7 +970,7 @@ class MaiaEngine:
         self.evaluate(board, self_elo, oppo_elo)
         info = self.move_info(board, uci)
         idx = info["idx"]
-        legal = get_legal_moves_mask(board, self.all_moves_dict).to(self.device)
+        legal = self._legal_mask(board).to(self.device)
         n_legal = int(legal.sum())
         steps = []
         for name, lab, kind in self._lens_steps():
@@ -1053,6 +1077,163 @@ class MaiaEngine:
             self._capture_on_device = False
         return out
 
+
+    # ----- neurons: activation, exact ablation, carrier table ---------------
+    def _mlp_hidden(self, board, self_elo, oppo_elo=None, layers=None):
+        """One forward pass; returns {L: (64, ff)} — the MLP hidden activation
+        (the input of linear2, post-activation) of each requested layer, on the
+        live device, detached. `hook_points` holds linear2 as mlp_NN, so the
+        hidden is its input."""
+        blocks = self.model.transformer.layers
+        want = range(len(blocks)) if layers is None else list(layers)
+        hidden = {}
+
+        def keep(L):
+            def hook(_module, inp, _out):
+                hidden[L] = inp[0].detach()[0]
+            return hook
+
+        handles = [blocks[L].linear2.register_forward_hook(keep(L)) for L in want]
+        try:
+            with torch.no_grad():
+                self._forward(board, self_elo, oppo_elo)
+        finally:
+            for h in handles:
+                h.remove()
+        return hidden
+
+    def _neuron_write(self, layer, neuron, hidden):
+        """The (64, dim) vector one MLP unit adds to the stream: h[s, n] · W2[:, n]."""
+        w2 = self.model.transformer.layers[int(layer)].linear2.weight[:, int(neuron)]
+        return hidden[:, int(neuron), None] * w2[None, :]
+
+    @torch.no_grad()
+    def neuron_activation(self, board, self_elo, layer, neuron, oppo_elo=None):
+        """One MLP unit on this position: {layer, neuron, n_neurons, act: [64]
+        (its post-activation value on every square, canonical frame),
+        write_norm: ‖h[:, n]‖·‖W2[:, n]‖, the size of what it adds to the
+        stream}. Argument order as `ablate_head`: layer/neuron before oppo_elo."""
+        L, n = int(layer), int(neuron)
+        h = self._mlp_hidden(board, self_elo, oppo_elo, layers=[L])[L]
+        w2 = self.model.transformer.layers[L].linear2.weight[:, n]
+        return {"layer": L, "neuron": n, "n_neurons": int(h.size(1)),
+                "act": h[:, n].float().cpu().tolist(),
+                "write_norm": float(h[:, n].norm() * w2.norm())}
+
+    @torch.no_grad()
+    def neuron_overview(self, board, self_elo, oppo_elo=None, k=12):
+        """Every layer's `k` most active MLP units on this position, by the
+        norm of their activation over the 64 squares: {n_layers, n_neurons,
+        layers: [[{neuron, norm}, …] per layer, strongest first]}. One forward
+        pass; the app's network diagram is drawn from this."""
+        hidden = self._mlp_hidden(board, self_elo, oppo_elo)
+        layers = []
+        for L in sorted(hidden):
+            norms = hidden[L].float().norm(dim=0)                  # (ff,)
+            top = norms.topk(min(int(k), norms.numel()))
+            layers.append([{"neuron": int(n), "norm": float(v)}
+                           for v, n in zip(top.values.tolist(), top.indices.tolist())])
+        return {"n_layers": len(layers), "n_neurons": int(hidden[0].size(1)), "layers": layers}
+
+    def ablate_neuron(self, board, self_elo, layer, neuron, oppo_elo=None,
+                      return_type: str = "policy"):
+        """Forward pass with one MLP unit's write removed exactly, on every
+        square — the neuron-grain twin of `ablate_head`: the unit's write
+        h[s,n]·W2[:,n] is subtracted from mlp_NN via run_with_hooks and the
+        layers downstream react normally. Same argument order as `ablate_head`."""
+        L = int(layer)
+        w = self._neuron_write(L, neuron, self._mlp_hidden(board, self_elo, oppo_elo, layers=[L])[L])
+
+        def sub(act):
+            return act - w.to(act.device, act.dtype)
+
+        return self.run_with_hooks(board, self_elo, oppo_elo,
+                                   fwd_hooks=[(f"mlp_{L:02d}", sub)], return_type=return_type)
+
+    def carrier_neurons(self, board, self_elo, move, oppo_elo=None, *,
+                        top_k=12, skip_last_layer=True, verify=False):
+        """The carrier table of one move at neuron grain: which MLP units, on
+        which squares, the move's logit rests on. The neuron-grain counterpart
+        of `ablate_grid`, using the same causal method as `head_writes`/
+        `ablate_head` — a real intervention, not a correlational read of
+        activations.
+
+        Heads are cheap to ablate one by one; neurons are not (BT4 has 23k of
+        them, each firing on 64 squares), so every unit is scored at once by
+        attribution patching: one backward pass giving, for every hidden unit
+        h of every MLP (layer L, square s, neuron n), the first-order estimate
+        of the logit change from zeroing it, Δ ≈ −(∂logit/∂h)·h. Same sign
+        convention as `ablate_grid`: negative = removing the unit would lower
+        the move's logit (a carrier), positive = it was suppressing the move.
+        Summed over squares that ranks the units; kept per square it says
+        where on the board each does its work. The last layer is skipped by
+        default, as the head grid does (it writes straight into the logits).
+
+        The estimate is a linearization — Post-LN and the bilinear policy head
+        can bend it — so with verify=True the 2·top_k strongest candidates are
+        re-measured by exact zero-ablation (`ablate_neuron`) and the table is
+        the top_k by |exact|; otherwise `exact` is None and the table is the
+        top_k by |est|.
+
+        `move` is any form `to_move` reads. Returns {uci, san, base_logit,
+        n_layers, n_neurons, layer_abs: [nb] (Σ|Δ| over each layer's units),
+        top: [{layer, neuron, est, exact, squares: [64] canonical, peak}]}.
+        Costs one forward + one backward pass, plus 2·top_k with verify."""
+        info = self.move_info(board, move)
+        idx = info["idx"]
+        layers = self.model.transformer.layers
+        nb = len(layers)
+
+        # capture every MLP's hidden activation (the input of its second linear)
+        hidden: dict[int, torch.Tensor] = {}
+
+        def keep(L):
+            def hook(_module, inp, _out):
+                hidden[L] = inp[0]
+            return hook
+
+        handles = [blk.linear2.register_forward_hook(keep(L)) for L, blk in enumerate(layers)]
+        try:
+            with torch.enable_grad():
+                logits, _ = self._forward(board, self_elo, oppo_elo)
+                grads = torch.autograd.grad(logits[idx], [hidden[L] for L in range(nb)])
+        finally:
+            for h in handles:
+                h.remove()
+        base = float(logits[idx].detach())
+        # Δ ≈ −grad·h for zeroing one unit on one square: (nb, 64, ff)
+        est = torch.stack([-(g[0] * hidden[L][0]) for L, g in enumerate(grads)]).detach().float().cpu()
+        hidden = {L: h[0].detach() for L, h in hidden.items()}
+
+        per_neuron = est.sum(1)                                   # (nb, ff)
+        ff = per_neuron.size(1)
+        rank = per_neuron.abs().clone()
+        if skip_last_layer and nb > 1:
+            rank[nb - 1] = -1.0
+        top = []
+        pool = min((2 * top_k) if verify else top_k, rank.numel())
+        for flat in rank.flatten().topk(pool).indices.tolist():
+            L, n = divmod(flat, ff)
+            exact = None
+            if verify:
+                write = self._neuron_write(L, n, hidden[L])
+
+                def sub(act, write=write):
+                    return act - write.to(act.device, act.dtype)
+
+                lm, _ = self.run_with_hooks(board, self_elo, oppo_elo,
+                                            fwd_hooks=[(f"mlp_{L:02d}", sub)], return_type="logits")
+                exact = float(lm[idx]) - base
+            sq = est[L, :, n]
+            top.append({"layer": L, "neuron": n, "est": float(per_neuron[L, n]), "exact": exact,
+                        "squares": sq.tolist(), "peak": int(sq.abs().argmax())})
+        if verify:
+            top.sort(key=lambda t: -abs(t["exact"]))
+            top = top[:top_k]
+        return {"uci": info["uci"], "san": info["san"], "base_logit": base,
+                "n_layers": nb, "n_neurons": ff,
+                "layer_abs": per_neuron.abs().sum(1).tolist(), "top": top}
+
     # ----- activation dump --------------------------------------------------
     def save_activations(self, filename: str, meta: dict | None = None) -> str:
         """Persist the most recent forward's residual-stream snapshot, plus a
@@ -1067,3 +1248,169 @@ class MaiaEngine:
         path = self.activation_dir / filename
         torch.save(snap, path)
         return str(path)
+
+
+# =============================================================================
+# The two engines
+# =============================================================================
+
+class MaiaEngine(ChessformerEngine):
+    """Hook-based interpretability engine for a Maia-3 checkpoint. The method
+    surface is ChessformerEngine's; this class adds the Maia-3 plumbing only:
+    the registry lookup and Hugging Face download, the elo-conditioned forward,
+    the 12-plane history tokens and the 4352-move policy layout."""
+
+    has_conditioning = True
+    has_generated_bias = True
+    has_mlh = False
+
+    def __init__(self, alias="maia3-5m", device=None, checkpoint_path=None,
+                 activation_dir="activations", trust_checkpoint=False):
+        """Build the model and install the permanent capture hooks.
+
+        Resolves the checkpoint (downloading it from Hugging Face on first
+        use), then hands off to ChessformerEngine.__init__ for the move tables
+        and the hooks.
+
+        `device`: an explicit string wins; otherwise see `pick_device`.
+        `trust_checkpoint=True` loads with `weights_only=False`, i.e. it can
+        execute pickled code from the checkpoint file — only use it for
+        checkpoints you produced yourself."""
+        self.cfg, self.spec = build_cfg(alias, device, checkpoint_path, trust_checkpoint)
+
+        if self.cfg.checkpoint_path is None:
+            # Use the checkpoint from the local HF cache if present, otherwise
+            # download it from Hugging Face — so the app runs on a fresh machine.
+            # Say so before the download starts: it is hundreds of MB
+            try:
+                self.cfg.checkpoint_path = resolve_checkpoint_path(
+                    self.spec, local_files_only=True
+                )
+            except Exception:
+                print(f"chessformer_lens: {alias} weights are not in the local "
+                      f"Hugging Face cache; downloading them now (this is a "
+                      f"one-time, several-hundred-MB fetch for the larger "
+                      f"models).\n  from:  https://huggingface.co/UofTCSSLab\n"
+                      f"  cache: {os.environ.get('HF_HOME') or '~/.cache/huggingface'}",
+                      flush=True)
+                self.cfg.checkpoint_path = resolve_checkpoint_path(
+                    self.spec, local_files_only=False
+                )
+
+        self.device = self.cfg.device
+        self.model = load_model(self.cfg)   # builds MAIA3Model(cfg), loads weights, .eval()
+        self.model.to(self.device)          # no-op if load_model already placed it; cheap insurance
+
+        # exact index <-> UCI mapping used by the released engine
+        self.all_moves = get_all_possible_moves()
+        super().__init__(activation_dir)
+
+    # ----- per-model members ------------------------------------------------
+    def _embed_module(self):
+        return self.model.token_projection
+
+    def _final_norm(self):
+        return self.model.transformer.norm
+
+    def tokens(self, board: chess.Board) -> torch.Tensor:
+        """Single current position, padded to fill `history` (matches the
+        default `--use-uci-history` OFF behavior of the released engine)."""
+        hist = deque([tokenize_board(board)], maxlen=self.cfg.history)
+        toks = get_historical_tokens(
+            hist, self.cfg, base=0.0, inc=0.0, clk_left_before=0.0, clk_ponder=0.0
+        )
+        return toks.unsqueeze(0).to(self.device)
+
+    def _forward(self, board: chess.Board, self_elo: int, oppo_elo: int | None = None):
+        """One raw forward pass. Resets and repopulates `self._activations` via the
+        hooks, and returns (logits_move (4352,), logits_value (3,)) as floats.
+        Not wrapped in no_grad: `carrier_neurons` differentiates through it;
+        every other caller runs it under no_grad."""
+        oppo_elo = self_elo if oppo_elo is None else oppo_elo
+        self._activations = {}
+        self._aux = {}
+
+        tokens = self.tokens(board)
+        self_elos = torch.tensor([int(self_elo)], dtype=torch.long, device=self.device)
+        oppo_elos = torch.tensor([int(oppo_elo)], dtype=torch.long, device=self.device)
+
+        logits_move, logits_value, _ = self.model(tokens, self_elos, oppo_elos)
+        return logits_move[0].float(), logits_value[0].float()
+
+    def _forward_batch(self, boards, self_elo, oppo_elo=None):
+        """`_forward` over a list of boards in one pass: (B, 4352) move logits.
+        See ChessformerEngine._forward_batch for what the hooks hold afterwards."""
+        oppo_elo = self_elo if oppo_elo is None else oppo_elo
+        self._activations = {}
+        self._aux = {}
+
+        tokens = torch.cat([self.tokens(b) for b in boards], dim=0)
+        elos = torch.full((len(boards),), 0, dtype=torch.long, device=self.device)
+        self_elos, oppo_elos = elos + int(self_elo), elos + int(oppo_elo)
+
+        logits_move, _, _ = self.model(tokens, self_elos, oppo_elos)
+        return logits_move.float()
+
+    def _move_logits(self, x):
+        """Full (4352,) move logits from one position's residual x (64, dim),
+        replicating MAIA3Model.forward's policy head (64*64 moves + 256 promotions).
+
+        `x` must be exactly (64, dim) with no batch dim — a (1, 64, dim) input
+        produces garbage shapes silently. Callers that accept both strip it
+        first (see `logit_lens`)."""
+        hid = self.cfg.head_hid_dim
+        sq_from = self.model.proj_sq_from(x)                  # (64, hid)
+        sq_to = self.model.proj_sq_to(x)                      # (64, hid)
+        scores = (sq_from @ sq_to.t()) / math.sqrt(hid)      # (64, 64)
+        promo_bias = self.model.promo_bias_proj(sq_to[56:64]) * math.sqrt(hid)  # (8 files, 4 pieces)
+        promo = [scores[48 + ff, 56 + tf] + promo_bias[tf, pc]
+                 for ff in range(8) for tf in range(8) for pc in range(4)]      # (256,)
+        return torch.cat([scores.reshape(-1), torch.stack(promo)])             # (4352,)
+
+    @staticmethod
+    def _move_squares(idx):
+        """Canonical (from, to) squares for a policy-move index (handles promotions).
+        Mirrors MAIA3Model.forward's move layout: first 64*64 are from*64+to, then
+        256 promotions ordered from_file*32 + to_file*4 + piece (rank7 -> rank8)."""
+        if idx < 64 * 64:
+            return idx // 64, idx % 64
+        idx -= 64 * 64
+        from_file, to_file = idx // 32, (idx % 32) // 4
+        return 48 + from_file, 56 + to_file          # rank-7 -> rank-8, canonical
+
+    @staticmethod
+    def _wdl(logits_value) -> dict:
+        """Maia-3's value head orders its three logits (loss, draw, win)."""
+        loss, draw, win = torch.softmax(logits_value.float(), dim=-1).tolist()
+        return {"win": win, "draw": draw, "loss": loss}
+
+
+# =============================================================================
+# One alias table for both families — neither is a default
+# =============================================================================
+
+def resolve_engine(alias: str):
+    """Validate an alias without loading weights -> (engine class, display name).
+
+    Accepts every Maia-3 registry name (aliases, Hugging Face repo ids and
+    URLs) and the Leela aliases or a path to an .onnx export. Anything else
+    raises ValueError with the whole table."""
+    try:
+        return MaiaEngine, resolve_model_spec(alias).display_name
+    except ModelResolutionError as exc:
+        raise ValueError(f"Unknown model {alias!r}.\n\n{format_engine_list()}") from exc
+
+
+def load_engine(alias: str, **kwargs):
+    """Build the engine an alias names: `load_engine("23m")`, `load_engine("bt4")`,
+    `load_engine("weights/net.onnx", device="mps")`. Keyword arguments go to
+    that engine's constructor (device, checkpoint_path, activation_dir, …)."""
+    cls, _ = resolve_engine(alias)
+    return cls(alias=alias, **kwargs)
+
+
+def format_engine_list() -> str:
+    lines = ["Chessformer engines, by alias:", "  Maia-3 (MaiaEngine):"]
+    for spec in MODEL_SPECS:
+        lines.append(f"    {spec.display_name:<18}{', '.join((spec.name, *spec.aliases))}")
+    return "\n".join(lines)

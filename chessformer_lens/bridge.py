@@ -4,9 +4,10 @@ bridge.py — the pywebview JS API (game state + the JSON methods it exposes).
 `MaiaApi` is what gets exposed to the browser as `window.pywebview.api`: every
 method returns a plain JSON-able dict. It owns the chess.Board, drives new
 game / move / undo / analyze, and forwards the interp queries (policy, attention,
-residual) to a `MaiaEngine`. The model loads on a background thread so the window
+residual) to the engine an alias names — `MaiaEngine` or `LeelaEngine`, the same
+method surface either way. The model loads on a background thread so the window
 opens instantly. This file is the app's glue — for notebook work use
-interp_plot.py / interp_widget.py, or import `MaiaEngine` from engine.py
+interp_plot.py / interp_widget.py, or import an engine from engine.py
 directly; none of them go through here.
 """
 import os
@@ -17,7 +18,7 @@ from pathlib import Path
 
 import chess
 
-from .engine import MaiaEngine
+from .engine import load_engine, resolve_engine
 
 # Cached activations are working data, not package content: they land under the
 # directory the app is launched from, so an installed copy is never written to.
@@ -51,8 +52,10 @@ class MaiaApi:
         self.engine = None
         self.ready = False
         self.error = None
-        # which model to load: explicit arg > env var > 5M default
-        self.alias = alias or os.environ.get("MAIA3_ALIAS", "maia3-5m")
+        # which engine to load: explicit arg > env var > Maia-3 5M (the one
+        # model that downloads itself; see app.resolve_alias)
+        self.alias = (alias or os.environ.get("CHESSFORMER_MODEL")
+                      or os.environ.get("MAIA3_ALIAS") or "maia3-5m")
         self.target_name = self._display_name(self.alias)   # for the loading screen
         self.board = chess.Board()
         self.human = chess.WHITE
@@ -68,8 +71,7 @@ class MaiaApi:
         """Friendly name for `alias` without loading weights (for the loading
         screen). Falls back to the raw alias if it can't be resolved."""
         try:
-            from maia3.model_registry import resolve_model_spec
-            return resolve_model_spec(alias).display_name
+            return resolve_engine(alias)[1]
         except Exception:
             return str(alias)
 
@@ -78,10 +80,7 @@ class MaiaApi:
         try:
             print(f"[maia-app] loading {self.target_name} ({self.alias})…",
                   file=sys.stderr, flush=True)
-            self.engine = MaiaEngine(
-                alias=self.alias,
-                activation_dir=str(ACT_DIR),
-            )
+            self.engine = load_engine(self.alias, activation_dir=str(ACT_DIR))
             self.ready = True
             print(f"[maia-app] model ready on {self.engine.device}: "
                   f"{self.engine.cfg.checkpoint_path}", file=sys.stderr, flush=True)
@@ -105,6 +104,12 @@ class MaiaApi:
             "num_heads": self.engine.cfg.num_heads if self.ready else None,
             "dim_vit": self.engine.cfg.dim_vit if self.ready else None,
             "gen_size": self.engine.cfg.gab_gen_size if self.ready else None,
+            # capability flags the UI degrades on: no rating card without a
+            # rating input (Leela), a moves-left readout only where there is one
+            "conditioning": self.engine.has_conditioning if self.ready else None,
+            "mlp_dim": (int(self.engine.cfg.dim_vit * self.engine.cfg.mlp_ratio)
+                        if self.ready else None),
+            "has_mlh": self.engine.has_mlh if self.ready else None,
             "activation_dir": str(ACT_DIR) if SAVE_ACTIVATIONS else None,
         }
 
@@ -158,7 +163,7 @@ class MaiaApi:
             except Exception:
                 san = uci
             pol.append({"uci": uci, "san": san, "p": p})
-        return pol, res["wdl"], act_file
+        return pol, res["wdl"], res.get("mlh"), act_file
 
     def policy(self, elo=1500, save=True):
         """Re-evaluate the current position at a given Elo (no move made).
@@ -167,9 +172,9 @@ class MaiaApi:
             return {"error": self.error or "model still loading"}
         st = self._base()
         if st["game_over"]:
-            return {**st, "policy": [], "wdl": None, "activation_file": None}
-        pol, wdl, act = self._policy_for_current(elo, save=save)
-        return {**st, "policy": pol, "wdl": wdl, "activation_file": act}
+            return {**st, "policy": [], "wdl": None, "mlh": None, "activation_file": None}
+        pol, wdl, mlh, act = self._policy_for_current(elo, save=save)
+        return {**st, "policy": pol, "wdl": wdl, "mlh": mlh, "activation_file": act}
 
     def human_move(self, uci):
         if not self.ready:
@@ -197,7 +202,7 @@ class MaiaApi:
             return {**self._base(), "error": "not Maia's turn"}
 
         # policy + activations for the position Maia is about to move in
-        pol, wdl, act = self._policy_for_current(elo, save=True)
+        pol, wdl, mlh, act = self._policy_for_current(elo, save=True)
         with self._lock:
             mv, _ = self.engine.select_move(
                 b, self_elo=int(elo), temperature=float(temperature)
@@ -210,7 +215,7 @@ class MaiaApi:
             self.san_history.append(maia["san"])
             b.push(mv)
         return {**self._base(), "maia_move": maia, "maia_policy": pol,
-                "maia_wdl": wdl, "activation_file": act}
+                "maia_wdl": wdl, "maia_mlh": mlh, "activation_file": act}
 
     def undo(self):
         """Step back to the previous position where it is the human's move
@@ -449,6 +454,71 @@ class MaiaApi:
             with self._lock:
                 return self.engine.ablate_grid(b, self_elo=int(elo), uci=uci)
         except Exception as exc:  # e.g. the head-write reconstruction assert
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
+    def neuron(self, elo=1500, layer=0, neuron=0):
+        """One MLP unit's activation on every square (engine.neuron_activation)."""
+        if not self.ready:
+            return {"error": self.error or "model still loading"}
+        if self.board.is_game_over():
+            return {"error": "game over"}
+        try:
+            with self._lock:
+                return self.engine.neuron_activation(self.board, self_elo=int(elo),
+                                                     layer=int(layer), neuron=int(neuron))
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
+    def neurons_overview(self, elo=1500, k=12):
+        """Every layer's most active MLP units (engine.neuron_overview)."""
+        if not self.ready:
+            return {"error": self.error or "model still loading"}
+        if self.board.is_game_over():
+            return {"error": "game over"}
+        try:
+            with self._lock:
+                return self.engine.neuron_overview(self.board, self_elo=int(elo), k=int(k))
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
+    def ablate_neuron(self, elo=1500, layer=0, neuron=0):
+        """Remove one MLP unit's exact write on every square (engine.ablate_neuron)
+        and report the policy + WDL against a clean pass — same shape as `ablate`."""
+        if not self.ready:
+            return {"error": self.error or "model still loading"}
+        b = self.board
+        if b.is_game_over():
+            return {"error": "game over"}
+        try:
+            with self._lock:
+                base = self.engine.evaluate(b, self_elo=int(elo))
+                abl = self.engine.ablate_neuron(b, self_elo=int(elo),
+                                                layer=int(layer), neuron=int(neuron))
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        pa, pb = dict(base["policy"]), dict(abl["policy"])
+        rows = [{"uci": u, "san": self._san(u),
+                 "p": pa.get(u, 0.0), "p_abl": pb.get(u, 0.0)}
+                for u in pa.keys() | pb.keys()]
+        rows.sort(key=lambda r: abs(r["p"] - r["p_abl"]), reverse=True)
+        return {"layer": int(layer), "neuron": int(neuron), "rows": rows,
+                "wdl": base["wdl"], "wdl_abl": abl["wdl"]}
+
+    def carrier_neurons(self, elo=1500, uci=None, top_k=12):
+        """The carrier-neuron table of one move (engine.carrier_neurons): every
+        MLP unit scored at once by attribution patching, each with its
+        per-square footprint."""
+        if not self.ready:
+            return {"error": self.error or "model still loading"}
+        b = self.board
+        if b.is_game_over():
+            return {"error": "game over"}
+        if not uci or not self._is_legal(uci):
+            return {"error": f"not a legal move here: {uci}"}
+        try:
+            with self._lock:
+                return self.engine.carrier_neurons(b, self_elo=int(elo), move=uci, top_k=int(top_k))
+        except Exception as exc:
             return {"error": f"{type(exc).__name__}: {exc}"}
 
     def _san(self, uci):

@@ -11,7 +11,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chessformer (Maia 3) Interpretability</title>
+<title>Chessformer Interpretability</title>
 <style>
   /* Pitch-black neutrals — the app's original scheme, restored 2026-08 after a
      brief lighter run (see interp_plot.py, which still carries the lifted set
@@ -27,24 +27,31 @@ INDEX_HTML = r"""<!DOCTYPE html>
     --sq-light:#c9d1dc; --sq-dark:#6b7686;
     --hl:rgba(245,213,107,.28); --sel:#7bd88f; --win:#5fb878; --draw:#6b7480; --loss:#d9606a;
     --abl:#ff5d6c;   /* single-head ablation — its overlay on the policy chart */
+    --ring-out:#ffffff; --ring-in:#18181b;   /* the query lens, as interp_plot draws it: white halo, dark ring */
     --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-    --dock:112px;   /* height of the always-visible bottom drawer previews */
+    --dock:128px;   /* height of the always-visible peek of the bottom drawer */
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;}
-  .wrap{display:flex;gap:18px;padding:16px 20px calc(var(--dock) + 8px);height:100%;align-items:flex-start;overflow:hidden}
+  .wrap{display:flex;gap:18px;padding:16px 20px calc(var(--dock) + 8px);height:100%;align-items:flex-start;overflow:hidden;
+    transform-origin:top center;transition:transform .24s ease}
+  /* while the microscope is up, the whole top layout shrinks toward the top so the
+     drawer can rise 1.5in above the columns' bottom edge without covering anything */
+  body.microscope .wrap{transform:scale(var(--shrink,1))}
   .left{display:flex;flex-direction:column;gap:10px}
-  .right{flex:1;display:flex;flex-direction:column;gap:12px;min-width:260px;max-width:340px;height:100%}
-  .arch{flex:0 0 384px;display:flex;flex-direction:column;height:100%}
+  .right{flex:1;display:flex;flex-direction:column;gap:12px;min-width:250px;max-width:320px;height:100%}
+  .arch{flex:0 0 350px;display:flex;flex-direction:column;height:100%}
+  .neur{flex:1 1 214px;min-width:214px;display:flex;flex-direction:column;height:100%}
 
   h1{font-size:15px;font-weight:600;letter-spacing:.3px;margin:0}
-  .sub{font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:3px}
+  .sub{font-size:11px;color:var(--muted);font-family:var(--mono)}
+  .titlerow{display:flex;align-items:baseline;gap:4px 14px;flex-wrap:wrap}
 
-  /* board — capped at 640px but shrinks to keep the header, the board and the
-     toggle button under it all inside the viewport (the page never scrolls) */
-  #boardwrap{position:relative;width:min(640px, calc(100vh - 148px - var(--dock)));
-    height:min(640px, calc(100vh - 148px - var(--dock)))}
+  /* board — capped at 640px, otherwise a share of the viewport height: what is
+     left under it is the microscope drawer's room, so the drawer never has to
+     climb over the board (the page never scrolls) */
+  #boardwrap{position:relative;width:min(820px, calc(100vh - 330px), calc(100vw - 980px));height:min(820px, calc(100vh - 330px), calc(100vw - 980px))}
   #board{width:100%;height:100%;display:grid;grid-template-columns:repeat(8,1fr);
     grid-template-rows:repeat(8,1fr);border-radius:8px;overflow:hidden;
     box-shadow:0 10px 40px rgba(0,0,0,.45);user-select:none}
@@ -65,7 +72,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .sq.cap .dot{width:86%;height:86%;background:transparent;
     box-shadow:inset 0 0 0 4px rgba(40,50,40,.40)}
   .sq.playable{cursor:pointer}
-  .sq.attq::before{content:"";position:absolute;inset:2px;border:2px solid rgba(110,168,254,.75);border-radius:4px;z-index:1;pointer-events:none}
+  /* the attention query square: interp_plot's lens — a dark halo around a light ring */
+  .sq.attq::before{content:"";position:absolute;inset:12%;border:2.5px solid var(--ring-in);
+    box-shadow:0 0 0 3px var(--ring-out), inset 0 0 0 1.5px var(--ring-out);border-radius:3px;z-index:1;pointer-events:none}
   .coord{position:absolute;font-size:9px;font-family:var(--mono);color:rgba(20,24,30,.55);z-index:3}
   .coord.f{right:3px;bottom:2px} .coord.r{left:3px;top:2px}
 
@@ -148,13 +157,26 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ablnote{font-size:9px;color:var(--muted);font-family:var(--mono)}
   .ablnote.err{color:var(--loss)}
   .attcap{font-size:10px;color:var(--muted);margin-bottom:10px;line-height:1.45}
+  /* neuron panel: layer / index inputs, exact single-unit ablation toggle */
+  .nctl{display:flex;gap:6px;align-items:center;flex:1;min-width:0;flex-wrap:wrap}
+  .nctl input{width:54px;background:var(--chart-bg);color:var(--text);border:1px solid var(--line);
+    border-radius:6px;padding:4px 6px;font-family:var(--mono);font-size:11px}
+  .nctl button{padding:3px 8px;font-size:11px}
+  #nablbtn:hover{border-color:var(--abl)}
+  #nablbtn.on{background:var(--abl);color:#1a0c0e;border-color:var(--abl);font-weight:700}
+  /* the network diagram: one column of dots per MLP layer, click a column to pick the
+     layer, a dot to pick the unit; the selected layer's dots are its most active units */
+  #netsvg{display:block;width:100%;aspect-ratio:240/200;flex:0 0 auto;background:var(--chart-bg);border:1px solid var(--line);border-radius:8px}
+  #netsvg .lcol{cursor:pointer}
+  #netsvg .unit{cursor:pointer}
   .attset{display:flex;flex-direction:column;gap:12px}
   .attlabel{font-size:10px;color:var(--muted);font-family:var(--mono);margin-bottom:4px;text-align:center;font-weight:600}
   .attboard{width:100%;max-width:202px;aspect-ratio:1/1;margin:0 auto;display:grid;
     grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr);
     border:1px solid var(--line);border-radius:5px;overflow:hidden;background:#10141b}
   .attcell{cursor:pointer;position:relative}
-  .attcell.q{box-shadow:inset 0 0 0 2px #ff5d6c}
+  .attcell.q::before{content:"";position:absolute;inset:12%;border:1.5px solid var(--ring-in);
+    box-shadow:0 0 0 2px var(--ring-out), inset 0 0 0 1px var(--ring-out);border-radius:2px;z-index:2;pointer-events:none}
   /* faint checkerboard over the heat so squares stay identifiable */
   .attcell::after{content:"";position:absolute;inset:0;pointer-events:none}
   .attcell.dk::after{background:rgba(0,0,0,.16)}
@@ -170,40 +192,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .attpair{display:flex;gap:10px}
   .attpair>div{flex:1;min-width:0}
   .attpair .attboard{max-width:none}
-  /* smolgen mixture: readout + coefficient strip + template gallery */
-  .gabreadout{font-family:var(--mono);font-size:10px;line-height:1.7;background:var(--chart-bg);
-    border:1px solid var(--line);border-radius:6px;padding:6px 8px;margin:6px 0 10px;min-height:30px}
-  .gabreadout b{color:var(--text)}
-  .gabreadout .pos{color:#f0a35e} .gabreadout .neg{color:#6fb3ff}
-  .gabreadout .tref{color:var(--accent);cursor:pointer}
-  .gabreadout .tref:hover{text-decoration:underline}
-  .coeffstrip{display:flex;align-items:stretch;gap:1px;height:44px;border:1px solid var(--line);
-    border-radius:6px;padding:2px;margin-bottom:12px;
-    background:linear-gradient(var(--chart-bg) 49%,var(--line) 49%,var(--line) 51%,var(--chart-bg) 51%)}
-  .cbar{flex:1;min-width:1px;position:relative;cursor:pointer}
-  .cbar span{position:absolute;left:0;right:0;border-radius:1px}
-  .cbar:hover{background:rgba(110,168,254,.15)}
-  .cbar.selt{background:rgba(110,168,254,.3)}
-  .gallery{display:grid;grid-template-columns:repeat(8,1fr);gap:4px}
-  .gtile{cursor:pointer;text-align:center;min-width:0}
-  .gtile canvas{display:block;width:100%;aspect-ratio:1/1;image-rendering:pixelated;
-    border:1px solid var(--line);border-radius:3px;background:#10141b}
-  .gtile:hover canvas{border-color:var(--accent)}
-  .gtile.selt canvas{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
-  .gtlbl{font-size:7px;font-family:var(--mono);color:var(--muted);margin-top:1px;
-    white-space:nowrap;overflow:hidden}
-  .gtlbl b{font-weight:600}
-  .gabdetail{border:1px solid var(--line);border-radius:8px;background:var(--panel2);
-    padding:10px;margin-bottom:12px}
-  .gabdetail.hidden{display:none}
-  .gdrow{display:flex;gap:12px;align-items:flex-start;justify-content:center}
-  .gdrow canvas{display:block;width:140px;height:140px;image-rendering:pixelated;
-    border:1px solid var(--line);border-radius:4px;background:#10141b}
-  .gdboard{width:140px;flex:0 0 140px}
-  .gdboard .attboard{max-width:140px}
-  .gdinfo{font-family:var(--mono);font-size:10px;line-height:1.7;color:var(--muted);margin-top:8px}
-  .gdinfo b{color:var(--text)}
-  .gdclose{float:right;padding:2px 8px;font-size:10px}
   .polhint{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.45}
   .attlegend{display:flex;align-items:center;gap:6px;margin-top:10px;font-size:9px;color:var(--muted);font-family:var(--mono)}
   .legbar{flex:1;height:8px;border-radius:4px;border:1px solid var(--line);
@@ -212,53 +200,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .legbar.pos{background:linear-gradient(90deg, rgb(24,28,36), rgb(244,134,58))}
   .leghint{font-size:8px;color:var(--muted);margin-top:3px;font-family:var(--mono)}
 
-  /* residual-stream filmstrip (lives in the bottom drawer) — sized so the
-     board and pieces are actually legible, not a strip of colored dots */
-  .film{display:flex;gap:12px;overflow-x:auto;padding-bottom:6px}
-  .filmcol{flex:0 0 150px;display:flex;flex-direction:column;align-items:center;gap:6px;min-width:0}
-  .miniboard{width:100%;aspect-ratio:1/1;display:grid;grid-template-columns:repeat(8,1fr);
-    grid-template-rows:repeat(8,1fr);border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#10141b}
-  .miniboard>div{position:relative;display:flex;align-items:center;justify-content:center;line-height:1}
-  /* faint checkerboard under the heat / move markers */
-  .miniboard>div.dk::after,.miniboard>div.lt::after{content:"";position:absolute;inset:0;pointer-events:none}
-  .miniboard>div.dk::after{background:rgba(0,0,0,.16)}
-  .miniboard>div.lt::after{background:rgba(255,255,255,.05)}
-  /* moving piece drawn on the from-square of the logit-lens move */
-  .miniboard img.pc{width:88%;height:88%;position:relative;z-index:3;pointer-events:none}
-  .filmlbl{font-size:11px;color:var(--muted);font-family:var(--mono);text-align:center}
-  /* structure tags: which module wrote this column of the stream */
-  .filmcol.emb  .miniboard{border-top:3px solid #8a93a3}
-  .filmcol.attn .miniboard{border-top:3px solid #f0a35e}   /* attention add */
-  .filmcol.mlp  .miniboard{border-top:3px solid #6fb3ff}   /* MLP add */
-  .filmcol.enc  .miniboard{border-top:3px solid #5ac878}   /* final norm = real output */
-  .filmcol.emb  .filmlbl{color:#8a93a3}
-  .filmcol.attn .filmlbl{color:#f0a35e}
-  .filmcol.mlp  .filmlbl{color:#6fb3ff}
-  .filmcol.enc  .filmlbl{color:#5ac878}
-  .residlegend{display:flex;gap:12px;font-size:9px;font-family:var(--mono);margin-bottom:8px;color:var(--muted)}
-  .residlegend span::before{content:"";display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:middle}
-  .residlegend .lg-attn::before{background:#f0a35e}
-  .residlegend .lg-mlp::before{background:#6fb3ff}
-  .residlegend .lg-emb::before{background:#8a93a3}
-  .residlegend .lg-enc::before{background:#5ac878}
 
-  /* medium toggle buttons under the board */
-  .boardctrls{margin-top:12px;display:flex;justify-content:center;gap:10px}
-  .medbtn{padding:10px 22px;font-size:13px;font-weight:600;border-radius:9px}
-  .medbtn.active{background:var(--accent);color:#0a1220;border-color:var(--accent)}
 
-  /* three bottom-docked drawers — residual stream · move microscope · GAB generator.
-     Each sits in its own third and peeks up by --dock at all times; click it to pull
-     the whole window up full-width over everything. */
-  .drawer{position:fixed;bottom:0;z-index:40;background:var(--panel);
+  /* the one bottom-docked drawer — the move microscope. It always peeks up by
+     --dock; opened, it rises to the bottom edge of the board — 1.5in above the
+     columns' bottom edge — while the layout above scales down to make room (both
+     set by fitLayout() from the board's position). */
+  .drawer{position:fixed;left:0;right:0;bottom:0;z-index:40;background:var(--panel);
     border:1px solid var(--line);border-bottom:none;border-radius:14px 14px 0 0;
     box-shadow:0 -12px 40px rgba(0,0,0,.45);padding:14px 18px;
-    transition:transform .24s ease, left .24s ease, width .24s ease;
+    height:var(--drawerh, 300px);display:flex;flex-direction:column;
+    transition:transform .24s ease;
     transform:translateY(calc(100% - var(--dock)))}
-  .drawer.d0{left:0;width:33.34%}
-  .drawer.d1{left:33.33%;width:33.34%}
-  .drawer.d2{left:66.66%;width:33.34%}
-  .drawer.open{left:0;width:100%;transform:translateY(0);z-index:41;cursor:default}
+  .drawer.open{transform:translateY(0);z-index:41;cursor:default}
   /* grip + "pull up" affordance on each peeking window */
   .drawer::before{content:"";position:absolute;top:6px;left:50%;transform:translateX(-50%);
     width:44px;height:4px;border-radius:2px;background:var(--line)}
@@ -267,22 +221,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .drawer:not(.open)::after{content:"▲ pull up";position:absolute;top:9px;right:14px;
     font-size:9px;font-family:var(--mono);color:var(--muted)}
   /* peek face: title + a clamped hint, no close button */
-  .drawer:not(.open) .mlhead{flex-wrap:wrap;gap:3px 10px;margin-bottom:0}
-  .drawer:not(.open) .mltitle{flex:1 1 100%;min-width:0;padding-right:54px;
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .drawer:not(.open) .mlhint{flex:1 1 100%;display:-webkit-box;-webkit-line-clamp:2;
-    -webkit-box-orient:vertical;overflow:hidden}
+  .drawer:not(.open) .mlhead{padding-right:64px}   /* room for "▲ pull up" */
   .drawer:not(.open) .mlhead>button{display:none}
-  .mlhead{display:flex;align-items:center;gap:12px;margin-bottom:8px}
-  .mltitle{font-size:13px;font-weight:600}
+  .mlhead{display:flex;align-items:center;gap:8px 14px;margin-bottom:8px;flex-wrap:wrap}
+  .mltitle{font-size:19px;font-weight:800;letter-spacing:.2px;white-space:nowrap}
   .mltitle b{color:var(--accent2)}
-  .mlhint{font-size:10px;color:var(--muted);font-family:var(--mono);flex:1;min-width:0}
+  .mltags{display:flex;gap:5px;flex-wrap:wrap}
+  .mltag{font-size:10px;font-family:var(--mono);color:var(--accent);border:1px solid rgba(110,168,254,.35);
+    background:rgba(110,168,254,.08);border-radius:10px;padding:1px 8px;white-space:nowrap}
+  .mlhint{font-size:11px;color:var(--muted);font-family:var(--mono);flex:1;min-width:160px}
   #mlclose{padding:3px 10px;font-size:11px}
-  .mlbody{display:flex;gap:24px;align-items:flex-start}
-  .mlchart{flex:1;min-width:0}
+  /* three sections side by side, each scrolling on its own inside the drawer's height */
+  .mlbody{display:flex;gap:22px;align-items:stretch;flex:1;min-height:0}
+  .mlchart{flex:1.25;min-width:0;overflow:hidden;display:flex;flex-direction:column}
   #mlsvg{width:100%;height:auto;display:block;background:var(--chart-bg);
     border:1px solid var(--line);border-radius:8px}
-  .mlgridbox{flex:0 0 auto;align-self:flex-start;overflow:auto}
+  .mlgridbox{flex:0 0 auto;overflow:auto;min-width:300px}
   /* grid-template-columns/rows + width are set per model in renderAblGrid so the
      heatmap has exactly num_heads columns × one row per layer (6/8/16/32 heads). */
   #ablgrid{display:grid;gap:1px;margin-top:4px}
@@ -294,15 +248,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #ablgrid .agc.cell.excl{background:repeating-linear-gradient(45deg,#151a22,#151a22 3px,#1c222c 3px,#1c222c 6px);opacity:.5}
   #ablgrid .agl{display:flex;align-items:center;justify-content:center;aspect-ratio:auto;
     font-size:8px;font-family:var(--mono);color:var(--muted)}
-  .mlnote{font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:6px;line-height:1.5}
+  .mlnote{font-size:9px;color:var(--muted);font-family:var(--mono);margin:2px 0 4px;line-height:1.5}
+  /* carrier neurons: one row per unit — name, its per-square footprint, estimate, exact */
+  .mlneurons{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}
+  #nrows{flex:1;min-height:0;overflow:auto;margin-top:4px}
+  .nrow{display:grid;grid-template-columns:66px 28px 1fr 1fr;align-items:center;gap:8px;
+    font-family:var(--mono);font-size:10px;padding:2px 0;border-bottom:1px solid var(--line);cursor:pointer}
+  .nrow:hover{background:rgba(110,168,254,.07)}
+  .nrow canvas{display:block;width:28px;height:28px;image-rendering:pixelated;border:1px solid var(--line);border-radius:2px;background:#10141b}
+  .nrow .neg{color:#6fb3ff} .nrow .pos{color:#f0a35e} .nrow .dim{color:var(--muted)}
+  .nrow.strong span:first-child{color:#ff5d6c;font-weight:700}
   /* policy rows are now clickable (open the microscope) */
   .prow{cursor:pointer;border-radius:6px}
   .prow:hover{background:rgba(110,168,254,.07)}
   .prow.lensed{background:rgba(110,168,254,.12)}
   .prow.lensed .san{color:var(--accent)}
-  /* GAB generator drawer: keep it inside the viewport, tighter template grid at full width */
-  #gablens .gabwrap{max-height:62vh;overflow-y:auto;padding-right:4px}
-  #gablens .gallery{grid-template-columns:repeat(16,1fr)}
   /* compared-move legend in the move microscope */
   .mllegend{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 6px;min-height:0}
   .mllegend:empty{display:none}
@@ -327,21 +287,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .spinner{width:26px;height:26px;border:3px solid var(--line);border-top-color:var(--accent);
     border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 12px}
   @keyframes spin{to{transform:rotate(360deg)}}
+  .mlh{margin-top:6px} .mlh:empty{display:none}
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="left">
-    <div>
-      <h1>Chessformer (Maia 3) interpretability app</h1>
+    <div class="titlerow">
+      <h1>Chessformer interpretability app</h1>
       <div class="sub" id="modelinfo">loading model…</div>
     </div>
     <div id="boardwrap">
       <div id="board"></div>
       <svg id="arrowsvg" viewBox="0 0 640 640" width="640" height="640"></svg>
-    </div>
-    <div class="boardctrls">
-      <button id="rlbtn" class="medbtn">Watch residual stream</button>
     </div>
   </div>
 
@@ -363,12 +321,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="card">
       <h2>Win / Draw / Loss · side to move</h2>
       <div class="wdl" id="wdl"><div class="w" style="width:33%">—</div><div class="d" style="width:34%"></div><div class="l" style="width:33%"></div></div>
+      <div class="leghint mlh" id="mlh"></div>
     </div>
 
     <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:0">
       <h2 id="poltitle">Policy over legal moves</h2>
       <div id="policy"></div>
-      <div class="leghint" style="margin-top:5px">click moves to compare them in the move microscope</div>
+      <div class="leghint" style="margin-top:5px">click a move to analyze it below · up to 4 to compare</div>
       <div class="act" id="actfile" style="margin-top:4px"></div>
     </div>
 
@@ -405,65 +364,56 @@ INDEX_HTML = r"""<!DOCTYPE html>
           <div class="leghint">query's 64 weights (one per key square) sum to 1</div>
         </div>
       </div>
-      <div class="boardctrls" style="margin-top:16px">
-        <button id="gabbtn" class="medbtn">GAB generator</button>
+    </div>
+  </div>
+
+  <div class="neur">
+    <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:0;overflow:auto">
+      <h2>Neurons · this position</h2>
+      <svg id="netsvg" viewBox="0 0 240 200"></svg>
+      <div class="leghint" style="margin-top:5px">columns = MLP layers, top to bottom = unit 0 … N−1; dots = the layer's most active units here, the lit one the selected unit (ringed: causal neurons of the analyzed move). Click a dot, click a height, or ◀ ▶ flip.</div>
+      <div class="attctrls" style="margin-top:10px">
+        <div class="chiprow"><span class="lbl">Layer</span>
+          <div class="nctl"><button id="lprev" title="previous layer">◀</button><input id="nlayer" type="number" min="0" value="0"><button id="lnext" title="next layer">▶</button></div></div>
+        <div class="chiprow"><span class="lbl">Unit</span>
+          <div class="nctl"><button id="nprev" title="previous unit">◀</button><input id="nidx" type="number" min="0" value="0"><button id="nnext" title="next unit">▶</button></div></div>
+        <div class="ablrow"><button id="nablbtn">Ablate this neuron</button></div>
+        <div class="ablnote" id="nablnote">removes its exact write on every square — red bars on the policy chart</div>
       </div>
+      <div><div class="attlabel" id="nlabel">L0·n0 · activation per square</div><div class="attboard" id="att_neuron"></div></div>
+      <div class="attlegend"><span>−</span><div class="legbar div"></div><span>+</span></div>
+      <div class="leghint">what this unit fires on, square by square</div>
     </div>
   </div>
 </div>
 
-<div id="gablens" class="drawer d2">
+<div id="mlens" class="drawer">
   <div class="mlhead">
-    <span class="mltitle">How <b id="gabhead">L0·h0</b>'s GAB is generated</span>
-    <span class="mlhint">a generator reads this position and emits, per head, a bias of the <span id="gabNcoeff">64</span> coefficients over a static bank of <span id="gabNtmpl">64</span> 64×64 square-pair templates shared by every layer</span>
-    <button id="gabclose">✕ close</button>
-  </div>
-  <div class="gabwrap">
-    <div class="gabreadout" id="gabreadout">—</div>
-    <div class="attlabel">generated mixing coefficients · template <span id="gabRange">#0–63</span> · click to inspect</div>
-    <div class="coeffstrip" id="coeffstrip"></div>
-    <div class="gabdetail hidden" id="gabdetail"></div>
-    <div class="attlabel">template vocabulary · the <span id="gabNtmpl2">64</span> static stencils (row = query sq, col = key sq)</div>
-    <div class="gallery" id="gallery"></div>
-  </div>
-</div>
-
-<div id="rlens" class="drawer d0">
-  <div class="mlhead">
-    <span class="mltitle">Residual stream across depth · this position</span>
-    <span class="mlhint">per-square ‖Δ‖ each structure writes into the <strong>residual stream</strong> with the <strong>logit-lens</strong> top move on top</span>
-    <button id="rlclose">✕ close</button>
-  </div>
-  <div class="residlegend">
-    <span class="lg-emb">emb (input)</span>
-    <span class="lg-attn">aN = layer N attn add</span>
-    <span class="lg-mlp">mN = layer N MLP add</span>
-    <span class="lg-enc">enc (final norm)</span>
-  </div>
-  <div class="film" id="film"></div>
-  <div class="act" id="residinfo" style="margin-top:6px"></div>
-</div>
-
-<div id="mlens" class="drawer d1">
-  <div class="mlhead">
-    <span class="mltitle" id="mltitle">Move microscope</span>
-    <span class="mlhint" id="mlhint">click policy move(s) to see its logits through depth, and the heads that carry it</span>
+    <span class="mltitle" id="mltitle">Analyze one move</span>
+    <span class="mltags"><span class="mltag">logit lens</span><span class="mltag">causal heads</span><span class="mltag">causal neurons</span><span class="mltag">residual stream</span></span>
+    <span class="mlhint" id="mlhint">click a move in the policy list</span>
     <button id="mlclose">✕ close</button>
   </div>
   <div class="mlbody">
     <div class="mlchart">
+      <div class="attlabel">logit lens · the move's logit read off the residual stream at every depth</div>
       <div class="mllegend" id="mllegend"></div>
-      <svg id="mlsvg" viewBox="0 0 660 190"></svg>
+      <svg id="mlsvg" viewBox="0 0 660 222"></svg>
     </div>
     <div class="mlgridbox" id="mlgridbox">
-      <div class="attlabel">carrier heads · Δlogit = ablated − clean</div>
-      <div id="ablgrid"></div>
+      <div class="attlabel">causal heads · Δlogit = ablated − clean</div>
       <div class="mlnote" id="mlnote"></div>
+      <div id="ablgrid"></div>
+    </div>
+    <div class="mlneurons" id="mlneurons">
+      <div class="attlabel">causal neurons · Δlogit ≈ −∂logit/∂h · h</div>
+      <div class="mlnote" id="nnote"></div>
+      <div id="nrows"></div>
     </div>
   </div>
 </div>
 
-<div id="loading"><div class="box"><div class="spinner"></div><div id="loadtext">Loading Maia model…</div></div></div>
+<div id="loading"><div class="box"><div class="spinner"></div><div id="loadtext">Loading model…</div></div></div>
 <div id="promo"><div class="box"><div>Promote to</div><div class="glyphs" id="promoglyphs"></div></div></div>
 
 <script>
@@ -479,6 +429,8 @@ let cmpOn=false, cmpElo=1100;
 const START_FEN='rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const EXTRA=144;       // 1.5in at 96dpi: how far the side columns run below the board (fitLayout)
+const RAISE=96;        // 1in: how far above the board's bottom edge the opened drawer reaches
 
 /* ---- wait for the python bridge, then boot (poll; don't rely on the event) ---- */
 let booted=false, booting=false, waitN=0;
@@ -494,13 +446,14 @@ function tryBoot(){
   if(waitN>120){ showLoading('Bridge not connecting — check the terminal for errors.'); return; }
   setTimeout(tryBoot,100);
 }
-showLoading('Loading Maia model…');
+showLoading('Loading model…');
 tryBoot();
+fitLayout();
 
 async function boot(){
   if(booted || booting) return;
   booting=true;
-  showLoading('Loading Maia model…');
+  showLoading('Loading model…');
   try{
     API = window.pywebview.api;
     let info = await API.info();
@@ -512,9 +465,9 @@ async function boot(){
     MODEL_INFO = info;
     setModelInfo();
     ensureAttUi(info);
-    loadTemplates();   // static GAB vocabulary — fetched once, in the background
     console.log('[maia] bridge ready', info);
     $('loading').style.display='none';
+    fitLayout();
     booted=true;
     await newGame();
   }catch(e){
@@ -531,7 +484,11 @@ function setModelInfo(){
   $('modelinfo').textContent =
     `${i.alias||i.target||'Maia3'} · ${i.device||'cpu'} · `+
     `${i.num_blocks||8} layers × ${i.num_heads||8} heads × ${i.dim_vit||256}d`;
-  setGabLabels();
+  // A model with no rating input (Leela BT4) gets no rating card: the engine
+  // ignores the value, so the slider and the second-rating compare would be
+  // dead controls. Everything else on the page is derived from the engine.
+  const eloCard = $('elo').closest('.card');
+  if(eloCard) eloCard.style.display = (i.conditioning === false) ? 'none' : '';
 }
 
 /* ---- controls ---- */
@@ -644,9 +601,9 @@ async function probe(){
   } else {
     const d = await API.policy(elo, true);
     if(d.error) return;
-    cur = d; renderPolicy(d.policy, d.wdl, d.activation_file, null); renderBoard();
+    cur = d; renderPolicy(d.policy, d.wdl, d.activation_file, null, d.mlh); renderBoard();
   }
-  updateAttention(); updateResidual(); updateMoveLens();
+  updateAttention(); updateMoveLens();
 }
 
 async function newGame(){
@@ -673,23 +630,23 @@ async function advance(){
   if(cur.game_over){ finishUI(); return; }
   busy=true;
   let d = await API.policy(elo, true);
-  cur = d; renderBoard(); renderPolicy(d.policy, d.wdl, d.activation_file, null);
+  cur = d; renderBoard(); renderPolicy(d.policy, d.wdl, d.activation_file, null, d.mlh);
   setStatus();
   if(d.maia_to_move){
     setStatus(`Maia (${cur.turn}) is thinking…`);
     await sleep(1500);
     const r = await API.maia_move(elo, temp);
     cur = r; renderBoard(); renderMoves();
-    renderPolicy(r.maia_policy, r.maia_wdl, r.activation_file, r.maia_move && r.maia_move.uci);
+    renderPolicy(r.maia_policy, r.maia_wdl, r.activation_file, r.maia_move && r.maia_move.uci, r.maia_mlh);
     if(!r.game_over){
       const h = await API.policy(elo, true);
-      cur = h; renderBoard(); renderPolicy(h.policy, h.wdl, h.activation_file, null);
+      cur = h; renderBoard(); renderPolicy(h.policy, h.wdl, h.activation_file, null, h.mlh);
     }
   }
   busy=false;
   setStatus();
   if(cmpOn && !cur.game_over && cur.human_to_move) await refreshCompare();
-  updateAttention(); updateResidual(); updateMoveLens();
+  updateAttention(); updateMoveLens();
   if(cur.game_over) finishUI();
 }
 
@@ -835,13 +792,13 @@ function askPromo(base, promos){
 
 /* ---- panels ---- */
 let lastPolArgs=null;         // last renderPolicy call, so overlays can repaint it
-function renderPolicy(pol, wdl, actfile, playedUci){
-  lastPolArgs=[pol,wdl,actfile,playedUci];
+function renderPolicy(pol, wdl, actfile, playedUci, mlh){
+  lastPolArgs=[pol,wdl,actfile,playedUci,mlh];
   const box=$('policy'); box.innerHTML='';
   const abl=ablPolicy();      // {uci: p_ablated} while the ablation toggle is live
   $('wdl').classList.toggle('cmp', !!abl);
   $('poltitle').textContent = abl
-    ? `Policy · clean (blue) vs L${ablData.layer}·h${ablData.head} ablated (red)`
+    ? `Policy · clean (blue) vs ${ablData.label} ablated (red)`
     : (pol ? `Policy over ${pol.length} legal moves` : 'Policy over legal moves');
   if(pol && pol.length){
     // ablating re-sorts the list by signed Δ — the moves the head was holding up
@@ -883,6 +840,9 @@ function renderPolicy(pol, wdl, actfile, playedUci){
         `<div class="l" style="width:${l}%">${l>8?l+'%':''}</div>`;
     }
   }
+  // moves-left head (Leela): expected plies to the end of the game
+  const mlhEl = $('mlh');
+  if(mlhEl) mlhEl.textContent = (mlh === null || mlh === undefined) ? '' : `moves-left head: ~${Math.round(mlh)} plies to the end of the game`;
   $('actfile').textContent = actfile ? '↳ saved '+actfile.split('/').slice(-1)[0] : '';
   markLensedRows();
 }
@@ -901,9 +861,7 @@ function finishUI(){ sel=null; renderBoard(); setStatus(); }
 
 /* ---- live attention panel (real QKᵀ / GAB / softmax for the current board) ---- */
 let attLayer=0, attHead=0, attQueryReal='d4', lastAtt=null;
-let GABT=null, gabtMaxAbs=null;        // static template bank (fetched once) + per-template |max|
-let gabTargetReal=null, selTemplate=null;   // decomposition target sq + inspected template
-const ATT_IDS=['att_qk','att_gab','att_sum'];
+const ATT_IDS=['att_qk','att_gab','att_sum','att_neuron'];
 
 function viridis(t){
   t=Math.max(0,Math.min(1,t));
@@ -916,14 +874,13 @@ function viridis(t){
 function lerp3(a,b,t){return `rgb(${Math.round(a[0]+(b[0]-a[0])*t)},${Math.round(a[1]+(b[1]-a[1])*t)},${Math.round(a[2]+(b[2]-a[2])*t)})`;}
 function divmap(v){ const mid=[24,28,36], blue=[64,132,234], orange=[244,134,58]; return lerp3(mid, v<0?blue:orange, Math.min(1,Math.abs(v))); }
 
-function fillAttCells(el){          // 64 heat cells; click = set query, hover = decompose pair
+function fillAttCells(el){          // 64 heat cells; click = set query
   for(let idx=0;idx<64;idx++){
     const r=Math.floor(idx/8), c=idx%8, name=sqName(r,c);
     const d=document.createElement('div');
     d.className='attcell '+((FILES.indexOf(name[0])+(+name[1]))%2===0?'lt':'dk');
     d.dataset.idx=idx;
-    d.onclick=()=>{ attQueryReal=sqName(Math.floor(idx/8), idx%8); gabTargetReal=null; renderAttention(); renderBoard(); };
-    d.onmouseenter=()=>{ gabTargetReal=sqName(Math.floor(idx/8), idx%8); renderGabReadout(); };
+    d.onclick=()=>{ attQueryReal=sqName(Math.floor(idx/8), idx%8); renderAttention(); renderBoard(); };
     if(c===0){ const sp=document.createElement('span'); sp.className='attcoord r'; sp.textContent=name[1]; d.appendChild(sp); }
     if(r===7){ const sp=document.createElement('span'); sp.className='attcoord f'; sp.textContent=name[0]; d.appendChild(sp); }
     el.appendChild(d);
@@ -945,12 +902,12 @@ function relabelAttCoords(){
     }
   });
 }
-function paintRow(id, row, colf){
+function paintRow(id, row, colf, markQuery=true){
   const el=$(id); if(!el || !row || !cur) return;
   for(const cell of el.children){
     const idx=+cell.dataset.idx, name=sqName(Math.floor(idx/8), idx%8);
     cell.style.background = colf(row[realToCanon(name, cur.turn)]);
-    cell.classList.toggle('q', name===attQueryReal);
+    cell.classList.toggle('q', markQuery && name===attQueryReal);
   }
 }
 function renderAttention(){
@@ -973,166 +930,18 @@ function renderAttention(){
     const sum = qk.map((v,i)=>v+gab[i]);   // fallback: pre-softmax logits
     paintRow('att_sum', sum, dv(sum));
   }
-  renderSmolgen();
 }
-
-/* ---- smolgen mixture: coefficients, live decomposition, template vocabulary ---- */
 function canonToReal(idx, turn){
   const file=idx%8; let rank0=Math.floor(idx/8);
   if(turn==='black') rank0=7-rank0;   // undo the side-to-move board mirror
   return FILES[file]+(rank0+1);
 }
-async function loadTemplates(){       // once per app run: the static vocabulary
-  if(GABT || !API) return;
-  try{
-    const d = await API.gab_templates();
-    if(!d || d.error){ console.warn('[maia] gab_templates:', d && d.error); return; }
-    GABT = d.templates;
-    gabtMaxAbs = GABT.map(t=>{ let m=1e-9; for(const row of t) for(const v of row){ const a=Math.abs(v); if(a>m)m=a; } return m; });
-    setGabLabels();
-    buildGallery();
-    renderSmolgen();
-  }catch(e){ console.warn('[maia] gab_templates failed', e); }
-}
-function paintTemplate(cv, t, scale){ // 64×64 pair-matrix -> one pixel per (query, key)
-  const ctx=cv.getContext('2d'), img=ctx.createImageData(64,64);
-  const mid=[24,28,36], blue=[64,132,234], orange=[244,134,58];
-  for(let q=0;q<64;q++) for(let k=0;k<64;k++){
-    const v=Math.max(-1,Math.min(1,t[q][k]/scale)), c=v<0?blue:orange, a=Math.abs(v);
-    const p=(q*64+k)*4;
-    img.data[p]  =Math.round(mid[0]+(c[0]-mid[0])*a);
-    img.data[p+1]=Math.round(mid[1]+(c[1]-mid[1])*a);
-    img.data[p+2]=Math.round(mid[2]+(c[2]-mid[2])*a);
-    img.data[p+3]=255;
-  }
-  ctx.putImageData(img,0,0);
-}
-function setGabLabels(){   // fill the "N coefficients / N templates" spans for this model
-  const n = (GABT && GABT.length) || (MODEL_INFO && MODEL_INFO.gen_size) || 64;
-  const set=(id,txt)=>{ const e=$(id); if(e) e.textContent=txt; };
-  set('gabNcoeff', n); set('gabNtmpl', n); set('gabNtmpl2', n);
-  set('gabRange', '#0–'+(n-1));
-}
-function buildGallery(){
-  const g=$('gallery'); if(!g || !GABT || g.children.length) return;
-  GABT.forEach((t,i)=>{
-    const tile=document.createElement('div'); tile.className='gtile'; tile.dataset.i=i;
-    const cv=document.createElement('canvas'); cv.width=64; cv.height=64;
-    paintTemplate(cv, t, gabtMaxAbs[i]);
-    const lb=document.createElement('div'); lb.className='gtlbl'; lb.innerHTML='<b>#'+i+'</b>';
-    tile.appendChild(cv); tile.appendChild(lb);
-    tile.onclick=()=>toggleTemplate(i);
-    g.appendChild(tile);
-  });
-}
-function toggleTemplate(i){ selTemplate = (selTemplate===i) ? null : i; renderSmolgen(); }
-function buildCoeffStrip(n){
-  const s=$('coeffstrip'); if(!s || s.children.length===n) return;
-  s.innerHTML='';
-  for(let i=0;i<n;i++){
-    const b=document.createElement('div'); b.className='cbar'; b.dataset.i=i;
-    b.appendChild(document.createElement('span'));
-    b.onclick=()=>toggleTemplate(i);
-    s.appendChild(b);
-  }
-}
-function renderCoeffStrip(){
-  const s=$('coeffstrip'); if(!s) return;
-  const c=lastAtt && lastAtt.coeffs;
-  if(!c){ s.innerHTML=''; return; }
-  buildCoeffStrip(c.length);
-  let m=1e-9; for(const v of c){ const a=Math.abs(v); if(a>m)m=a; }
-  [...s.children].forEach((b,i)=>{
-    const v=c[i], sp=b.firstChild, h=Math.max(3, Math.abs(v)/m*48);   // % of strip height (half = 50)
-    sp.style.background = v>=0 ? '#f0a35e' : '#6fb3ff';
-    sp.style.height=h+'%';
-    if(v>=0){ sp.style.bottom='50%'; sp.style.top='auto'; }
-    else    { sp.style.top='50%';    sp.style.bottom='auto'; }
-    b.title='template #'+i+' · coeff '+v.toFixed(3);
-    b.classList.toggle('selt', selTemplate===i);
-  });
-}
-function defaultGabTarget(){          // strongest |GAB| target for the current query
-  if(!lastAtt || !cur) return null;
-  const row=lastAtt.gab[realToCanon(attQueryReal, cur.turn)]; if(!row) return null;
-  let bi=0, bv=-1;
-  for(let k=0;k<64;k++){ const a=Math.abs(row[k]); if(a>bv){ bv=a; bi=k; } }
-  return canonToReal(bi, cur.turn);
-}
-function renderGabReadout(){
-  const el=$('gabreadout'); if(!el) return;
-  if(!lastAtt || !lastAtt.coeffs || !cur){ el.textContent='—'; return; }
-  if(!GABT){ el.textContent='loading template bank…'; return; }
-  if(!gabTargetReal) gabTargetReal=defaultGabTarget();
-  if(!gabTargetReal){ el.textContent='—'; return; }
-  const q=realToCanon(attQueryReal, cur.turn), k=realToCanon(gabTargetReal, cur.turn);
-  const total=lastAtt.gab[q][k], c=lastAtt.coeffs;
-  const terms=c.map((v,i)=>({i, v:v*GABT[i][q][k]}));
-  terms.sort((a,b)=>Math.abs(b.v)-Math.abs(a.v));
-  const top=terms.slice(0,4);
-  let rest=total; for(const t of top) rest-=t.v;
-  const f=v=>(v>=0?'+':'−')+Math.abs(v).toFixed(2);
-  const cls=v=>v>=0?'pos':'neg';
-  let h=`GAB ${attQueryReal}→${gabTargetReal} = <b class="${cls(total)}">${f(total)}</b> &nbsp;=&nbsp; `;
-  h+=top.map(t=>`<span class="${cls(t.v)}">${f(t.v)}</span>·<span class="tref" data-i="${t.i}">#${t.i}</span>`).join(' ');
-  h+=` <span style="opacity:.6">${f(rest)} rest</span>`;
-  el.innerHTML=h;
-  el.querySelectorAll('.tref').forEach(x=>{ x.onclick=()=>toggleTemplate(+x.dataset.i); });
-}
-function renderGalleryBadges(){       // live coefficients on the static vocabulary
-  const g=$('gallery'); if(!g || !g.children.length) return;
-  const c=lastAtt && lastAtt.coeffs;
-  let m=1e-9; if(c) for(const v of c){ const a=Math.abs(v); if(a>m)m=a; }
-  [...g.children].forEach((tile,i)=>{
-    const lb=tile.querySelector('.gtlbl'), cv=tile.querySelector('canvas');
-    if(c && c[i]!==undefined){
-      const col=c[i]>=0?'#f0a35e':'#6fb3ff';
-      lb.innerHTML=`<b>#${i}</b> <span style="color:${col}">${c[i]>=0?'+':'−'}${Math.abs(c[i]).toFixed(2)}</span>`;
-      cv.style.borderColor=divmap(c[i]/m);      // border glows with the live mixture
-    } else {
-      lb.innerHTML=`<b>#${i}</b>`; cv.style.borderColor='';
-    }
-    tile.classList.toggle('selt', selTemplate===i);
-  });
-}
-function renderTemplateDetail(){
-  const box=$('gabdetail'); if(!box) return;
-  if(selTemplate===null || !GABT){ box.classList.add('hidden'); box.innerHTML=''; return; }
-  const i=selTemplate, t=GABT[i], c=lastAtt && lastAtt.coeffs ? lastAtt.coeffs[i] : null;
-  let rank=null;
-  if(c!==null){ rank=1; for(const v of lastAtt.coeffs) if(Math.abs(v)>Math.abs(c)) rank++; }
-  box.classList.remove('hidden');
-  box.innerHTML=
-    `<button class="gdclose" id="gdclose">close</button>`+
-    `<div class="gdrow">`+
-      `<div><canvas id="gdcv" width="64" height="64"></canvas><div class="gtlbl">full 64×64 · row = query, col = key</div></div>`+
-      `<div class="gdboard"><div class="attboard" id="gdrowboard"></div><div class="gtlbl">its row at query ${attQueryReal}</div></div>`+
-    `</div>`+
-    `<div class="gdinfo">template <b>#${i}</b> — static stencil, shared by every layer &amp; head.`+
-    (c===null ? '' :
-      ` In L${attLayer}·h${attHead} on this board (elo ${elo}) its coefficient is `+
-      `<b>${c>=0?'+':'−'}${Math.abs(c).toFixed(3)}</b> — #${rank} of ${lastAtt.coeffs.length} by |coeff|.`)+
-    `</div>`;
-  $('gdclose').onclick=()=>toggleTemplate(i);
-  paintTemplate($('gdcv'), t, gabtMaxAbs[i]);
-  const rb=$('gdrowboard'); fillAttCells(rb);
-  if(cur){
-    const row=t[realToCanon(attQueryReal, cur.turn)];
-    let m=1e-9; for(const v of row){ const a=Math.abs(v); if(a>m)m=a; }
-    paintRow('gdrowboard', row, v=>divmap(v/m));
-  }
-}
-function renderSmolgen(){
-  const gh=$('gabhead'); if(gh) gh.textContent='L'+attLayer+'·h'+attHead;
-  renderCoeffStrip();
-  renderGabReadout();
-  renderGalleryBadges();
-  renderTemplateDetail();
-}
+
 async function updateAttention(){
   if(!API || !cur || cur.game_over) return;
   ensureAttUi(MODEL_INFO);
   updateAblation();          // keeps the red policy overlay in step with the picked head
+  updateNeuron();            // and the neuron panel (its activation + overlay) with the board
   try{
     const d = await API.attention(elo, attLayer, attHead);
     if(d && !d.error){
@@ -1153,8 +962,14 @@ async function updateAttention(){
 let ablOn=false, ablData=null, ablKey=null, ablBusy=false, ablDirty=false;
 const ABLNOTE='removes its exact residual write — red bars on the policy chart';
 function ablKeyNow(){ return cur ? `${cur.fen}|${elo}|${attLayer}|${attHead}` : null; }
-// the overlay the policy chart should draw right now, or null (off / stale / failed)
-function ablPolicy(){ return (ablOn && ablData && ablKey===ablKeyNow()) ? ablData.p : null; }
+// the overlay the policy chart should draw right now, or null (off / stale / failed).
+// One overlay at a time: the head toggle or the neuron toggle, whichever is on.
+function ablPolicy(){
+  if(!ablData) return null;
+  if(ablOn && ablKey===ablKeyNow()) return ablData.p;
+  if(nablOn && ablKey===neuronKeyNow()) return ablData.p;
+  return null;
+}
 function ablNote(msg, err){ const n=$('ablnote'); if(!n) return; n.textContent=msg; n.classList.toggle('err', !!err); }
 function repaintPolicy(){
   if(cmpOn){ if(lastCmp) renderCompare(lastCmp); }
@@ -1177,7 +992,7 @@ async function updateAblation(){
       ablNote('⚠ '+(d && d.error ? d.error : 'ablation failed'), true);
     } else {
       const p={}; for(const r of d.rows) p[r.uci]=r.p_abl;
-      ablData={layer:d.layer, head:d.head, p:p, wdl_abl:d.wdl_abl}; ablKey=key;
+      ablData={label:`L${d.layer}·h${d.head}`, p:p, wdl_abl:d.wdl_abl}; ablKey=key;
       ablNote(`L${d.layer}·h${d.head} write removed · red = ablated`);
     }
     repaintPolicy();
@@ -1189,7 +1004,78 @@ async function updateAblation(){
     if(ablDirty){ ablDirty=false; updateAblation(); }
   }
 }
-$('ablbtn').onclick=()=>{ ablOn=!ablOn; updateAblation(); };
+$('ablbtn').onclick=()=>{ ablOn=!ablOn; if(ablOn && nablOn){ nablOn=false; updateNeuronAblation(); } updateAblation(); };
+
+/* ---- neuron panel: one MLP unit's activation per square + exact ablation ----
+   Mirrors the head panel: pick a unit (inputs, ◀ ▶, or a click in the
+   microscope's carrier-neuron table), see what it fires on, toggle its exact
+   removal as the red overlay on the policy chart. ---- */
+let nLayer=0, nIdx=0, lastNeu=null, nablOn=false, nablBusy=false, nablDirty=false;
+let neurOv=null, neurOvKey=null;   // per-layer most-active units, cached per position
+const NABLNOTE='removes its exact write on every square — red bars on the policy chart';
+function neuronKeyNow(){ return cur ? `${cur.fen}|${elo}|n|${nLayer}|${nIdx}` : null; }
+function nablNote(msg, err){ const n=$('nablnote'); if(!n) return; n.textContent=msg; n.classList.toggle('err', !!err); }
+function clampNeuron(){
+  const i=MODEL_INFO||{}; const nb=i.num_blocks||8, nn=i.mlp_dim||(lastNeu&&lastNeu.n_neurons)||512;
+  nLayer=((Math.round(+nLayer)||0)%nb+nb)%nb; nIdx=((Math.round(+nIdx)||0)%nn+nn)%nn;
+  $('nlayer').value=nLayer; $('nidx').value=nIdx;
+}
+function renderNeuron(){
+  if(!lastNeu || !cur) return;
+  const a=lastNeu.act; let m=1e-9; for(const v of a){ const x=Math.abs(v); if(x>m)m=x; }
+  paintRow('att_neuron', a, v=>divmap(v/m), false);
+  $('nlabel').textContent=`L${lastNeu.layer}·n${lastNeu.neuron} · activation per square`;
+  renderNet();
+}
+async function updateNeuron(){
+  if(!API || !cur || cur.game_over) return;
+  clampNeuron();
+  const okey=`${cur.fen}|${elo}`;
+  if(neurOvKey!==okey){
+    try{ const o=await API.neurons_overview(elo); if(o && !o.error){ neurOv=o; neurOvKey=okey; } }
+    catch(e){ console.warn('[maia] neurons_overview failed', e); }
+  }
+  renderNet();
+  try{
+    const d=await API.neuron(elo, nLayer, nIdx);
+    if(d && !d.error){ lastNeu=d; renderNeuron(); }
+  }catch(e){ console.warn('[maia] neuron update failed', e); }
+  updateNeuronAblation();
+}
+async function updateNeuronAblation(){
+  const btn=$('nablbtn'); if(!btn) return;
+  btn.classList.toggle('on', nablOn);
+  btn.textContent = nablOn ? '✓ Ablating this neuron' : 'Ablate this neuron';
+  if(!nablOn){ if(!ablOn){ ablData=null; ablKey=null; } nablNote(NABLNOTE); repaintPolicy(); return; }
+  if(!API || !cur || cur.game_over) return;
+  const key=neuronKeyNow();
+  if(ablData && ablKey===key) return;
+  if(nablBusy){ nablDirty=true; return; }
+  nablBusy=true; nablNote(`ablating L${nLayer}·n${nIdx}…`);
+  try{
+    const d=await API.ablate_neuron(elo, nLayer, nIdx);
+    if(!d || d.error){ ablData=null; ablKey=null; nablNote('⚠ '+(d && d.error ? d.error : 'ablation failed'), true); }
+    else {
+      const p={}; for(const r of d.rows) p[r.uci]=r.p_abl;
+      ablData={label:`L${d.layer}·n${d.neuron}`, p:p, wdl_abl:d.wdl_abl}; ablKey=key;
+      nablNote(`L${d.layer}·n${d.neuron} write removed · red = ablated`);
+    }
+    repaintPolicy();
+  }catch(e){
+    console.warn('[maia] neuron ablation failed', e);
+    ablData=null; ablKey=null; nablNote('⚠ ablation failed — see console', true); repaintPolicy();
+  }finally{
+    nablBusy=false;
+    if(nablDirty){ nablDirty=false; updateNeuronAblation(); }
+  }
+}
+$('nablbtn').onclick=()=>{ nablOn=!nablOn; if(nablOn && ablOn){ ablOn=false; updateAblation(); } updateNeuronAblation(); };
+$('nlayer').onchange=()=>{ nLayer=+$('nlayer').value; updateNeuron(); };
+$('nidx').onchange=()=>{ nIdx=+$('nidx').value; updateNeuron(); };
+$('nprev').onclick=()=>{ nIdx-=1; updateNeuron(); };
+$('lprev').onclick=()=>{ nLayer-=1; updateNeuron(); };
+$('lnext').onclick=()=>{ nLayer+=1; updateNeuron(); };
+$('nnext').onclick=()=>{ nIdx+=1; updateNeuron(); };
 function buildChips(id, n, current, onpick){
   const el=$(id); if(!el) return;
   const count = Math.max(0, Number(n) || 0);
@@ -1213,87 +1099,39 @@ function ensureAttUi(info){    // idempotent: builds the boards + chips once
   if(hc && !hc.children.length) buildChips('headChips', info.num_heads||8, attHead, i=>{ attHead=i; updateAttention(); });
 }
 
-/* ---- residual-stream filmstrip: one combined view in a bottom drawer.
-   Each column = one readout point. Heat = per-square ||delta|| the structure
-   writes at that point (viridis; emb on its own scale, attn+mlp shared); on
-   top, the logit-lens move at that point: piece on from-square, green ring on
-   the destination. enc has no additive write, so it shows the lens only. ---- */
-let lastRes=null, residOpen=false;
-function buildFilm(cols){            // cols: [{label, kind}] — one mini-board each
-  const f=$('film'); f.innerHTML='';
-  cols.forEach((cd,li)=>{
-    const col=document.createElement('div'); col.className='filmcol'+(cd.kind?(' '+cd.kind):'');
-    const mb=document.createElement('div'); mb.className='miniboard'; mb.dataset.li=li;
-    for(let r=0;r<8;r++) for(let c=0;c<8;c++){
-      const d=document.createElement('div'); const sq=(7-r)*8+c;
-      d.dataset.sq=sq; d.className=((sq%8+Math.floor(sq/8))%2===1?'lt':'dk');
-      mb.appendChild(d);
-    }
-    const t=document.createElement('div'); t.className='filmlbl'; t.textContent=cd.label;
-    col.appendChild(mb); col.appendChild(t); f.appendChild(col);
+/* ---- the one drawer, and the layout around the board ----
+   The microscope is always docked at the bottom as a peek; "open" pulls it up to
+   the bottom edge of the board and no further (collapsing keeps its state). The
+   right-hand columns are cut to the board's height too, so the policy list ends
+   where the board ends and everything below that line belongs to the drawer. */
+function fitLayout(){
+  const bw=$('boardwrap'), dr=$('mlens'); if(!bw || !dr) return;
+  // layout geometry (offset*, unaffected by the open-state scale transform)
+  const boardBottom=bw.offsetTop+bw.offsetHeight, colBottom=boardBottom+EXTRA;
+  let wrapTop=16;
+  document.querySelectorAll('.right, .arch, .neur').forEach(col=>{
+    wrapTop=col.offsetTop;
+    col.style.height=Math.max(220, colBottom-col.offsetTop)+'px';
   });
+  // open, the drawer's top edge sits RAISE above the board's bottom edge; the top
+  // layout scales so the columns' bottom edge (and the board's) ends above it
+  const dock=parseInt(getComputedStyle(document.documentElement).getPropertyValue('--dock'))||112;
+  const drawerTop=boardBottom-RAISE;
+  dr.style.height=Math.max(dock+40, window.innerHeight-drawerTop-10)+'px';
+  const shrink=Math.min(1, (drawerTop-8-wrapTop)/Math.max(1, colBottom-wrapTop));
+  document.documentElement.style.setProperty('--shrink', shrink.toFixed(4));
 }
-function renderResidual(){
-  if(!lastRes) return;
-  const film=$('film'), mvs=lastRes.moves, dl=lastRes.delta;   // 18 lens points / 17 writes
-  if(film.children.length!==mvs.length) buildFilm(mvs.map(m=>({label:m.label,kind:m.kind})));
-  let lo=Infinity,hi=-Infinity,eLo=Infinity,eHi=-Infinity;
-  for(const c of dl){ const isE=(c.kind==='emb');
-    for(const v of c.norm){ if(isE){ if(v<eLo)eLo=v; if(v>eHi)eHi=v; } else { if(v<lo)lo=v; if(v>hi)hi=v; } } }
-  const span=(hi-lo)||1, eSpan=(eHi-eLo)||1;
-  [...film.children].forEach((col,li)=>{
-    const mv=mvs[li], d=dl[li]||null, cells=col.querySelector('.miniboard').children;
-    for(const cell of cells){ const sq=+cell.dataset.sq;
-      cell.innerHTML=''; cell.style.boxShadow='';
-      if(d){ const isE=(d.kind==='emb');
-        cell.style.background=viridis(isE ? (d.norm[sq]-eLo)/eSpan : (d.norm[sq]-lo)/span);
-      } else cell.style.background='transparent';                  // enc: lens only
-      if(sq===mv.to) cell.style.boxShadow='inset 0 0 0 2px rgba(90,200,120,.95)';
-      if(sq===mv.from && mv.piece) cell.appendChild(pieceImg(mv.piece));
-    }
-    col.querySelector('.filmlbl').textContent = mv.label+(mv.san?' '+mv.san:'');
-    col.title = mv.san ? mv.label+' · lens move '+mv.san : mv.label;
-  });
+function setDrawerOpen(on){
+  $('mlens').classList.toggle('open', !!on);
+  document.body.classList.toggle('microscope', !!on);
 }
-async function updateResidual(){
-  if(!API || !cur || cur.game_over || !residOpen) return;
-  try{
-    const d=await API.residual(elo);
-    if(d && !d.error){ lastRes=d; renderResidual(); }
-  }catch(e){ console.warn('[maia] residual update failed', e); }
-}
-let gabOpen=false;
-/* All three windows are always docked at the bottom as peeks. "Open" just pulls one
-   up full-width over everything; collapsing drops it back to its peek without losing
-   state (e.g. the microscope keeps its compared moves). One up at a time. */
-function collapseDrawers(){
-  ['rlens','mlens','gablens'].forEach(id=>$(id).classList.remove('open'));
-  residOpen=false; gabOpen=false;
-  $('rlbtn').classList.remove('active'); $('gabbtn').classList.remove('active');
-}
-function toggleResid(force){
-  const open = (force!==undefined) ? force : !$('rlens').classList.contains('open');
-  collapseDrawers();
-  if(open){ residOpen=true; $('rlens').classList.add('open'); $('rlbtn').classList.add('active'); updateResidual(); }
-}
-function toggleGab(force){
-  const open = (force!==undefined) ? force : !$('gablens').classList.contains('open');
-  collapseDrawers();
-  if(open){ gabOpen=true; $('gablens').classList.add('open'); $('gabbtn').classList.add('active'); loadTemplates(); renderSmolgen(); }
-}
-$('rlbtn').onclick=()=>toggleResid();
-$('rlclose').onclick=()=>toggleResid(false);
-$('gabbtn').onclick=()=>toggleGab();
-$('gabclose').onclick=()=>toggleGab(false);
-
-/* clicking anywhere on a peeking window pulls it up; when it's already open, clicks
-   fall through to its controls */
-[['rlens',()=>toggleResid(true)], ['mlens',()=>openMicroscope()], ['gablens',()=>toggleGab(true)]].forEach(([id,open])=>{
-  $(id).addEventListener('click', e=>{
-    if($(id).classList.contains('open')) return;
-    if(e.target.closest('button')) return;
-    open();
-  });
+function collapseDrawers(){ setDrawerOpen(false); }
+/* clicking the peeking drawer pulls it up; when it's already open, clicks fall
+   through to its controls */
+$('mlens').addEventListener('click', e=>{
+  if($('mlens').classList.contains('open')) return;
+  if(e.target.closest('button')) return;
+  openMicroscope();
 });
 
 /* ---- skill comparison: policy at two ratings, same position ---- */
@@ -1325,7 +1163,7 @@ function renderCompare(d){
   const box=$('policy'); box.innerHTML='';
   const abl=ablPolicy();      // the ablated pass runs at rating A; drawn as a third bar
   $('poltitle').textContent=`Policy · ${d.elo_a} (blue) vs ${d.elo_b} (green)`+
-    (abl?` · L${ablData.layer}·h${ablData.head} ablated (red)`:'');
+    (abl?` · ${ablData.label} ablated (red)`:'');
   const rows=d.rows||[];
   rows.forEach(r=>{
     const dlt=(r.p_b-r.p_a)*100, cls=dlt>=0?'up':'down';
@@ -1368,6 +1206,8 @@ let mlMoves=[];        // [{uci, san, color, steps, n_legal}] — the moves bein
 let mlPrimary=null;    // uci whose carrier-head grid + title are shown
 let mlDataB=null;      // elo-B overlay (single-move mode only)
 let mlGrid=null, mlGridKey=null, mlBusy=false, mlDirty=false;
+let mlNeu=null, mlNeuKey=null;     // carrier-neuron table of the primary move, cached like the grid
+let mlTop=null, mlTopKey=null;     // the model's own top move at every readout point (logit lens)
 
 function markLensedRows(){
   const cmap={}; mlMoves.forEach(m=>cmap[m.uci]=m.color);
@@ -1390,31 +1230,29 @@ function openMoveLens(uci, san){       // click toggles a move in/out of the com
     mlMoves.push({uci, san, color, steps:null, n_legal:0});
     if(!mlPrimary) mlPrimary=uci;
   }
-  collapseDrawers();                   // pull the microscope up, drop the others to peek
-  $('mlens').classList.add('open');
+  setDrawerOpen(true);                 // pull the microscope up; the layout above shrinks to make room
   markLensedRows();
   updateMoveLens();
 }
 function openMicroscope(){              // clicking the microscope's peek (no move needed)
-  collapseDrawers();
-  $('mlens').classList.add('open');
+  setDrawerOpen(true);
   if(mlMoves.length) updateMoveLens(); else showMicroscopeEmpty();
 }
 function showMicroscopeEmpty(){
-  $('mltitle').innerHTML='Move microscope';
+  $('mltitle').innerHTML='Analyze one move';
+  $('mlhint').textContent='click a move in the policy list';
   $('mllegend').innerHTML='';
   $('mlsvg').innerHTML='<text x="330" y="96" fill="#8b93a3" font-size="12" text-anchor="middle" '+
-    'font-family="monospace">click a move in the policy list to inspect its depth curve + carrier heads</text>';
+    'font-family="monospace">click a move in the policy list to analyze it</text>';
   $('ablgrid').innerHTML=''; $('mlnote').textContent='';
+  $('nrows').innerHTML=''; $('nnote').textContent='';
+  mlTop=null; mlTopKey=null;
 }
 function closeMoveLens(){ mlMoves=[]; mlPrimary=null; mlDataB=null;
-  $('mlens').classList.remove('open'); markLensedRows(); }
+  setDrawerOpen(false); markLensedRows(); }
 $('mlclose').onclick=closeMoveLens;
 document.addEventListener('keydown', e=>{
-  if(e.key!=='Escape') return;
-  if($('mlens').classList.contains('open')) closeMoveLens();
-  else if($('gablens').classList.contains('open')) toggleGab(false);
-  else if($('rlens').classList.contains('open')) toggleResid(false);
+  if(e.key==='Escape' && $('mlens').classList.contains('open')) closeMoveLens();
 });
 
 async function updateMoveLens(){
@@ -1437,16 +1275,28 @@ async function updateMoveLens(){
         const b = await API.move_lens(cmpElo, mlMoves[0].uci);
         if(b && !b.error) mlDataB=b;
       }
+      const tkey=`${cur.fen}|${elo}`;                  // top move per readout point (one forward)
+      if(mlTopKey!==tkey){
+        const rd = await API.residual(elo);
+        if(rd && !rd.error){ mlTop=rd.moves; mlTopKey=tkey; }
+      }
       drawMlChart();
       const pm=mlMoves.find(m=>m.uci===mlPrimary)||mlMoves[0];   // carrier heads = primary move
       const key=`${cur.fen}|${elo}|${pm.uci}`;
       if(mlGridKey!==key){
-        $('mlnote').textContent='running the 64-head ablation sweep…';
+        $('mlnote').textContent=`running the ${nb_heads()}-head ablation sweep…`;
         renderAblGrid(null);
         const g = await API.ablate_grid(elo, pm.uci);
         if(g && !g.error){ mlGrid=g; mlGridKey=key; renderAblGrid(g); }
         else $('mlnote').textContent='sweep failed: '+((g && g.error)||'?');
       } else renderAblGrid(mlGrid);
+      if(mlNeuKey!==key){                                 // carrier neurons = primary move too
+        $('nnote').textContent='one backward pass over every MLP unit, then exact checks of the top ones…';
+        renderNeurons(null);
+        const nd = await API.carrier_neurons(elo, pm.uci);
+        if(nd && !nd.error){ mlNeu=nd; mlNeuKey=key; renderNeurons(nd); }
+        else $('nnote').textContent='carrier neurons failed: '+((nd && nd.error)||'?');
+      } else renderNeurons(mlNeu);
     } while(mlDirty);
   }catch(e){ console.warn('[maia] move microscope failed', e); }
   finally{ mlBusy=false; }
@@ -1469,7 +1319,14 @@ function drawMlChart(){
   const single=(series.length===1);
   const A=series[0].steps;                          // shared readout grid (x positions + labels)
   const B=(single && mlDataB) ? mlDataB.steps : null;
-  const W=660, HH=190, ML=38, MR=12, MT=16, MB=30, iw=W-ML-MR, ih=HH-MT-MB;
+  // viewBox height follows the chart box's shape, so the chart fills the drawer (text stays unscaled)
+  // (SVG elements have no offsetTop — measure with bounding rects; the open
+  //  drawer's layout scale is identity, so rects are layout pixels here)
+  const box=svg.parentElement, sr=svg.getBoundingClientRect(), brc=box.getBoundingClientRect();
+  const bw=sr.width||brc.width||660, avail=brc.bottom-sr.top-4;
+  const W=660, HH=Math.round(Math.max(222, Math.min(440, avail>40 ? W*avail/bw : 222)));
+  svg.setAttribute('viewBox', `0 0 ${W} ${HH}`);
+  const ML=38, MR=12, MT=16, MB=62, iw=W-ML-MR, ih=HH-MT-MB;
   let lo=Infinity, hi=-Infinity;
   for(const m of series) for(const s of m.steps){ if(s.logit<lo)lo=s.logit; if(s.logit>hi)hi=s.logit; }
   if(B) for(const s of B){ if(s.logit<lo)lo=s.logit; if(s.logit>hi)hi=s.logit; }
@@ -1505,12 +1362,30 @@ function drawMlChart(){
   const perStep=iw/Math.max(1,A.length-1), tickAll=perStep>=20;
   A.forEach((s,i)=>{
     if(!tickAll && s.kind==='attn') return;
-    h+=`<text x="${X(i)}" y="${HH-10}" fill="#8b93a3" font-size="9" text-anchor="middle" font-family="monospace">${s.label}</text>`;
+    h+=`<text x="${X(i)}" y="${MT+ih+14}" fill="#8b93a3" font-size="9" text-anchor="middle" font-family="monospace">${s.label}</text>`;
   });
+  // the model's own top move at each readout point: one segment per run of the
+  // same move, coloured like the compared move when it is one of them
+  if(mlTop && mlTop.length===A.length){
+    const y0=MT+ih+22, sh=14, half=perStep/2, cmap={}; series.forEach(m=>cmap[m.uci]=m.color);
+    h+=`<text x="${ML-4}" y="${y0+10}" fill="#8b93a3" font-size="8" text-anchor="end" font-family="monospace">top</text>`;
+    let i=0;
+    while(i<A.length){
+      let j=i; while(j+1<A.length && mlTop[j+1].uci===mlTop[i].uci) j++;
+      const x0=Math.max(ML, X(i)-half), x1=Math.min(W-MR, X(j)+half), mv=mlTop[i], col=cmap[mv.uci];
+      h+=`<rect x="${x0}" y="${y0}" width="${x1-x0}" height="${sh}" rx="2" fill="${col||'#262c37'}" opacity="${col?0.45:1}">`+
+         `<title>${A[i].label}${j>i?'–'+A[j].label:''}: top move ${mv.san||mv.uci||'—'}</title></rect>`;
+      const lab=mv.san||mv.uci||'';
+      if(lab && (x1-x0) >= lab.length*5.6+4)
+        h+=`<text x="${(x0+x1)/2}" y="${y0+10}" fill="${col||'#8b93a3'}" font-size="8.5" text-anchor="middle" font-family="monospace">${lab}</text>`;
+      i=j+1;
+    }
+  }
   if(single && B) h+=`<text x="${W-MR}" y="${MT-4}" font-size="9" text-anchor="end" font-family="monospace"><tspan fill="#6ea8fe">━ ${elo}</tspan> <tspan fill="#7bd88f">━ ${cmpElo}</tspan></text>`;
   svg.innerHTML=h;
   const pm=series.find(m=>m.uci===mlPrimary)||series[0];
-  $('mltitle').innerHTML=`Move microscope · <b>${pm.san}</b> <span style="color:var(--muted);font-family:var(--mono);font-size:11px">${pm.uci} · elo ${elo}${(single&&B)?' vs '+cmpElo:''}</span>`;
+  $('mlhint').textContent = series.length>1 ? 'click a move chip to switch the heads and neurons to it' : 'click more policy moves to compare, up to 4';
+  $('mltitle').innerHTML=`Analyze one move · <b>${pm.san}</b> <span style="color:var(--muted);font-family:var(--mono);font-size:11px">${(MODEL_INFO&&MODEL_INFO.conditioning===false)?'':'elo '+elo+((single&&B)?' vs '+cmpElo:'')}</span>`;
 }
 
 function renderAblGrid(g){
@@ -1518,21 +1393,21 @@ function renderAblGrid(g){
   el.innerHTML='';
   const nb=g ? g.deltas.length : ((MODEL_INFO&&MODEL_INFO.num_blocks)||8),
         nh=g ? g.deltas[0].length : ((MODEL_INFO&&MODEL_INFO.num_heads)||8);
-  // Size the grid (num_heads columns × one row per layer) to fill the open,
-  // full-width microscope drawer: make the cells as large as possible while the
-  // whole grid still fits on screen — bounded by a share of the width (so the
-  // depth chart keeps room) and by the viewport height. Scales across model
-  // sizes (6/8/16/32 heads); .mlgridbox scrolls if a huge model still overflows.
-  const vw=window.innerWidth||1400, vh=window.innerHeight||840;
-  const maxW=Math.min(vw*0.42, 640), maxH=Math.min(vh*0.5, 480);
-  const cs=Math.max(10, Math.floor(Math.min((maxW-16)/nh, (maxH-14)/nb)));
+  // Size the grid (num_heads columns × one row per layer) to its third of the
+  // drawer: cells as large as possible while the whole grid fits inside the
+  // drawer's height (set by fitLayout from the board's position) and a share of
+  // the width. Scales across model sizes (6/8/16/32 heads); .mlgridbox scrolls
+  // if a huge model still overflows.
+  const vw=window.innerWidth||1400, dh=($('mlens')&&$('mlens').clientHeight)||300;
+  const maxW=Math.min(vw*0.30, 520), maxH=Math.max(90, dh-132);   // dh less head, labels and the note
+  const cs=Math.max(9, Math.floor(Math.min((maxW-16)/nh, (maxH-14)/nb)));
   const gridW=16+nh*cs+nh;  // 16px label col + nh cells + nh 1px gaps
   el.style.gridTemplateColumns = '16px repeat('+nh+','+cs+'px)';
   el.style.gridTemplateRows    = '14px repeat('+nb+','+cs+'px)';
   el.style.width=gridW+'px';
   // Pin the box (and thus #mlnote, which would otherwise ask for its whole
   // sentence on one line and stretch the box wider) to exactly the grid's width.
-  const box=$('mlgridbox'); if(box) box.style.width=gridW+'px';
+  const box=$('mlgridbox'); if(box) box.style.width=Math.max(300, gridW)+'px';
   // The final layer writes straight into the logits, so ablating its heads always
   // looks like a huge Δ and drowns out the earlier structure — leave it out of the
   // carrier attribution (colour scale + "strongest" pick), just dim it in the grid.
@@ -1542,7 +1417,8 @@ function renderAblGrid(g){
   if(g) g.deltas.forEach((row,L)=>{ if(skip(L)) return;
     row.forEach((v,hh)=>{ const a=Math.abs(v); if(a>m){ m=a; sL=L; sH=hh; } }); });
   el.appendChild(Object.assign(document.createElement('div'),{className:'agc agl'}));
-  for(let hh=0;hh<nh;hh++){ const d=document.createElement('div'); d.className='agc agl'; d.textContent='h'+hh; el.appendChild(d); }
+  // column labels overlap once the cells get small (32 heads in a third of the drawer): then label every 4th
+  for(let hh=0;hh<nh;hh++){ const d=document.createElement('div'); d.className='agc agl'; d.textContent=(cs>=16||hh%4===0)?'h'+hh:''; el.appendChild(d); }
   for(let L=0;L<nb;L++){
     const lb=document.createElement('div'); lb.className='agc agl'; lb.textContent='L'+L; el.appendChild(lb);
     for(let hh=0;hh<nh;hh++){
@@ -1570,13 +1446,120 @@ function renderAblGrid(g){
   if(g && sL>=0) $('mlnote').innerHTML=
     `base logit ${g.base_logit.toFixed(2)} · strongest L${sL}·h${sH} `+
     `${g.deltas[sL][sH]>=0?'+':''}${g.deltas[sL][sH].toFixed(2)} · `+
-    `blue = ablating the head drops ${g.san}'s logit (carrier) ·orange = raises it (suppressor) · `+
-    `L${NO_CARRIER_LAYER} excluded (writes straight to the logits) · click a cell to open that head`;
+    `blue = carrier, orange = suppressor · L${NO_CARRIER_LAYER} excluded · click a cell → that head`;
 }
 
-/* re-fit the carrier-head grid to the window while the microscope is open */
+function nb_heads(){ const i=MODEL_INFO||{}; return (i.num_blocks||8)*(i.num_heads||8); }
+
+/* ---- carrier neurons: the table under the head grid's convention ----
+   One row per unit, strongest first: L·n, an 8×8 footprint of where on the board
+   the unit's removal would move the logit (canonical squares mapped back to the
+   real board, drawn in the board's orientation), the one-pass estimate and the
+   exact re-measurement. Sign as everywhere: blue = carrier, orange = suppressor. */
+function renderNeurons(d){
+  const el=$('nrows'); if(!el) return;
+  el.innerHTML='';
+  if(!d || !cur) return;
+  let m=1e-9; for(const t of d.top) for(const v of t.squares){ const a=Math.abs(v); if(a>m)m=a; }
+  const f=v=>(v>=0?'+':'−')+Math.abs(v).toFixed(2), cls=v=>v<0?'neg':'pos';
+  d.top.forEach((t,k)=>{
+    const row=document.createElement('div'); row.className='nrow'+(k===0?' strong':'');
+    const cv=document.createElement('canvas'); cv.width=8; cv.height=8;
+    const ctx=cv.getContext('2d');
+    for(let r=0;r<8;r++) for(let c=0;c<8;c++){
+      ctx.fillStyle=divmap(t.squares[realToCanon(sqName(r,c), cur.turn)]/m); ctx.fillRect(c,r,1,1);
+    }
+    const ex=t.exact;
+    row.innerHTML=`<span>L${t.layer}·n${t.neuron}</span>`;
+    row.appendChild(cv);
+    row.insertAdjacentHTML('beforeend',
+      `<span class="${cls(t.est)}">Δ ${f(t.est)}</span>`+
+      `<span class="${ex==null?'dim':cls(ex)}">${ex==null?'':'exact '+f(ex)}</span>`);
+    row.title=`layer ${t.layer} neuron ${t.neuron} · acts most at ${canonToReal(t.peak, cur.turn)} · `+
+      `${(ex!=null?ex:t.est)<0?'carries':'suppresses'} ${d.san} · click to open it in the neuron panel`;
+    row.onclick=()=>{ nLayer=t.layer; nIdx=t.neuron; updateNeuron(); };
+    el.appendChild(row);
+  });
+  renderNet();
+  const NO=noCarrierLayer();
+  $('nnote').innerHTML=`base logit ${d.base_logit.toFixed(2)} · ${d.n_layers}×${d.n_neurons} units scored in one backward pass · `+
+    `Δ = first-order effect of removing the unit on ${d.san}'s logit · blue = carrier, orange = suppressor · mini-board = where on the board it acts · `+
+    `L${NO} excluded, as in the head grid · click a row to open it in the neuron panel`;
+}
+
+/* ---- the network diagram: input squares, one column of dots per MLP layer, output.
+   The selected layer's dots are its most active units on this position (from
+   neurons_overview); other columns show the same count faintly. Carrier units of
+   the microscope's primary move get a coloured ring. ---- */
+function renderNet(){
+  const svg=$('netsvg'); if(!svg) return;
+  const info=MODEL_INFO||{}; const nb=(neurOv&&neurOv.n_layers)||info.num_blocks||8;
+  const N=(neurOv&&neurOv.n_neurons)||info.mlp_dim||512;
+  // x: 0–22 index gutter (n0 / nN labels), input squares at 28, layer columns 46–206, outputs at 226
+  const W=240, H=200, top=14, bot=172, left=28, right=220, rows=11;
+  const colX=i=>46+(206-46)*i/Math.max(1,nb-1);
+  const rowY=j=>top+(bot-top)*j/Math.max(1,rows-1);
+  const yOf=n=>top+(bot-top)*n/Math.max(1,N-1);      // a unit's height = its index / total
+  const carriers={}; if(mlNeu) mlNeu.top.forEach(t=>{ carriers[t.layer+':'+t.neuron]=t; });
+  let h='';
+  // the net's skeleton: faint evenly spaced dots and links, input squares, output circles
+  for(let L=0;L<nb-1;L++) for(let j=0;j<rows;j+=2) for(let k=0;k<rows;k+=4)
+    h+=`<line x1="${colX(L)}" y1="${rowY(j)}" x2="${colX(L+1)}" y2="${rowY(k)}" stroke="#262c37" stroke-width="0.6"/>`;
+  [1,2,rows-3,rows-2].forEach(j=>{ h+=`<rect x="${left-3}" y="${rowY(j)-3}" width="6" height="6" fill="none" stroke="#8b93a3" stroke-width="0.8"/>`;
+    h+=`<line x1="${left+3}" y1="${rowY(j)}" x2="${colX(0)}" y2="${rowY(j)}" stroke="#262c37" stroke-width="0.6"/>`; });
+  h+=`<text x="${left}" y="${rowY(Math.floor(rows/2))+3}" fill="#8b93a3" font-size="7" text-anchor="middle" font-family="monospace">⋮</text>`;
+  [rows*0.38, rows*0.62].forEach(j=>{ h+=`<circle cx="${right+6}" cy="${rowY(j)}" r="3.5" fill="none" stroke="#8b93a3" stroke-width="0.8"/>`;
+    h+=`<line x1="${colX(nb-1)}" y1="${rowY(Math.round(j))}" x2="${right+2}" y2="${rowY(j)}" stroke="#262c37" stroke-width="0.6"/>`; });
+  h+=`<text x="${left}" y="${H-8}" fill="#8b93a3" font-size="7" text-anchor="middle" font-family="monospace">in</text>`;
+  h+=`<text x="${right+6}" y="${H-8}" fill="#8b93a3" font-size="7" text-anchor="middle" font-family="monospace">out</text>`;
+  // the index axis, in its own gutter left of the input squares
+  h+=`<text x="2" y="${top+2}" fill="#8b93a3" font-size="6" font-family="monospace">n0</text>`;
+  h+=`<text x="2" y="${bot+2}" fill="#8b93a3" font-size="6" font-family="monospace">n${N-1}</text>`;
+  h+=`<line x1="9" y1="${top+6}" x2="9" y2="${bot-6}" stroke="#3a4252" stroke-width="0.6" stroke-dasharray="1.5 2"/>`;
+  // one column per MLP layer, top = unit 0, bottom = unit N-1
+  for(let L=0;L<nb;L++){
+    const sel=(L===nLayer), units=(neurOv&&neurOv.layers[L])||[];
+    let m=1e-9; for(const u of units) if(u.norm>m) m=u.norm;
+    h+=`<g class="lcol" data-l="${L}">`;
+    h+=`<rect class="colhit" x="${colX(L)-5}" y="${top-8}" width="10" height="${bot-top+16}" rx="3" fill="${sel?'rgba(110,168,254,.16)':'rgba(0,0,0,0.001)'}"/>`;
+    for(let j=0;j<rows;j++) h+=`<circle cx="${colX(L)}" cy="${rowY(j)}" r="2" fill="#262c37"/>`;
+    // the layer's most active units on this position, each at its own index's height
+    for(const u of units){
+      if(sel && u.neuron===nIdx) continue;                 // drawn last, on top
+      const car=carriers[L+':'+u.neuron];
+      h+=`<circle class="unit" data-l="${L}" data-n="${u.neuron}" cx="${colX(L)}" cy="${yOf(u.neuron)}" r="${sel?3:2.2}" `+
+         `fill="${sel?viridis(0.35+0.65*u.norm/m):'#3a4252'}"`+(car?` stroke="${car.est<0?'#6fb3ff':'#f0a35e'}" stroke-width="1.2"`:'')+`>`+
+         `<title>L${L} · n${u.neuron} · ‖act‖ ${u.norm.toFixed(1)}${car?' · carrier Δ '+(car.est>=0?'+':'')+car.est.toFixed(2):''}</title></circle>`;
+    }
+    if(sel){                                               // the lit unit, at index/total
+      const u=units.find(x=>x.neuron===nIdx), car=carriers[L+':'+nIdx];
+      h+=`<circle class="unit" data-l="${L}" data-n="${nIdx}" cx="${colX(L)}" cy="${yOf(nIdx)}" r="4.2" `+
+         `fill="${u?viridis(0.35+0.65*u.norm/m):'#8b93a3'}" stroke="${car?(car.est<0?'#6fb3ff':'#f0a35e'):'#ff5d6c'}" stroke-width="1.6">`+
+         `<title>L${L} · n${nIdx}${u?' · ‖act‖ '+u.norm.toFixed(1):''}${car?' · carrier Δ '+(car.est>=0?'+':'')+car.est.toFixed(2):''}</title></circle>`;
+    }
+    h+=`<text x="${colX(L)}" y="${H-8}" fill="${sel?'#6ea8fe':'#8b93a3'}" font-size="6.5" text-anchor="middle" font-family="monospace">${(nb<=8||L%2===0||sel)?'L'+L:''}</text>`;
+    h+=`</g>`;
+  }
+  svg.innerHTML=h;
+  // click a dot = that unit; click anywhere else in a column = the unit at that height
+  svg.querySelectorAll('.lcol').forEach(g=>{ g.onclick=e=>{
+    const L=+g.dataset.l, dot=e.target.closest('.unit');
+    nLayer=L;
+    if(dot) nIdx=+dot.dataset.n;
+    else {
+      const pt=svg.createSVGPoint(); pt.x=e.clientX; pt.y=e.clientY;
+      const p=pt.matrixTransform(svg.getScreenCTM().inverse());
+      nIdx=Math.round(Math.max(0, Math.min(1, (p.y-top)/(bot-top)))*(N-1));
+    }
+    updateNeuron();
+  }; });
+}
+
+/* re-fit the layout and the carrier-head grid to the window */
 window.addEventListener('resize', ()=>{
+  fitLayout();
   if(mlGrid && $('mlens').classList.contains('open')) renderAblGrid(mlGrid);
+  if($('mlens').classList.contains('open')) drawMlChart();
 });
 
 </script>

@@ -1,10 +1,12 @@
 """chessformer_lens — an interpretability lens and visualizer for chessformers.
 
-A toolkit + visualizer designed for mech interp enthusiasts working with chess models that treat each square as a token (MAIA-3 is completed; Leela will be completed soon).
+A toolkit + visualizer designed for mech interp enthusiasts working with chess models that treat each square as a token: Maia-3 and Leela Chess Zero BT4.
 
-One engine, three frontends:
+Two engines with one method surface, three frontends:
 
-    from chessformer_lens import MaiaEngine            # the interp core
+    from chessformer_lens import MaiaEngine            # the interp core, on Maia-3
+    from chessformer_lens import LeelaEngine           # the same surface, on Lc0 BT4
+    from chessformer_lens import load_engine           # either one, by alias
     from chessformer_lens import interp_plot as ip     # read-once views as figures
     from chessformer_lens import interp_widget as iw   # the two live panels, in a notebook
 
@@ -30,7 +32,11 @@ except Exception:  # running from a source checkout without an install
 # chessformer_lens` (and `__version__`) costs nothing: engine.py pulls in torch
 # and maia3, interp_plot pulls in matplotlib, app pulls in pywebview.
 _LAZY = {
+    "ChessformerEngine": "chessformer_lens.engine",
     "MaiaEngine": "chessformer_lens.engine",
+    "load_engine": "chessformer_lens.engine",
+    "resolve_engine": "chessformer_lens.engine",
+    "format_engine_list": "chessformer_lens.engine",
     "build_cfg": "chessformer_lens.engine",
     "pick_device": "chessformer_lens.engine",
     "attention_widget": "chessformer_lens.interp_widget",
@@ -54,8 +60,10 @@ def __dir__():
 
 
 if TYPE_CHECKING:  # so type checkers and IDEs still see the real symbols
-    from .engine import MaiaEngine, build_cfg, pick_device
+    from .engine import (ChessformerEngine, MaiaEngine, load_engine,
+                         resolve_engine, format_engine_list, build_cfg, pick_device)
     from .interp_widget import attention_widget, gab_widget
 
-__all__ = ["MaiaEngine", "build_cfg", "pick_device",
+__all__ = ["ChessformerEngine", "MaiaEngine", "load_engine",
+           "resolve_engine", "format_engine_list", "build_cfg", "pick_device",
            "attention_widget", "gab_widget", "__version__"]

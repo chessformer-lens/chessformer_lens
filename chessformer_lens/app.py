@@ -12,25 +12,28 @@ from .ui import INDEX_HTML
 
 
 def resolve_alias():
-    """Pick the model from the CLI (positional or --model), else MAIA3_ALIAS,
-    else the 5M default. Validated against the registry so a typo fails fast
-    with the list of aliases instead of a mid-load traceback."""
-    ap = argparse.ArgumentParser(description="Chessformer (Maia 3) interpretability app")
+    """Pick the engine from the CLI. Engines available: 
+            bt4, leela-bt4, maia3-3m, maia3-5m, maia3-23m, maia3-79m
+    or HF repo/URL or a path to an lc0 .onnx export.
+    Defaults to maia3-5m."""
+    ap = argparse.ArgumentParser(description="Chessformer interpretability app")
     ap.add_argument("model", nargs="?", default=None,
-                    help="model alias or HF repo/URL (e.g. 3m, 5m, 23m, 79m); "
-                         "overrides $MAIA3_ALIAS")
+                    help="engine alias: a Maia-3 size (3m, 5m, 23m, 79m) or HF repo/URL, "
+                         "bt4 / leela-bt4, or a path to an lc0 .onnx export; "
+                         "overrides $CHESSFORMER_MODEL")
     ap.add_argument("--model", dest="model_opt", default=None,
                     help="same as the positional argument")
     args = ap.parse_args()
 
-    alias = args.model_opt or args.model or os.environ.get("MAIA3_ALIAS") or "maia3-5m"
+    alias = (args.model_opt or args.model or os.environ.get("CHESSFORMER_MODEL")
+             or os.environ.get("MAIA3_ALIAS") or "maia3-5m")
 
-    # Validate now (no download) so a bad name is caught before the window opens.
-    from maia3.model_registry import resolve_model_spec, ModelResolutionError, format_model_list
+    # Validate now (no weights load) so a bad name is caught before the window opens.
+    from .engine import resolve_engine
     try:
-        resolve_model_spec(alias)
-    except ModelResolutionError as exc:
-        sys.exit(f"Unknown model {alias!r}: {exc}\n\n{format_model_list()}")
+        resolve_engine(alias)
+    except ValueError as exc:
+        sys.exit(str(exc))
     return alias
 
 
@@ -41,11 +44,21 @@ def main():
     except ImportError:
         sys.exit("pywebview is not installed.  Run:  pip install --upgrade chessformer_lens")
     api = MaiaApi(alias=alias)
+    # Size the window to the screen: the board is sized from the window's height
+    # (the side panels run 1.5in under it and the drawer peeks below that), so a
+    # fixed 880px window left a small board on a large display.
+    width, height = 1560, 880
+    try:
+        scr = webview.screens[0]
+        width = max(1400, min(1880, scr.width - 40))
+        height = max(780, scr.height - 90)       # menu bar + dock
+    except Exception:
+        pass
     webview.create_window(
-        "Chessformer (Maia 3) Interpretability App",
+        "Chessformer Interpretability App",
         html=INDEX_HTML,
         js_api=api,
-        width=1400, height=840, min_size=(1360, 780),
+        width=width, height=height, min_size=(1400, 780),
         background_color="#0e1014",   # matches ui.py's --bg
     )
     try:

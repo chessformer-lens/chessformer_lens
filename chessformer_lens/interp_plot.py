@@ -312,8 +312,9 @@ def plot_position(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
         f, r = chess.square_file(sq), chess.square_rank(sq)
         ax_b.add_patch(plt.Rectangle((f - .5, r - .5), 1, 1, lw=0,
                                      fc=MOVE[0] if (f + r) % 2 else MOVE[1], zorder=3))
-    ax_b.set_title(f"{'White' if board.turn else 'Black'} to move · {elo} Elo"
-                   + (f" vs {elo_b}" if elo_b is not None else ""),
+    ax_b.set_title(f"{'White' if board.turn else 'Black'} to move"
+                   + (f" · {elo} Elo" + (f" vs {elo_b}" if elo_b is not None else "")
+                      if getattr(eng, "has_conditioning", True) else ""),
                    fontsize=_fs(10.5), color=MUTED, pad=8, family=MONO)
 
     # ---- policy ------------------------------------------------------------
@@ -490,6 +491,11 @@ def _move_list(eng, board, elo, ucis, oppo_elo):
     return seq[:MLMAX]
 
 
+def _elo_tag(eng, elo) -> str:
+    """' · elo 1500' on a rating-conditioned engine, '' on one that ignores elo."""
+    return f" · elo {elo}" if getattr(eng, "has_conditioning", True) else ""
+
+
 def _curve_moves(eng, board, elo, ucis, oppo_elo):
     """Resolve `ucis` for the curve plotters. Returns [(uci, san)]."""
     info = [eng.move_info(board, u)
@@ -497,13 +503,13 @@ def _curve_moves(eng, board, elo, ucis, oppo_elo):
     return [(i["uci"], i["san"]) for i in info]
 
 
-def _curve_header(fig, title, moves, elo, hint):
+def _curve_header(fig, title, moves, elo_tag, hint):
     """The two-line header the curve figures share: title · primary move, then
     a monospace hint."""
     _runs(fig, .06, _inch_y(fig, .26), [
         (f"{title} · ", dict(fontsize=_fs(13), color=TEXT, fontweight="600")),
         (moves[0][1], dict(fontsize=_fs(13), color=ACCENT2, fontweight="600")),
-        (f"  {moves[0][0]} · elo {elo}", dict(fontsize=_fs(10), color=MUTED, family=MONO)),
+        (f"  {elo_tag.lstrip(' ·')}" if elo_tag else "", dict(fontsize=_fs(10), color=MUTED, family=MONO)),
     ])
     fig.text(.06, _inch_y(fig, .52), hint, fontsize=_fs(9.5), color=MUTED, family=MONO, va="top")
     _ftext(fig, .06, _inch_y(fig, .74), "aN / mN = layer N's attention / MLP sub-layer",
@@ -525,7 +531,7 @@ def plot_logit_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
     ax = fig.add_axes([.06, .14, .91, .64])
     _depth_axes(ax, [_depth_label(p) for p in eng.depth_points()], curves,
                 ylabel="logit", legend=True)
-    _curve_header(fig, "Logit through depth", moves, elo,
+    _curve_header(fig, "Logit through depth", moves, _elo_tag(eng, elo),
                   f"one forward pass · {len(curves)} move(s) · "
                   "the logit lens read at every readout point")
     return fig
@@ -544,7 +550,7 @@ def plot_policy_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
     _depth_axes(ax, [_depth_label(p) for p in eng.depth_points()], curves,
                 ylabel="p(move)", legend=True)
     ax.set_ylim(0, max(1e-3, max(v for _, ys, _, _ in curves for v in ys if v is not None)) * 1.15)
-    _curve_header(fig, "Policy through depth", moves, elo,
+    _curve_header(fig, "Policy through depth", moves, _elo_tag(eng, elo),
                   "probability over the legal moves if the stream stopped there")
     return fig
 
@@ -568,7 +574,7 @@ def plot_rank_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
     ax.set_yticks([1] + [t for t in ticks if 1.5 < t <= worst])   # rank 1 always labelled
     ax.axhline(1, color=QRING, ls=(0, (4, 3)), lw=1.1, zorder=2)
     n_legal = board.legal_moves.count()
-    _curve_header(fig, "Rank through depth", moves, elo,
+    _curve_header(fig, "Rank through depth", moves, _elo_tag(eng, elo),
                   f"rank among the {n_legal} legal moves · "
                   "rank 1 = the lens would play it here")
     return fig
@@ -630,7 +636,8 @@ def plot_move_microscope(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
     _runs(fig, .06, y, [
         ("Move microscope · ", dict(fontsize=_fs(13), color=TEXT, fontweight="600")),
         (pm["san"], dict(fontsize=_fs(13), color=ACCENT2, fontweight="600")),
-        (f"  {pm['uci']} · elo {elo}" + (f" vs {elo_b}" if data_b is not None else ""),
+        ((f"  elo {elo}" + (f" vs {elo_b}" if data_b is not None else ""))
+         if getattr(eng, "has_conditioning", True) else "",
          dict(fontsize=_fs(10), color=MUTED, family=MONO)),
     ])
     fig.text(.06, _inch_y(fig, .52),
@@ -738,7 +745,7 @@ def plot_move_report(eng, board: chess.Board, elo: int = 1500, uci=None, *,
                 f"= the top move", y=1.03, size=8.5)
     _carrier_grid(ax_g, eng, board, elo, uci, oppo_elo)
 
-    _curve_header(fig, "Move report", [(uci,san)], elo,
+    _curve_header(fig, "Move report", [(uci,san)], _elo_tag(eng, elo),
                   "the position · the move's logit through depth · "
                   "the heads that carry it")
     return fig
@@ -786,7 +793,7 @@ def plot_attention(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
     _ftext(fig, .03, _inch_y(fig, .26), "Live attention · this position", fontsize=_fs(13),
              color=TEXT, fontweight="600", va="top")
     fig.text(.03, _inch_y(fig, .52), f"L{layer}H{head} · query "
-             f"{_canon_name(q, board.turn)} · elo {elo}",
+             f"{_canon_name(q, board.turn)}{_elo_tag(eng, elo)}",
              fontsize=_fs(10), color=MUTED, family=MONO, va="top")
     # Two legends, each under the boards it describes: diverging for the
     # pre-softmax logits, 0 -> max for the head's actual attention. The app ships
@@ -892,7 +899,7 @@ def plot_attention_layer(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
         pick = (f"{_canon_name(q, board.turn)}→{_canon_name(t, board.turn)}: "
                 f"H{peak} at {pct:.1f}% ({pct / (100 / 64):.1f}× uniform)")
     fig.text(.045, _inch_y(fig, .52),
-             f"query {_canon_name(q, board.turn)} · elo {elo} · {3 * H} boards "
+             f"query {_canon_name(q, board.turn)}{_elo_tag(eng, elo)} · {3 * H} boards "
              f"({H} heads × semantic / geometric / final) · "
              f"{'one scale per row' if shared_scale else 'per-panel scale'} · "
              f"{pick}",
@@ -957,7 +964,9 @@ def plot_attention_atlas(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
 
     peak = np.unravel_index(int(mag.argmax()), mag.shape)
     fig.text(.035, _inch_y(fig, .24),
-             f"L{layer}H{head} · {component} · elo {elo} · 64 boards, "
+             f"L{layer}H{head} · {component}"
+             + _elo_tag(eng, elo)
+             + " · 64 boards, "
              f"each the attention row of the query (ringed) · "
              f"peak {_canon_name(int(peak[0]), board.turn)}→"
              f"{_canon_name(int(peak[1]), board.turn)}",

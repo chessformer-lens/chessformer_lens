@@ -55,7 +55,8 @@ def _common(eng, board: chess.Board, elo: int, oppo_elo) -> dict:
                  carrying the canonical index every engine tensor is indexed by,
                  so the JS never has to know about the side-to-move mirror
       pieces     data URIs for only the piece types actually on this board
-      fen, elo, turn, n_blocks, n_heads
+      fen, elo, conditioning (False on an engine that ignores elo), turn,
+      n_blocks, n_heads
       best_san   the model's own move, for the header
       query      the default query square: the from-square of that move, or
                  canonical 28 (real e4 for White) when there is no legal move"""
@@ -77,6 +78,7 @@ def _common(eng, board: chess.Board, elo: int, oppo_elo) -> dict:
                    if any(c["piece"] == k for c in cells)},
         "fen": board.fen(),
         "elo": int(elo),
+        "conditioning": bool(getattr(eng, "has_conditioning", True)),
         "turn": "White" if board.turn else "Black",
         "n_heads": int(eng.cfg.num_heads),
         "n_blocks": int(eng.cfg.num_blocks),
@@ -414,7 +416,7 @@ function renderAll(){
   paintRow($('att_sum'), at, v => viridis(v / (am || 1)));
   renderPair(); marks();
 }
-$('sub').innerHTML = `${D.turn} to move · Maia rating (self_elo) ${D.elo}` +
+$('sub').innerHTML = `${D.turn} to move${D.conditioning === false ? '' : ' · rating (self_elo) ' + D.elo}` +
   (D.best_san ? ` · plays <b>${D.best_san}</b>` : '') + `<br>${D.fen}`;
 fillAttCells($('bpos'), {pieces: true});
 ['att_qk','att_gab','att_sum'].forEach(id => fillAttCells($(id)));
@@ -608,7 +610,7 @@ function renderTemplateDetail(){
       `<div class="gtlbl">its row at query ${nameOf(q)}</div></div>` +
     `<div class="gdinfo"><button class="gdclose" id="gdclose">close</button>` +
       `template <b>#${i}</b> — static stencil, shared by every layer &amp; head.` +
-      (v === null ? '' : ` In L${layer}·h${head} on this board (elo ${D.elo}) its coefficient is ` +
+      (v === null ? '' : ` In L${layer}·h${head} on this board${D.conditioning === false ? '' : ' (elo ' + D.elo + ')'} its coefficient is ` +
         `<b>${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(3)}</b> — #${rank} of ${N} by |coeff|.`) +
     `</div>`;
   paintTemplate($('gdcv'), i);
