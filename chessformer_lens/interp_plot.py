@@ -957,9 +957,8 @@ def plot_attention_atlas(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
 
     peak = np.unravel_index(int(mag.argmax()), mag.shape)
     fig.text(.035, _inch_y(fig, .24),
-             f"L{layer}H{head} · {component} · elo {elo} · 64 boards, each the "
-             f"attention row of the square it sits on (ringed) · "
-             f"{'one scale for all' if shared_scale else 'per-panel scale'} · "
+             f"L{layer}H{head} · {component} · elo {elo} · 64 boards, "
+             f"each the attention row of the query (ringed) · "
              f"peak {_canon_name(int(peak[0]), board.turn)}→"
              f"{_canon_name(int(peak[1]), board.turn)}",
              fontsize=_fs(10), color=MUTED, family=MONO, va="top")
