@@ -6,7 +6,7 @@ Download a chessformer engine then `pip install chessformer_lens`
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21877655.svg)](https://doi.org/10.5281/zenodo.21877655)
 
-![The app: board, policy, live attention and the GAB decomposition](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot7.png)
+![The app: board, policy, live attention and the GAB decomposition](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/HeroShot.png)
 
 **Paper:** [Increasing Skill Level Recruits Deeper Attention Layers in a Frozen Chess Transformer](https://arxiv.org/abs/2609.23917) (Litman, 2026). Every figure and most of the analysis in this paper was made with this library. 
 
@@ -80,8 +80,8 @@ This repo's core is **one engine** with **three frontends**:
 - `interp_widget.py`
 
 Users are encouraged to read the user guides for each of these modules which can be found at the top of the respective scripts.
-![A move's logit curve across depth, beside its carrier-head grid](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot9.png)
-*interp_plot.py functions **plot_logit_curve** and **plot_carrier_heads***
+![Image from paper produced with the library](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/paper_image.png)
+*Image from paper produced with chessformer_lens*
 
 ---
 ## Quickstart in colab or notebook:
