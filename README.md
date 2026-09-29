@@ -6,12 +6,14 @@ Download a chessformer engine then `pip install chessformer_lens`
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21877655.svg)](https://doi.org/10.5281/zenodo.21877655)
 
-![The app: board, policy, live attention and the GAB decomposition](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/HeroShot.png)
+![The app](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/HeroShot.png)
+
+---
 
 **Paper:** [Increasing Skill Level Recruits Deeper Attention Layers in a Frozen Chess Transformer](https://arxiv.org/abs/2609.23917) (Litman, 2026). Every figure and most of the analysis in this paper was made with this library. 
 
-
 ---
+
 ## Case study: Knight Fork Carrier Head
 **Download chessformer_lens locally:**
 
