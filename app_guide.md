@@ -21,7 +21,7 @@ Under it is the `Maia rating (self_elo)` slider: 600-2800, step 25, default 1500
 Under that is the scrollable ranked list: `Policy over N legal moves`: every legal move gets a row. 
 
 
-![app view](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot11.png)
+![app view](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/SS11.png)
 *App view: board, evaluation, policy, live attention, live neurons*
 
 **Take the Model Apart**
@@ -38,7 +38,7 @@ The `Neurons` panel to the right does the same for one MLP neuron. A network dia
 
 
 **Analyze One Move**
-![Analyze one move](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot12.png)
+![Analyze one move](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/SS12.png)
 *Analyze one move: `Logit lens`, `causal heads`, `causal neurons`*
 
 
