@@ -21,7 +21,7 @@ Download a chessformer engine (Leela Chess Zero or Maia) then `pip install chess
 Pip install:
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install git+https://github.com/CSSLab/maia3 --quiet
+pip install https://github.com/CSSLab/maia3/archive/1e13597c42d4858b7cfd7cfdae01e297263364b2.zip --quiet
 pip install chessformer_lens
 ```
 
@@ -90,7 +90,7 @@ Users are encouraged to read the user guides for each of these modules which can
 
 Recall that FEN is the modern notation for a chess position
 ```python
-!pip install -q git+https://github.com/CSSLab/maia3 --quiet
+!pip install -q https://github.com/CSSLab/maia3/archive/1e13597c42d4858b7cfd7cfdae01e297263364b2.zip
 !pip install -q chessformer_lens
 
 import chess
@@ -141,23 +141,20 @@ CUDA to speed higher parameter models up. Model weights: <https://huggingface.co
 ---
 ## Leela Chess Zero BT4
 
-**Weights.** Nothing is downloaded automatically. Fetch `BT4-1024x15x32h-swa-6147500.pb.gz` from [lczero.org](https://lczero.org) and convert it once with lc0 (the `.pb.gz` needs lc0's own protobuf schema; the ONNX export names every layer):
-```bash
-lc0 leela2onnx --input=BT4-1024x15x32h-swa-6147500.pb.gz --output=weights/Leela_BT4_large_model.onnx
-```
+**Weights.** Download the network file `BT4-1024x15x32h-swa-6147500.pb.gz` from [lczero.org](https://lczero.org) and pass its path. The engine reads lc0's `.pb.gz` directly; no conversion and no lc0 install needed. 
 
 **Load.** One alias table covers both families; neither is a default.
 ```python
 from chessformer_lens import LeelaEngine, load_engine
-eng = LeelaEngine()                                            # ./weights/Leela_BT4_large_model.onnx
-eng = LeelaEngine(checkpoint_path="path/to/net.onnx", device="mps")
-eng = load_engine("bt4")                                       # or "23m", "79m", …
+eng = LeelaEngine(checkpoint_path="BT4-1024x15x32h-swa-6147500.pb.gz")
+eng = load_engine("BT4-1024x15x32h-swa-6147500.pb.gz", device="mps")
+eng = load_engine("bt4")               # looks for weights/Leela_BT4_large_model.pb.gz
 ```
 ```bash
-chessformer_lens bt4                 # the app; or CHESSFORMER_MODEL=bt4 chessformer_lens
+chessformer_lens BT4-1024x15x32h-swa-6147500.pb.gz      # the app
 ```
 
-**Differences with Maia.** BT4 has no rating input: the `self_elo` / `oppo_elo` arguments are accepted and ignored (pass any int), the app hides its rating card, and `compare_residual` returns zero diffs. `evaluate()` gains `"mlh"`, the moves-left head's estimate of plies to game end, shown beside the W/D/L bar. Depth points are `emb, a0 … m14`: 31 of them, no `enc`, because the heads read the last block directly. 
+**Differences with Maia.** BT4 has no rating input. `evaluate()` gains `"mlh"`, the moves-left head's estimate of plies to game end. Depth points are `emb, a0 … m14`: 31 of them, and there is no `enc`, because the heads read the last block directly. 
 
 ---
 

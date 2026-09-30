@@ -93,10 +93,13 @@ app in bridge.py/app.py/ui.py.
 import math
 import os
 import types
+import gzip
+import struct
 from collections import deque
 from pathlib import Path
 
 import chess
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -117,7 +120,7 @@ except ModuleNotFoundError as exc:
     raise ModuleNotFoundError(
         "chessformer_lens needs the Maia-3 model code, which is not on PyPI "
         "and so is not installed by `pip install chessformer_lens`.\n\n"
-        "    pip install git+https://github.com/CSSLab/maia3\n"
+        "    pip install https://github.com/CSSLab/maia3/archive/1e13597c42d4858b7cfd7cfdae01e297263364b2.zip\n"
     ) from exc
 except ImportError as exc:
     # maia3 imports torch.nn.RMSNorm, which only exists from torch 2.4.
@@ -308,21 +311,203 @@ class BT4Model(nn.Module):
         return self.policy_logits(x), self.value_logits(x), self.moves_left(x)
 
 
-def _load_bt4_onnx(path, device) -> BT4Model:
-    """Load an `lc0 leela2onnx` export into a BT4Model. Sizes come from the
-    weight shapes. ONNX stores MatMul weights as (in, out), so they are
-    transposed; Q, K, V are packed into in_proj; alpha is folded into each
-    sublayer's output projection."""
+def _load_bt4(path, device) -> BT4Model:
+    """Load BT4 from lc0's own weights file (.pb.gz) or an `lc0 leela2onnx`
+    export (.onnx)."""
+    name = str(path).lower()
+    W = _onnx_arrays(path) if name.endswith(".onnx") else _pb_arrays(path)
+    return _bt4_from_arrays(W, device)
+
+
+def _onnx_arrays(path) -> dict:
+    """{initializer name: tensor} from an `lc0 leela2onnx` export."""
     try:
         import onnx
         from onnx import numpy_helper
     except ImportError as exc:
-        raise ImportError("LeelaEngine reads lc0 ONNX exports and needs the `onnx` "
-                          "package:\n    pip install onnx") from exc
+        raise ImportError("Reading an lc0 .onnx export needs the `onnx` package "
+                          "(or pass the .pb.gz instead):\n    pip install onnx") from exc
     graph = onnx.load(str(path), load_external_data=True).graph
-    W = {t.name: torch.from_numpy(numpy_helper.to_array(t).copy()) for t in graph.initializer}
-    del graph
+    return {t.name: torch.from_numpy(numpy_helper.to_array(t).copy()) for t in graph.initializer}
 
+
+# ----- lc0's .pb.gz weights ----------------------------------------------------
+# Converting the .pb.gz weights to .pt by hand instead of with ONNX
+
+def _varint(buf, i):
+    out, shift = 0, 0
+    while True:
+        b = buf[i]
+        i += 1
+        out |= (b & 0x7F) << shift
+        if b < 0x80:
+            return out, i
+        shift += 7
+
+
+def _pb_fields(buf) -> dict:
+    """One protobuf message -> {field number: [values]}. A value is an int
+    (varint), or a memoryview (length-delimited, fixed32, fixed64)."""
+    out, i, end = {}, 0, len(buf)
+    while i < end:
+        key, i = _varint(buf, i)
+        wire = key & 7
+        if wire == 0:
+            v, i = _varint(buf, i)
+        elif wire == 2:
+            n, i = _varint(buf, i)
+            v, i = buf[i:i + n], i + n
+        elif wire in (1, 5):
+            n = 8 if wire == 1 else 4
+            v, i = buf[i:i + n], i + n
+        else:
+            raise ValueError(f"unsupported protobuf wire type {wire}")
+        out.setdefault(key >> 3, []).append(v)
+    return out
+
+
+def _pb_msg(msg, field) -> dict:
+    return _pb_fields(msg[field][0]) if field in msg else {}
+
+
+def _pb_int(msg, field, default=0) -> int:
+    return msg[field][0] if field in msg else default
+
+
+def _pb_layer(msg, field) -> torch.Tensor:
+    """A stored Layer as a flat float32 tensor. The multiply-add is rounded once
+    (lc0's build fuses it), which reproduces `lc0 leela2onnx` bit for bit."""
+    f = _pb_msg(msg, field)
+    if 3 not in f:
+        return torch.zeros(0)
+    lo = np.float32(struct.unpack("<f", f[1][0])[0]) if 1 in f else np.float32(0)
+    hi = np.float32(struct.unpack("<f", f[2][0])[0]) if 2 in f else np.float32(0)
+    x = np.frombuffer(f[3][0], dtype="<u2").astype(np.float32) / np.float32(0xFFFF)
+    return torch.from_numpy((x.astype(np.float64) * np.float64(hi - lo) + np.float64(lo)).astype(np.float32))
+
+
+def _pb_arrays(path) -> dict:
+    """lc0 .pb.gz -> {ONNX initializer name: tensor}, in the ONNX layouts.
+    Refuses nets this engine does not implement, rather than misreading them."""
+    try:
+        with gzip.open(path, "rb") as fh:
+            net = _pb_fields(memoryview(fh.read()))
+        magic = net[1][0]
+        ok = isinstance(magic, memoryview) and struct.unpack("<I", magic)[0] == 0x1C0
+    except (OSError, ValueError, IndexError, KeyError, struct.error):
+        ok = False
+    if not ok:
+        raise ValueError(f"{path} is not an lc0 weights file")
+    fmt = _pb_msg(net, 4)
+    nf = _pb_msg(fmt, 2)
+    w = _pb_msg(net, 10)
+
+    problems = []
+    if _pb_int(fmt, 1) != 1:
+        problems.append("weights are not LINEAR16-encoded")
+    if _pb_int(nf, 1) != 1:
+        problems.append(f"input format {_pb_int(nf, 1)}: only the classical 112-plane "
+                        "input (format 1) is implemented; this net uses a canonical one")
+    if _pb_int(nf, 3) not in (6, 7, 134) or 27 not in w or 2 in w:
+        problems.append("not an attention-body network")
+    if _pb_int(nf, 4) != 3 or _pb_int(nf, 5) != 2 or _pb_int(nf, 6) != 1:
+        problems.append("needs an attention policy, a WDL value head and a moves-left head")
+    if _pb_int(nf, 7) != 1 or _pb_int(nf, 9) not in (0, 1) or _pb_int(nf, 8) != 7:
+        problems.append("needs mish body and FFN activations and swish smolgen")
+    if 37 not in w or 35 not in w:
+        problems.append("needs the dense input embedding and smolgen")
+    if problems:
+        raise NotImplementedError(f"{path}: this lc0 net is not supported: " + "; ".join(problems)
+                                  + ". Tested on BT4-1024x15x32h.")
+
+    def dense(msg, field, n_in, n_out):            # stored (out, in) -> ONNX (in, out)
+        return _pb_layer(msg, field).reshape(n_out, n_in).t().contiguous()
+
+    W = {}
+    emb = _pb_layer(w, 26).numel()
+    pre = _pb_layer(w, 38).numel() // 64
+    W["/attn_body/embedding/preprocess/matmul/w"] = dense(w, 37, 64 * 12, 64 * pre)
+    W["/attn_body/embedding/preprocess/add/w"] = _pb_layer(w, 38)
+    W["/attn_body/matmul/w"] = dense(w, 25, 112 + pre, emb)
+    W["/attn_body/add/w"] = _pb_layer(w, 26)
+    W["/attn_body/ln/w/scale"], W["/attn_body/ln/w/bias"] = _pb_layer(w, 39), _pb_layer(w, 40)
+    W["/ip_mul_gate/w"] = dense(w, 33, 64, emb)
+    W["/ip_add_gate/w"] = dense(w, 34, 64, emb)
+
+    encoders = [_pb_fields(e) for e in w[27]]
+    nb = len(encoders)
+    alpha = torch.tensor([np.power(np.float32(2 * nb), np.float32(-0.25))], dtype=torch.float32)
+
+    def ffn(prefix, f):
+        dff = _pb_layer(f, 2).numel()
+        W[prefix + "ffn/dense1/w/w"] = dense(f, 1, emb, dff)
+        W[prefix + "ffn/dense1/b/w"] = _pb_layer(f, 2)
+        W[prefix + "ffn/dense2/w/w"] = dense(f, 3, dff, emb)
+        W[prefix + "ffn/dense2/b/w"] = _pb_layer(f, 4)
+        W[prefix + "ffn/alpha/w"] = alpha
+
+    ffn("/attn_body/", _pb_msg(w, 41))
+    W["/attn_body/ln2/w/scale"], W["/attn_body/ln2/w/bias"] = _pb_layer(w, 42), _pb_layer(w, 43)
+
+    heads = _pb_int(w, 28)
+    gen = _pb_layer(w, 35).numel() // 4096
+    W["/const/smolgen_w"] = dense(w, 35, gen, 4096)
+    for i, e in enumerate(encoders):
+        o, mha = f"/encoder{i}/", _pb_msg(e, 1)
+        d_model = _pb_layer(mha, 2).numel()
+        for c, fw, fb in (("Q", 1, 2), ("K", 3, 4), ("V", 5, 6)):
+            W[o + f"mha/{c}/w/w"] = dense(mha, fw, emb, d_model)
+            W[o + f"mha/{c}/b/w"] = _pb_layer(mha, fb)
+        W[o + "mha/QK/scale/w"] = torch.tensor([np.float32(1) / np.sqrt(np.float32(d_model // heads))])
+        W[o + "mha/out/dense/w/w"] = dense(mha, 7, d_model, emb)
+        W[o + "mha/out/dense/b/w"] = _pb_layer(mha, 8)
+        W[o + "alpha*input/w"] = alpha
+        sm = _pb_msg(mha, 9)
+        hidden_ch = _pb_layer(sm, 1).numel() // emb
+        hs, gh = _pb_layer(sm, 3).numel(), _pb_layer(sm, 7).numel()
+        W[o + "smolgen/compress/w"] = dense(sm, 1, emb, hidden_ch)
+        W[o + "smolgen/dense1/w/w"] = dense(sm, 2, 64 * hidden_ch, hs)
+        W[o + "smolgen/dense1/b/w"] = _pb_layer(sm, 3)
+        W[o + "smolgen/ln1/w/scale"], W[o + "smolgen/ln1/w/bias"] = _pb_layer(sm, 4), _pb_layer(sm, 5)
+        W[o + "smolgen/dense2/w/w"] = dense(sm, 6, hs, gh)
+        W[o + "smolgen/dense2/b/w"] = _pb_layer(sm, 7)
+        W[o + "smolgen/ln2/w/scale"], W[o + "smolgen/ln2/w/bias"] = _pb_layer(sm, 8), _pb_layer(sm, 9)
+        W[o + "ln1/w/scale"], W[o + "ln1/w/bias"] = _pb_layer(e, 2), _pb_layer(e, 3)
+        ffn(o, _pb_msg(e, 4))
+        W[o + "ln2/w/scale"], W[o + "ln2/w/bias"] = _pb_layer(e, 5), _pb_layer(e, 6)
+    W["/const/encoder0/mha/shape"] = torch.tensor([-1, 64, heads, d_model // heads])
+
+    # policy: the "vanilla" head; its embedding may be shared across heads
+    heads_msg = _pb_msg(w, 45)
+    pol = _pb_msg(heads_msg, 3)
+    if 8 in pol:
+        raise NotImplementedError(f"{path}: policy-head encoder layers are not supported")
+    pw = pol if 1 in pol else heads_msg
+    pemb, pd = _pb_layer(pw, 2).numel(), _pb_layer(pol, 4).numel()
+    W["/policy/dense1/matmul/w"] = dense(pw, 1, emb, pemb)
+    W["/policy/dense1/add/w"] = _pb_layer(pw, 2)
+    W["/policy/Q/matmul/w"], W["/policy/Q/add/w"] = dense(pol, 3, pemb, pd), _pb_layer(pol, 4)
+    W["/policy/K/matmul/w"], W["/policy/K/add/w"] = dense(pol, 5, pemb, pd), _pb_layer(pol, 6)
+    W["/policy/scale/w"] = torch.tensor([np.float32(1) / np.sqrt(np.float32(pd))])
+    W["/policy/promotion/matmul/w"] = dense(pol, 7, pd, 4)
+
+    # value: the "winner" head; moves-left
+    val = _pb_msg(_pb_msg(w, 44), 1)
+    vc = _pb_layer(val, 2).numel()
+    W["/value/embed/matmul/w"], W["/value/embed/add/w"] = dense(val, 1, emb, vc), _pb_layer(val, 2)
+    W["/value/dense1/matmul/w"], W["/value/dense1/add/w"] = dense(val, 3, 64 * vc, 128), _pb_layer(val, 4)
+    W["/value/dense2/matmul/w"], W["/value/dense2/add/w"] = dense(val, 5, 128, 3), _pb_layer(val, 6)
+    mc, m1 = _pb_layer(w, 32).numel(), _pb_layer(w, 14).numel()
+    W["/mlh/embed/matmul/w"], W["/mlh/embed/add/w"] = dense(w, 31, emb, mc), _pb_layer(w, 32)
+    W["/mlh/dense1/matmul/w"], W["/mlh/dense1/add/w"] = dense(w, 13, 64 * mc, m1), _pb_layer(w, 14)
+    W["/mlh/dense2/matmul/w"], W["/mlh/dense2/add/w"] = dense(w, 15, m1, 1), _pb_layer(w, 16)
+    return W
+
+
+def _bt4_from_arrays(W, device) -> BT4Model:
+    """Build a BT4Model from ONNX-named weights. Sizes come from the shapes.
+    ONNX MatMul weights are (in, out), so they are transposed; Q, K, V are
+    packed into in_proj; alpha is folded into each sublayer's output projection."""
     def lin(name):                       # MatMul weight -> nn.Linear weight
         return W[name].t().contiguous()
 
@@ -390,7 +575,8 @@ def _load_bt4_onnx(path, device) -> BT4Model:
         put(f"{head}_dense1", lin(f"/{head}/dense1/matmul/w"), W[f"/{head}/dense1/add/w"])
         put(f"{head}_dense2", lin(f"/{head}/dense2/matmul/w"), W[f"/{head}/dense2/add/w"])
     model.load_state_dict(sd, strict=True)
-    model.policy_map.copy_(W["/const/mapping_table"].long())
+    if "/const/mapping_table" in W:                        # only in ONNX exports
+        model.policy_map.copy_(W["/const/mapping_table"].long())
     return model.to(device).eval()
 
 
@@ -1665,8 +1851,9 @@ class MaiaEngine(ChessformerEngine):
         return {"win": win, "draw": draw, "loss": loss}
 
 
-# alias -> (display name, .onnx filename in $CHESSFORMER_WEIGHTS or ./weights)
-_LEELA_SPECS = {"bt4": ("Leela BT4", "Leela_BT4_large_model.onnx")}
+# alias -> (display name, file stem looked for in $CHESSFORMER_WEIGHTS or ./weights)
+_LEELA_SPECS = {"bt4": ("Leela BT4", "Leela_BT4_large_model")}
+_LEELA_SUFFIXES = (".pb.gz", ".pb", ".onnx")     # lc0's own weights file, or an ONNX export
 _LEELA_ALIASES = {"bt4": "bt4", "leela-bt4": "bt4", "lc0-bt4": "bt4",
                   "leela": "bt4", "lc0": "bt4", "bt4-1024x15x32h": "bt4"}
 
@@ -1684,30 +1871,31 @@ class LeelaEngine(ChessformerEngine):
 
     def __init__(self, alias="bt4", device=None, checkpoint_path=None,
                  activation_dir="activations"):
-        """`alias` is a Leela alias or a path to an .onnx file. Without
-        `checkpoint_path`, the file is looked for in $CHESSFORMER_WEIGHTS, then
-        ./weights. Nothing is downloaded; convert the .pb.gz once with
-            lc0 leela2onnx --input=<net>.pb.gz --output=weights/Leela_BT4_large_model.onnx"""
+        """`alias` is a Leela alias or a path to lc0's .pb.gz (or an .onnx
+        export). Without `checkpoint_path`, <stem>.pb.gz then <stem>.onnx are
+        looked for in $CHESSFORMER_WEIGHTS, then ./weights. Nothing is downloaded."""
         key = str(alias).strip()
-        if key.lower().endswith(".onnx"):
+        if key.lower().endswith(_LEELA_SUFFIXES):
             name, checkpoint_path = "bt4", checkpoint_path or key
         else:
             name = _LEELA_ALIASES.get(key.lower())
             if name is None:
                 raise ValueError(f"Unknown Leela alias {alias!r}.\n\n{format_engine_list()}")
-        display_name, filename = _LEELA_SPECS[name]
+        display_name, stem = _LEELA_SPECS[name]
         if checkpoint_path is None:
             weights_dir = Path(os.environ.get("CHESSFORMER_WEIGHTS", "weights")).expanduser()
-            checkpoint_path = weights_dir / filename
+            found = [weights_dir / (stem + sfx) for sfx in _LEELA_SUFFIXES
+                     if (weights_dir / (stem + sfx)).exists()]
+            checkpoint_path = found[0] if found else weights_dir / (stem + ".pb.gz")
         checkpoint_path = Path(checkpoint_path).expanduser()
         if not checkpoint_path.exists():
             raise FileNotFoundError(
-                f"{display_name}: no ONNX export at {checkpoint_path}. Get the .pb.gz "
-                f"from https://lczero.org and convert it:\n"
-                f"    lc0 leela2onnx --input=<net>.pb.gz --output={checkpoint_path}")
+                f"{display_name}: no weights at {checkpoint_path}. Download the network "
+                f"(.pb.gz) from https://lczero.org and pass its path.")
+        filename = checkpoint_path.name
 
         self.device = pick_device(device)
-        self.model = _load_bt4_onnx(checkpoint_path, self.device)
+        self.model = _load_bt4(checkpoint_path, self.device)
         self.cfg = types.SimpleNamespace(**vars(self.model.cfg), checkpoint_path=str(checkpoint_path),
                                          device=self.device, history=8, trust_checkpoint=False)
         self.spec = types.SimpleNamespace(name=f"lc0-{name}", display_name=display_name,
@@ -1800,9 +1988,9 @@ class LeelaEngine(ChessformerEngine):
 
 def resolve_engine(alias: str):
     """alias -> (engine class, display name), without loading weights. Takes
-    Maia-3 registry names, Leela aliases, or an .onnx path; ValueError otherwise."""
+    Maia-3 registry names, Leela aliases, or a .pb.gz / .onnx path; ValueError otherwise."""
     key = str(alias).strip().lower()
-    if key in _LEELA_ALIASES or key.endswith(".onnx"):
+    if key in _LEELA_ALIASES or key.endswith(_LEELA_SUFFIXES):
         return LeelaEngine, _LEELA_SPECS[_LEELA_ALIASES.get(key, "bt4")][0]
     try:
         return MaiaEngine, resolve_model_spec(alias).display_name
@@ -1822,8 +2010,8 @@ def format_engine_list() -> str:
     for spec in MODEL_SPECS:
         lines.append(f"    {spec.display_name:<18}{', '.join((spec.name, *spec.aliases))}")
     lines.append("  Leela Chess Zero (LeelaEngine):")
-    for name, (display_name, filename) in _LEELA_SPECS.items():
+    for name, (display_name, stem) in _LEELA_SPECS.items():
         aliases = ", ".join(a for a, n in _LEELA_ALIASES.items() if n == name)
-        lines.append(f"    {display_name:<18}{aliases}, or a path to an .onnx export "
-                     f"(default weights/{filename})")
+        lines.append(f"    {display_name:<18}{aliases}, or a path to lc0's .pb.gz "
+                     f"(default weights/{stem}.pb.gz)")
     return "\n".join(lines)

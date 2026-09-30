@@ -37,7 +37,7 @@ classifiers = [
 # `maia3` (the Maia-3 model code that engine.py imports) is deliberately absent:
 # it is not on PyPI, and PyPI rejects direct git URLs in dependency metadata.
 # Install it alongside this package -- see the README, or requirements.txt:
-#     pip install git+https://github.com/CSSLab/maia3
+#     pip install https://github.com/CSSLab/maia3/archive/1e13597c42d4858b7cfd7cfdae01e297263364b2.zip
 dependencies = [
     # >=2.4 is maia3's floor, not ours: maia3/models.py imports torch.nn.RMSNorm,
     # which was added in 2.4. Note this rules out Intel Macs, whose last wheel
@@ -46,7 +46,6 @@ dependencies = [
     "numpy",
     "chess",
     "huggingface-hub",
-    "onnx",         # LeelaEngine reads lc0's `leela2onnx` exports
     "ipython",
     # Both frontends ship in the base install, so `pip install chessformer_lens`
     # is enough to launch the app and to draw the static figures. They were

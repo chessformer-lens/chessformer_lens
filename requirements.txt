@@ -2,7 +2,7 @@
 # The first line installs the Maia-3 model code straight from GitHub so there is
 # nothing else to clone. It lives here because it is not on PyPI.
 
-maia3 @ git+https://github.com/CSSLab/maia3
+maia3 @ https://github.com/CSSLab/maia3/archive/1e13597c42d4858b7cfd7cfdae01e297263364b2.zip
 
 # The package itself, editable. This is what puts the `chessformer_lens` command
 # on your PATH; torch, numpy, python-chess, huggingface-hub, ipython and both

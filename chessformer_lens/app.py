@@ -14,12 +14,12 @@ from .ui import INDEX_HTML
 def resolve_alias():
     """Pick the engine from the CLI. Engines available: 
             bt4, leela-bt4, maia3-3m, maia3-5m, maia3-23m, maia3-79m
-    or HF repo/URL or a path to an lc0 .onnx export.
+    or HF repo/URL or a path to an lc0 network (.pb.gz).
     Defaults to maia3-5m."""
     ap = argparse.ArgumentParser(description="Chessformer interpretability app")
     ap.add_argument("model", nargs="?", default=None,
                     help="engine alias: a Maia-3 size (3m, 5m, 23m, 79m) or HF repo/URL, "
-                         "bt4 / leela-bt4, or a path to an lc0 .onnx export; "
+                         "bt4 / leela-bt4, or a path to an lc0 network (.pb.gz); "
                          "overrides $CHESSFORMER_MODEL")
     ap.add_argument("--model", dest="model_opt", default=None,
                     help="same as the positional argument")
