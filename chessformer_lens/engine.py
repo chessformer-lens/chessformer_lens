@@ -1,17 +1,13 @@
 """Interpretability core for chessformers that treat the 64 squares as tokens.
 
-Two engines, one method surface. `ChessformerEngine` holds every read and
-intervention path below; the subclasses supply only the model, its input
-tokens and its move vocabulary:
+`ChessformerEngine` class contains every read and
+intervention path below; the subclasses supply the model, its input
+tokens, and its move vocabulary:
 
   MaiaEngine    a Maia-3 checkpoint (5M / 23M / 79M / 3M-ablation), conditioned
                 on a rating pair — `self_elo` / `oppo_elo` are real inputs
   LeelaEngine   Leela Chess Zero BT4 (185M params, 15 layers x 32 heads x 1024d),
-                loaded from an ONNX export of the .pb.gz. It has no rating
-                input: every method keeps the same signature and simply ignores
-                `self_elo` / `oppo_elo`, so the frontends run unchanged
-                (`has_conditioning` tells them to hide the slider). It adds a
-                moves-left estimate, `evaluate()["mlh"]`.
+                
 
   evaluate              one forward pass yielding the full normalized policy over
                         legal moves (in descending order), the W/D/L for the side to
@@ -106,7 +102,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # maia3 is not on PyPI, yet both engines depend on it: MaiaEngine for the model
-# and checkpoint plumbing, LeelaEngine for the encoder block class it shares.
+# and checkpoint work, LeelaEngine for the encoder block class it shares.
 
 try:
     from maia3.models import MAIA3Model, EncoderOnlyBlock  # noqa: F401
@@ -132,7 +128,7 @@ except ImportError as exc:
         "    pip install --upgrade 'torch>=2.4'"
     ) from exc
 
-__all__ = ["ChessformerEngine", "MaiaEngine",
+__all__ = ["ChessformerEngine", "MaiaEngine", "LeelaEngine", "BT4Model",
            "load_engine", "resolve_engine", "format_engine_list",
            "build_cfg", "pick_device"]
 
@@ -174,6 +170,306 @@ def build_cfg(alias="maia3-5m", device=None, checkpoint_path=None,
     return cfg, spec
 
 
+# ----- Leela Chess Zero BT4 ---------------------------------------------------
+# BT4 (1024 dim, 15 layers, 32 heads) is Post-LN like Maia-3, and its smolgen bias
+# is the same generator as Maia-3's GAB. So each block is maia3's EncoderOnlyBlock
+# with four patches (see _bt4_block), and the engine reads both models through the
+# same attribute names. BT4 also scales every sublayer by alpha (0.427) before the
+# residual add; that is folded into the output projections at load time, so each
+# sublayer's output is exactly its write to the stream. Weights are read from the
+# ONNX file `lc0 leela2onnx` produces.
+
+_BT4_LN_EPS = 1e-3
+
+
+class _BT4Embedding(nn.Module):
+    """planes (B, 112, 8, 8) -> (B, 64, d), the stream entering block 0.
+
+    The current position's 12 piece planes go through one linear layer over the
+    whole board, so every square token sees every piece. That is concatenated
+    to each square's 112 inputs, projected, gated per square, and passed
+    through one FFN sublayer."""
+
+    def __init__(self, d: int, ff: int, pre: int, planes: int = 112):
+        super().__init__()
+        self.preproc = nn.Linear(64 * 12, 64 * pre)
+        self.proj = nn.Linear(planes + pre, d)
+        self.norm = nn.LayerNorm(d, eps=_BT4_LN_EPS)
+        self.mul_gate = nn.Parameter(torch.ones(64, d))
+        self.add_gate = nn.Parameter(torch.zeros(64, d))
+        self.linear1 = nn.Linear(d, ff)
+        self.linear2 = nn.Linear(ff, d)              # alpha folded in at load time
+        self.norm2 = nn.LayerNorm(d, eps=_BT4_LN_EPS)
+
+    def forward(self, planes):
+        B = planes.size(0)
+        x = planes.reshape(B, planes.size(1), 64).transpose(1, 2)         # (B, 64, 112), sq = rank*8 + file
+        pos = self.preproc(x[:, :, :12].reshape(B, -1)).view(B, 64, -1)   # (B, 64, pre)
+        x = self.norm(F.mish(self.proj(torch.cat([x, pos], dim=-1))))
+        x = x * self.mul_gate + self.add_gate
+        return self.norm2(x + self.linear2(F.mish(self.linear1(x))))
+
+
+class _BT4Encoder(nn.Module):
+    """The block stack, like maia3's CustomTransformerEncoder but with no final
+    norm (norm = None): BT4's heads read the last block directly."""
+
+    def __init__(self, layers):
+        super().__init__()
+        self.layers = nn.ModuleList(layers)
+        self.norm = None
+
+    def forward(self, x):
+        for blk in self.layers:
+            x = blk(x)
+        return x
+
+
+def _bt4_block(d, heads, ff, gen, per_square, intermediate, gab_weight):
+    """maia3's EncoderOnlyBlock, patched to BT4: mish FFN, swish smolgen,
+    LayerNorm eps 1e-3, and no bias on the smolgen compress layer."""
+    cfg = types.SimpleNamespace(
+        use_gab=True, use_relative_bias=False, gab_gen_size=gen,
+        gab_per_square_dim=per_square, gab_intermediate_dim=intermediate,
+        omit_qkv_biases=False, use_rms_norm=False, activation="gelu")
+    blk = EncoderOnlyBlock(cfg, d_model=d, nhead=heads, dim_feedforward=ff,
+                           dropout=0.0, gab_weight=gab_weight)
+    blk.activation = F.mish                      # FFN activation
+    sa = blk.self_attn
+    sa.sm_act = nn.SiLU()                        # smolgen activation (swish)
+    sa.sm1.bias = None                           # the compress layer has no bias
+    for ln in (blk.norm1, blk.norm2, sa.ln1, sa.ln2):
+        ln.eps = _BT4_LN_EPS
+    return blk
+
+
+class BT4Model(nn.Module):
+    """Lc0 BT4 in PyTorch, with MAIA3Model's attribute names where the engine
+    reads them (transformer.layers[i], gab_shared_weight (64*64, gen)).
+
+    forward(planes (B, 112, 8, 8)) -> logits_move (B, 4288), logits_value (B, 3),
+    moves_left (B,).
+      logits_move    64*64 square pairs (from*64 + to), then 192 promotions
+                     (4096 + from_file*24 + to_file*3 + piece, piece in q r b).
+                     A knight promotion uses its square pair's logit.
+      logits_value   win, draw, loss for the side to move
+      moves_left     expected plies to the end of the game
+    `policy_map` (1858,) is lc0's gather to its own move list, kept for testing."""
+
+    def __init__(self, num_blocks=15, dim=1024, num_heads=32, ff=1536, gen=256,
+                 per_square=32, intermediate=256, pre=512, policy_dim=1024,
+                 value_dim=128, mlh_dim=32, policy_scale=1 / 32):
+        super().__init__()
+        self.cfg = types.SimpleNamespace(
+            num_blocks=num_blocks, dim_vit=dim, num_heads=num_heads,
+            mlp_ratio=ff / dim, gab_gen_size=gen, gab_per_square_dim=per_square,
+            gab_intermediate_dim=intermediate, head_hid_dim=policy_dim, use_gab=True)
+        self.embedding = _BT4Embedding(dim, ff, pre)
+        self.gab_shared_weight = nn.Parameter(torch.empty(64 * 64, gen))
+        self.transformer = _BT4Encoder(
+            [_bt4_block(dim, num_heads, ff, gen, per_square, intermediate, self.gab_shared_weight)
+             for _ in range(num_blocks)])
+        # attention policy head
+        self.policy_dense = nn.Linear(dim, policy_dim)
+        self.policy_q = nn.Linear(policy_dim, policy_dim)
+        self.policy_k = nn.Linear(policy_dim, policy_dim)
+        self.policy_promo = nn.Parameter(torch.empty(policy_dim, 4))   # q, r, b, n offsets
+        self.policy_scale = policy_scale
+        # value (WDL) and moves-left heads
+        self.value_embed = nn.Linear(dim, value_dim)
+        self.value_dense1 = nn.Linear(64 * value_dim, 128)
+        self.value_dense2 = nn.Linear(128, 3)
+        self.mlh_embed = nn.Linear(dim, mlh_dim)
+        self.mlh_dense1 = nn.Linear(64 * mlh_dim, 128)
+        self.mlh_dense2 = nn.Linear(128, 1)
+        self.register_buffer("policy_map", torch.zeros(1858, dtype=torch.long), persistent=False)
+
+    def policy_logits(self, x):
+        """(B, 64, dim) encoder output -> (B, 4288) move logits."""
+        B = x.size(0)
+        h = F.mish(self.policy_dense(x))
+        q, k = self.policy_q(h), self.policy_k(h)
+        scores = (q @ k.transpose(-2, -1)) * self.policy_scale              # (B, 64, 64)
+        offs = k[:, 56:64] @ self.policy_promo                             # (B, 8 to-files, 4)
+        offs = (offs[:, :, :3] + offs[:, :, 3:4]).reshape(B, 1, 24)         # q, r, b, each + the n offset
+        base = scores[:, 48:56, 56:64].reshape(B, 64, 1).expand(-1, -1, 3).reshape(B, 8, 24)
+        return torch.cat([scores.reshape(B, 4096), (base + offs).reshape(B, 192)], dim=1)
+
+    def value_logits(self, x):
+        v = F.mish(self.value_embed(x)).reshape(x.size(0), -1)
+        return self.value_dense2(F.mish(self.value_dense1(v)))             # (B, 3): W, D, L
+
+    def moves_left(self, x):
+        m = F.mish(self.mlh_embed(x)).reshape(x.size(0), -1)
+        return F.relu(self.mlh_dense2(F.mish(self.mlh_dense1(m)))).squeeze(-1)
+
+    def forward(self, planes):
+        x = self.transformer(self.embedding(planes))
+        return self.policy_logits(x), self.value_logits(x), self.moves_left(x)
+
+
+def _load_bt4_onnx(path, device) -> BT4Model:
+    """Load an `lc0 leela2onnx` export into a BT4Model. Sizes come from the
+    weight shapes. ONNX stores MatMul weights as (in, out), so they are
+    transposed; Q, K, V are packed into in_proj; alpha is folded into each
+    sublayer's output projection."""
+    try:
+        import onnx
+        from onnx import numpy_helper
+    except ImportError as exc:
+        raise ImportError("LeelaEngine reads lc0 ONNX exports and needs the `onnx` "
+                          "package:\n    pip install onnx") from exc
+    graph = onnx.load(str(path), load_external_data=True).graph
+    W = {t.name: torch.from_numpy(numpy_helper.to_array(t).copy()) for t in graph.initializer}
+    del graph
+
+    def lin(name):                       # MatMul weight -> nn.Linear weight
+        return W[name].t().contiguous()
+
+    nb = 0
+    while f"/encoder{nb}/ln1/w/scale" in W:
+        nb += 1
+    d = W["/attn_body/matmul/w"].shape[1]
+    heads, dh = (int(v) for v in W["/const/encoder0/mha/shape"][2:])
+    gen = W["/const/smolgen_w"].shape[0]
+    per_sq = W["/encoder0/smolgen/compress/w"].shape[1]
+    inter = W["/encoder0/smolgen/dense1/w/w"].shape[1]
+    ff = W["/encoder0/ffn/dense1/w/w"].shape[1]
+    pre = W["/attn_body/embedding/preprocess/matmul/w"].shape[1] // 64
+    model = BT4Model(nb, d, heads, ff, gen, per_sq, inter, pre,
+                     policy_dim=W["/policy/Q/matmul/w"].shape[1],
+                     value_dim=W["/value/embed/matmul/w"].shape[1],
+                     mlh_dim=W["/mlh/embed/matmul/w"].shape[1],
+                     policy_scale=float(W["/policy/scale/w"]))
+    for i in range(nb):     # nn.MultiheadAttention assumes a 1/sqrt(d_head) scale
+        s = float(W[f"/encoder{i}/mha/QK/scale/w"])
+        assert abs(s - dh ** -0.5) < 1e-6, f"encoder{i}: QK scale {s} is not 1/sqrt({dh})"
+
+    sd = {}
+
+    def put(key, weight, bias=None, alpha=1.0):
+        sd[key + ".weight"] = weight * alpha
+        if bias is not None:
+            sd[key + ".bias"] = bias * alpha
+
+    put("embedding.preproc", lin("/attn_body/embedding/preprocess/matmul/w"),
+        W["/attn_body/embedding/preprocess/add/w"])
+    put("embedding.proj", lin("/attn_body/matmul/w"), W["/attn_body/add/w"])
+    put("embedding.norm", W["/attn_body/ln/w/scale"], W["/attn_body/ln/w/bias"])
+    sd["embedding.mul_gate"] = W["/ip_mul_gate/w"]
+    sd["embedding.add_gate"] = W["/ip_add_gate/w"]
+    put("embedding.linear1", lin("/attn_body/ffn/dense1/w/w"), W["/attn_body/ffn/dense1/b/w"])
+    put("embedding.linear2", lin("/attn_body/ffn/dense2/w/w"), W["/attn_body/ffn/dense2/b/w"],
+        alpha=float(W["/attn_body/ffn/alpha/w"]))
+    put("embedding.norm2", W["/attn_body/ln2/w/scale"], W["/attn_body/ln2/w/bias"])
+    shared = W["/const/smolgen_w"].t().contiguous()
+    sd["gab_shared_weight"] = shared
+    for i in range(nb):
+        p, o = f"transformer.layers.{i}.", f"/encoder{i}/"
+        sd[p + "self_attn.mha.in_proj_weight"] = torch.cat([lin(o + f"mha/{c}/w/w") for c in "QKV"])
+        sd[p + "self_attn.mha.in_proj_bias"] = torch.cat([W[o + f"mha/{c}/b/w"] for c in "QKV"])
+        put(p + "self_attn.mha.out_proj", lin(o + "mha/out/dense/w/w"), W[o + "mha/out/dense/b/w"],
+            alpha=float(W[o + "alpha*input/w"]))
+        put(p + "self_attn.sm1", lin(o + "smolgen/compress/w"))
+        put(p + "self_attn.sm2", lin(o + "smolgen/dense1/w/w"), W[o + "smolgen/dense1/b/w"])
+        put(p + "self_attn.ln1", W[o + "smolgen/ln1/w/scale"], W[o + "smolgen/ln1/w/bias"])
+        put(p + "self_attn.sm3", lin(o + "smolgen/dense2/w/w"), W[o + "smolgen/dense2/b/w"])
+        put(p + "self_attn.ln2", W[o + "smolgen/ln2/w/scale"], W[o + "smolgen/ln2/w/bias"])
+        sd[p + "self_attn.gab_weight"] = shared
+        put(p + "norm1", W[o + "ln1/w/scale"], W[o + "ln1/w/bias"])
+        put(p + "linear1", lin(o + "ffn/dense1/w/w"), W[o + "ffn/dense1/b/w"])
+        put(p + "linear2", lin(o + "ffn/dense2/w/w"), W[o + "ffn/dense2/b/w"],
+            alpha=float(W[o + "ffn/alpha/w"]))
+        put(p + "norm2", W[o + "ln2/w/scale"], W[o + "ln2/w/bias"])
+    put("policy_dense", lin("/policy/dense1/matmul/w"), W["/policy/dense1/add/w"])
+    put("policy_q", lin("/policy/Q/matmul/w"), W["/policy/Q/add/w"])
+    put("policy_k", lin("/policy/K/matmul/w"), W["/policy/K/add/w"])
+    sd["policy_promo"] = W["/policy/promotion/matmul/w"]
+    for head in ("value", "mlh"):
+        put(f"{head}_embed", lin(f"/{head}/embed/matmul/w"), W[f"/{head}/embed/add/w"])
+        put(f"{head}_dense1", lin(f"/{head}/dense1/matmul/w"), W[f"/{head}/dense1/add/w"])
+        put(f"{head}_dense2", lin(f"/{head}/dense2/matmul/w"), W[f"/{head}/dense2/add/w"])
+    model.load_state_dict(sd, strict=True)
+    model.policy_map.copy_(W["/const/mapping_table"].long())
+    return model.to(device).eval()
+
+
+def _leela_all_moves() -> list[str]:
+    """BT4's 4288 moves as uci, side-to-move frame, in BT4Model's policy order.
+    No knight promotions (they use the square pair)."""
+    moves = [chess.square_name(f) + chess.square_name(t) for f in range(64) for t in range(64)]
+    moves += [f"{ff}7{tf}8{p}" for ff in "abcdefgh" for tf in "abcdefgh" for p in "qrb"]
+    return moves
+
+
+_STARTPOS_FIELDS = chess.STARTING_FEN.split(" ")[:4]
+
+
+def _bits(mask: int) -> torch.Tensor:
+    """python-chess bitboard -> (64,) float plane, square = rank*8 + file."""
+    return torch.tensor([(mask >> s) & 1 for s in range(64)], dtype=torch.float32)
+
+
+def _leela_planes(board: chess.Board) -> torch.Tensor:
+    """lc0's 112 input planes (INPUT_CLASSICAL_112_PLANE) for `board`: (112, 8, 8).
+    Ported from lc0's encoder.cc with history-fill=fen_only. For Black every
+    position is mirrored, so "ours" is always White and squares match the
+    engine's canonical frame.
+
+      0-103     8 history slots x 13 planes: our P N B R Q K, their P N B R Q K,
+                repetition. Slot k is k plies ago (from board.move_stack).
+                Missing slots repeat the earliest position, with any pending
+                en passant push undone, or stay zero after the start position.
+      104-107   castling: our O-O-O, our O-O, their O-O-O, their O-O
+      108       ones if Black to move
+      109       halfmove clock
+      110, 111  zeros, ones"""
+    planes = torch.zeros(112, 64)
+    game = [board.root()]                                  # oldest first
+    for mv in board.move_stack:
+        nxt = game[-1].copy(stack=False)
+        nxt.push(mv)
+        game.append(nxt)
+    keys = [(b.pawns, b.knights, b.bishops, b.rooks, b.queens, b.kings,
+             b.occupied_co[chess.WHITE], b.occupied_co[chess.BLACK],
+             b.turn, b.clean_castling_rights(), b.ep_square) for b in game]
+    reps = [keys[:i].count(k) for i, k in enumerate(keys)]
+    we_black = board.turn == chess.BLACK
+
+    n = len(game)
+    for k in range(8):
+        i = n - 1 - k
+        filled = i < 0
+        if filled:
+            if game[0].fen().split(" ")[:4] == _STARTPOS_FIELDS:
+                break                                      # no history before move 1
+            i = 0
+        pos = game[i]
+        view = pos.mirror() if we_black else pos           # side to move = White
+        base = 13 * k
+        for colour, off in ((chess.WHITE, 0), (chess.BLACK, 6)):
+            for j, piece in enumerate(chess.PIECE_TYPES):   # P N B R Q K
+                planes[base + off + j] = _bits(view.pieces_mask(piece, colour))
+        if reps[i] >= 1:
+            planes[base + 12] = 1.0
+        if filled and pos.ep_square is not None:           # undo the double push
+            f = chess.square_file(pos.ep_square)
+            if view.turn == chess.WHITE:                   # theirs: rank 5 -> 7
+                planes[base + 6, 32 + f], planes[base + 6, 48 + f] = 0.0, 1.0
+            else:                                          # ours: rank 4 -> 2
+                planes[base + 0, 24 + f], planes[base + 0, 8 + f] = 0.0, 1.0
+
+    view = board.mirror() if we_black else board
+    planes[104] = float(view.has_queenside_castling_rights(chess.WHITE))
+    planes[105] = float(view.has_kingside_castling_rights(chess.WHITE))
+    planes[106] = float(view.has_queenside_castling_rights(chess.BLACK))
+    planes[107] = float(view.has_kingside_castling_rights(chess.BLACK))
+    planes[108] = float(we_black)
+    planes[109] = float(board.halfmove_clock)
+    planes[111] = 1.0
+    return planes.view(112, 8, 8)
+
+
 class ChessformerEngine:
     """Hook-based interpretability engine over a square-token chess transformer.
 
@@ -181,13 +477,7 @@ class ChessformerEngine:
     gab_*) and intervention paths (run_with_hooks, ablate_head, ablate_grid,
     ablate_grid_batch). Every tensor a read path returns is on CPU.
 
-    Not built directly: `MaiaEngine` and `LeelaEngine` set the per-model members
-    (the block headed "per-model members" below) and hand off to __init__ here,
-    which builds the move tables and installs the capture hooks. Both models
-    expose the same encoder-block attributes, so everything above that seam is
-    shared code, not two ports.
-
-    Class-level capability flags, for frontends to degrade on rather than crash:
+    Subclass differences:
       has_conditioning    the rating pair is a real input (Maia-3) or ignored (BT4)
       has_generated_bias  attention carries a generated square-pair bias
                           (GAB / smolgen), so the gab_* methods work
@@ -1250,15 +1540,11 @@ class ChessformerEngine:
         return str(path)
 
 
-# =============================================================================
-# The two engines
-# =============================================================================
+# ----- the two engines --------------------------------------------------------
 
 class MaiaEngine(ChessformerEngine):
-    """Hook-based interpretability engine for a Maia-3 checkpoint. The method
-    surface is ChessformerEngine's; this class adds the Maia-3 plumbing only:
-    the registry lookup and Hugging Face download, the elo-conditioned forward,
-    the 12-plane history tokens and the 4352-move policy layout."""
+    """ChessformerEngine on a Maia-3 checkpoint (downloaded from Hugging Face on
+    first use). Conditioned on a rating pair; 4352-move policy."""
 
     has_conditioning = True
     has_generated_bias = True
@@ -1267,10 +1553,6 @@ class MaiaEngine(ChessformerEngine):
     def __init__(self, alias="maia3-5m", device=None, checkpoint_path=None,
                  activation_dir="activations", trust_checkpoint=False):
         """Build the model and install the permanent capture hooks.
-
-        Resolves the checkpoint (downloading it from Hugging Face on first
-        use), then hands off to ChessformerEngine.__init__ for the move tables
-        and the hooks.
 
         `device`: an explicit string wins; otherwise see `pick_device`.
         `trust_checkpoint=True` loads with `weights_only=False`, i.e. it can
@@ -1324,8 +1606,7 @@ class MaiaEngine(ChessformerEngine):
     def _forward(self, board: chess.Board, self_elo: int, oppo_elo: int | None = None):
         """One raw forward pass. Resets and repopulates `self._activations` via the
         hooks, and returns (logits_move (4352,), logits_value (3,)) as floats.
-        Not wrapped in no_grad: `carrier_neurons` differentiates through it;
-        every other caller runs it under no_grad."""
+        No @no_grad here: carrier_neurons backpropagates through it."""
         oppo_elo = self_elo if oppo_elo is None else oppo_elo
         self._activations = {}
         self._aux = {}
@@ -1338,8 +1619,7 @@ class MaiaEngine(ChessformerEngine):
         return logits_move[0].float(), logits_value[0].float()
 
     def _forward_batch(self, boards, self_elo, oppo_elo=None):
-        """`_forward` over a list of boards in one pass: (B, 4352) move logits.
-        See ChessformerEngine._forward_batch for what the hooks hold afterwards."""
+        """`_forward` over a list of boards in one pass: (B, 4352) move logits."""
         oppo_elo = self_elo if oppo_elo is None else oppo_elo
         self._activations = {}
         self._aux = {}
@@ -1380,21 +1660,150 @@ class MaiaEngine(ChessformerEngine):
 
     @staticmethod
     def _wdl(logits_value) -> dict:
-        """Maia-3's value head orders its three logits (loss, draw, win)."""
+        """Maia-3's value logits are (loss, draw, win)."""
         loss, draw, win = torch.softmax(logits_value.float(), dim=-1).tolist()
         return {"win": win, "draw": draw, "loss": loss}
 
 
-# =============================================================================
-# One alias table for both families — neither is a default
-# =============================================================================
+# alias -> (display name, .onnx filename in $CHESSFORMER_WEIGHTS or ./weights)
+_LEELA_SPECS = {"bt4": ("Leela BT4", "Leela_BT4_large_model.onnx")}
+_LEELA_ALIASES = {"bt4": "bt4", "leela-bt4": "bt4", "lc0-bt4": "bt4",
+                  "leela": "bt4", "lc0": "bt4", "bt4-1024x15x32h": "bt4"}
+
+
+class LeelaEngine(ChessformerEngine):
+    """ChessformerEngine on Leela Chess Zero BT4, from an lc0 ONNX export.
+
+    BT4 has no rating input: self_elo / oppo_elo are accepted and ignored, so
+    the same calls work on both engines. No final norm, so the depth points
+    end at m14 (no enc). evaluate()["mlh"] is the moves-left estimate in plies."""
+
+    has_conditioning = False
+    has_generated_bias = True
+    has_mlh = True
+
+    def __init__(self, alias="bt4", device=None, checkpoint_path=None,
+                 activation_dir="activations"):
+        """`alias` is a Leela alias or a path to an .onnx file. Without
+        `checkpoint_path`, the file is looked for in $CHESSFORMER_WEIGHTS, then
+        ./weights. Nothing is downloaded; convert the .pb.gz once with
+            lc0 leela2onnx --input=<net>.pb.gz --output=weights/Leela_BT4_large_model.onnx"""
+        key = str(alias).strip()
+        if key.lower().endswith(".onnx"):
+            name, checkpoint_path = "bt4", checkpoint_path or key
+        else:
+            name = _LEELA_ALIASES.get(key.lower())
+            if name is None:
+                raise ValueError(f"Unknown Leela alias {alias!r}.\n\n{format_engine_list()}")
+        display_name, filename = _LEELA_SPECS[name]
+        if checkpoint_path is None:
+            weights_dir = Path(os.environ.get("CHESSFORMER_WEIGHTS", "weights")).expanduser()
+            checkpoint_path = weights_dir / filename
+        checkpoint_path = Path(checkpoint_path).expanduser()
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(
+                f"{display_name}: no ONNX export at {checkpoint_path}. Get the .pb.gz "
+                f"from https://lczero.org and convert it:\n"
+                f"    lc0 leela2onnx --input=<net>.pb.gz --output={checkpoint_path}")
+
+        self.device = pick_device(device)
+        self.model = _load_bt4_onnx(checkpoint_path, self.device)
+        self.cfg = types.SimpleNamespace(**vars(self.model.cfg), checkpoint_path=str(checkpoint_path),
+                                         device=self.device, history=8, trust_checkpoint=False)
+        self.spec = types.SimpleNamespace(name=f"lc0-{name}", display_name=display_name,
+                                          repo_id=None, checkpoint_filename=filename,
+                                          aliases=tuple(a for a, n in _LEELA_ALIASES.items() if n == name),
+                                          config=vars(self.model.cfg))
+        self.all_moves = _leela_all_moves()
+        super().__init__(activation_dir)
+
+    # ----- per-model members ------------------------------------------------
+    def _embed_module(self):
+        return self.model.embedding
+
+    def _final_norm(self):
+        return None
+
+    def tokens(self, board: chess.Board) -> torch.Tensor:
+        """lc0's input planes, (1, 112, 8, 8); history from board.move_stack."""
+        return _leela_planes(board).unsqueeze(0).to(self.device)
+
+    def _forward(self, board: chess.Board, self_elo: int = 0, oppo_elo: int | None = None):
+        """One raw forward pass (elo ignored): (logits_move (4288,), logits_value
+        (3,)). The moves-left estimate goes to self._aux["mlh"]."""
+        self._activations = {}
+        logits_move, logits_value, mlh = self.model(self.tokens(board))
+        self._aux = {"mlh": float(mlh[0].detach())}
+        return logits_move[0].float(), logits_value[0].float()
+
+    def _forward_batch(self, boards, self_elo=0, oppo_elo=None):
+        """`_forward` over a list of boards in one pass: (B, 4288) move logits."""
+        self._activations = {}
+        planes = torch.stack([_leela_planes(b) for b in boards]).to(self.device)
+        logits_move, _, mlh = self.model(planes)
+        self._aux = {"mlh": mlh.detach().tolist()}
+        return logits_move.float()
+
+    def _move_logits(self, x):
+        """(64, dim) residual -> (4288,) move logits, through BT4's policy head."""
+        return self.model.policy_logits(x.unsqueeze(0))[0]
+
+    @staticmethod
+    def _move_squares(idx):
+        """Canonical (from, to) squares for a policy index; promotions are
+        4096 + from_file*24 + to_file*3 + piece."""
+        if idx < 64 * 64:
+            return idx // 64, idx % 64
+        idx -= 64 * 64
+        return 48 + idx // 24, 56 + (idx % 24) // 3
+
+    @staticmethod
+    def _wdl(logits_value) -> dict:
+        """lc0's value logits are (win, draw, loss)."""
+        win, draw, loss = torch.softmax(logits_value.float(), dim=-1).tolist()
+        return {"win": win, "draw": draw, "loss": loss}
+
+    # ----- policy index <-> move ---------------------------------------------
+    # lc0 has no knight-promotion index (the bare square pair is used) and
+    # stores castling as king takes rook (e1h1, not e1g1). So for castling,
+    # move_info()["to"] is the rook's square; its uci stays e1g1.
+    def _decode_idx(self, board: chess.Board, idx: int) -> chess.Move:
+        """As the base, plus: pawn to last rank -> knight promotion; king onto
+        its own rook -> castling."""
+        mv = super()._decode_idx(board, idx)
+        piece = board.piece_type_at(mv.from_square)
+        if (piece == chess.PAWN and mv.promotion is None
+                and chess.square_rank(mv.to_square) in (0, 7)):
+            mv = chess.Move(mv.from_square, mv.to_square, promotion=chess.KNIGHT)
+        elif (piece == chess.KING
+              and board.piece_at(mv.to_square) == chess.Piece(chess.ROOK, board.turn)):
+            kingside = chess.square_file(mv.to_square) > chess.square_file(mv.from_square)
+            mv = chess.Move(mv.from_square,
+                            chess.square(6 if kingside else 2, chess.square_rank(mv.from_square)))
+        return mv
+
+    def _move_index(self, board: chess.Board, move) -> int:
+        """As the base, plus: knight promotion -> its square pair; castling ->
+        king takes rook."""
+        mv = self.to_move(board, move)
+        if mv.promotion == chess.KNIGHT:
+            mv = chess.Move(mv.from_square, mv.to_square)
+        elif board.is_castling(mv):
+            kingside = chess.square_file(mv.to_square) > chess.square_file(mv.from_square)
+            mv = chess.Move(mv.from_square,
+                            chess.square(7 if kingside else 0, chess.square_rank(mv.from_square)))
+        uci = mv.uci()
+        return self.all_moves_dict[mirror_move(uci) if board.turn == chess.BLACK else uci]
+
+
+# ----- aliases ----------------------------------------------------------------
 
 def resolve_engine(alias: str):
-    """Validate an alias without loading weights -> (engine class, display name).
-
-    Accepts every Maia-3 registry name (aliases, Hugging Face repo ids and
-    URLs) and the Leela aliases or a path to an .onnx export. Anything else
-    raises ValueError with the whole table."""
+    """alias -> (engine class, display name), without loading weights. Takes
+    Maia-3 registry names, Leela aliases, or an .onnx path; ValueError otherwise."""
+    key = str(alias).strip().lower()
+    if key in _LEELA_ALIASES or key.endswith(".onnx"):
+        return LeelaEngine, _LEELA_SPECS[_LEELA_ALIASES.get(key, "bt4")][0]
     try:
         return MaiaEngine, resolve_model_spec(alias).display_name
     except ModelResolutionError as exc:
@@ -1402,9 +1811,8 @@ def resolve_engine(alias: str):
 
 
 def load_engine(alias: str, **kwargs):
-    """Build the engine an alias names: `load_engine("23m")`, `load_engine("bt4")`,
-    `load_engine("weights/net.onnx", device="mps")`. Keyword arguments go to
-    that engine's constructor (device, checkpoint_path, activation_dir, …)."""
+    """Build the engine an alias names, e.g. load_engine("23m"), load_engine("bt4").
+    Keyword arguments go to its constructor."""
     cls, _ = resolve_engine(alias)
     return cls(alias=alias, **kwargs)
 
@@ -1413,4 +1821,9 @@ def format_engine_list() -> str:
     lines = ["Chessformer engines, by alias:", "  Maia-3 (MaiaEngine):"]
     for spec in MODEL_SPECS:
         lines.append(f"    {spec.display_name:<18}{', '.join((spec.name, *spec.aliases))}")
+    lines.append("  Leela Chess Zero (LeelaEngine):")
+    for name, (display_name, filename) in _LEELA_SPECS.items():
+        aliases = ", ".join(a for a, n in _LEELA_ALIASES.items() if n == name)
+        lines.append(f"    {display_name:<18}{aliases}, or a path to an .onnx export "
+                     f"(default weights/{filename})")
     return "\n".join(lines)

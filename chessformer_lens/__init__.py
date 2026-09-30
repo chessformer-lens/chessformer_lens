@@ -34,6 +34,7 @@ except Exception:  # running from a source checkout without an install
 _LAZY = {
     "ChessformerEngine": "chessformer_lens.engine",
     "MaiaEngine": "chessformer_lens.engine",
+    "LeelaEngine": "chessformer_lens.engine",
     "load_engine": "chessformer_lens.engine",
     "resolve_engine": "chessformer_lens.engine",
     "format_engine_list": "chessformer_lens.engine",
@@ -60,10 +61,10 @@ def __dir__():
 
 
 if TYPE_CHECKING:  # so type checkers and IDEs still see the real symbols
-    from .engine import (ChessformerEngine, MaiaEngine, load_engine,
+    from .engine import (ChessformerEngine, MaiaEngine, LeelaEngine, load_engine,
                          resolve_engine, format_engine_list, build_cfg, pick_device)
     from .interp_widget import attention_widget, gab_widget
 
-__all__ = ["ChessformerEngine", "MaiaEngine", "load_engine",
+__all__ = ["ChessformerEngine", "MaiaEngine", "LeelaEngine", "load_engine",
            "resolve_engine", "format_engine_list", "build_cfg", "pick_device",
            "attention_widget", "gab_widget", "__version__"]

@@ -20,8 +20,9 @@ At the top in the center there is a `Win / Draw / Loss · side to move` stacked 
 Under it is the `Maia rating (self_elo)` slider: 600-2800, step 25, default 1500; Dragging reevaluates the same position. 
 Under that is the scrollable ranked list: `Policy over N legal moves`: every legal move gets a row. 
 
-There is a `compare with a second rating` checkbox which reveals a `second rating` slider
-(default 1100). Setting it makes the policy rows become paired blue/green bars showing the compared policy and evaluation. This second rating does not affect the attention or GAB or residual panel app features.
+
+![app view](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot11.png)
+*App view: board, evaluation, policy, live attention, live neurons*
 
 **Take the Model Apart**
 Get the `Live attention · this position`, with `Layer` and `Head` chip rows.
@@ -32,35 +33,22 @@ Select a square on the right to set the query for the three boards, labeled:
 `Ablate this head` redraws the policy list with the ablated pass in red over the clean pass in blue, re-sorted by
 signed `Δ = p(ablated) − p(clean)` — the moves the head was suppressing rise to the top, the ones it was holding up sink.
 
-![Live attention: the QKᵀ, GAB and final attention boards for one query square](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot2.png)
-*Live attention: the QKᵀ, GAB and final attention boards for one query square*
+The `Neurons` panel to the right does the same for one MLP neuron. A network diagram shows one column of dots per MLP layer. Click a column to pick the layer, a dot to pick the neuron. The dots in the selected layer are its most active units on this position. Below, the neuron's activation on every square, and `Ablate this neuron` removes its exact write on every square.
 
-Unique to the app and Maia-3, hover over any attention square and the GAB drawer decomposes that square pair live, with every head clickable to open that template:
- ![The GAB drawer decomposing one square pair, head by head](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot7.png)
-*The GAB drawer decomposing one square pair, head by head*
 
-**The Three Drawers**
-![The residual-stream filmstrip across depth](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot4.png)
-*The residual-stream filmstrip across depth*
 
-![The move microscope: depth curves for up to four moves](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot5.png)
-*The move microscope: depth curves for up to four moves*
+**Analyze One Move**
+![Analyze one move](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot12.png)
+*Analyze one move: `Logit lens`, `causal heads`, `causal neurons`*
 
-![The carrier-head grid, Δlogit = ablated − clean](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot3.png)
-*The carrier-head grid, Δlogit = ablated − clean*
 
-![The GAB generator drawer and its template vocabulary](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot6.png)
-*The GAB generator drawer and its template vocabulary*
 
-One open at a time, each peeking at the bottom with a `▲ pull up` grip, `Escape` closes.
+One drawer, `Analyze one move`, docked at the bottom with a `▲ pull up` grip. The side panels run 1.5 inches below the board; when the drawer opens it rises an inch above the board's bottom edge and the whole layout above scales down to make room, so nothing is ever covered. `Escape` closes it. Click up to 4 policy moves to open it. Its three sections sit side by side and all describe the primary move (click a move chip to change it):
 
-`Residual stream across depth · this position` — creates a filmstrip of mini
-  boards at readout points in the forward pass where each square's heat denotes the ‖Δ‖ for the token. logit-lens' top move is in miniature display on top. Opened by the
-  `Watch residual stream` button.
+`Logit lens` — the move's logit at every readout point of the forward pass (the logit lens narrowed to one policy entry); a marker shows from where the move sustains rank 1; per-dot hover, ex: `b3 mlp · logit 4.21 · p 38.2% · rank 1/31`.
 
-`Move microscope (and Carrier Heads)` — click up to 4 policy moves to overlay their depth curves (essentially logit lens narrowed to one policy); marker shows when a move sustains rank-1; per-dot hover
-ex: `b3 mlp · logit 4.21 · p 38.2% · rank 1/31`.
-`carrier heads` runs (layers x heads) forward passes with different ablated heads and record: `Δlogit = ablated − clean`.Hover for exact values. The largest Δlogit head is ringed red. The final layer is dimmed and striped, `excluded from carrier attribution`, because it writes straight to the logits and muddles meaningful results from earlier layers. 
+`Causal heads` — (layers × heads) forward passes, each with one head's exact residual write removed, recording `Δlogit = ablated − clean`. Hover for exact values; the largest-|Δ| head is ringed red; click a cell to open that head in the attention panel. The final layer is dimmed and striped, excluded from carrier attribution, because it writes straight to the logits and muddles the earlier structure.
 
-`How L[i]H[j] GAB is generated` — see the network's generated linear combination of each template #0–63. `click to inspect`, and under
-see `template vocabulary · the 64 static stencils (row = query sq, col = key sq)` as a gallery.
+`Causal neurons` — the same question at neuron grain. Ablating every MLP unit one by one is computationally unfeasible so every unit is scored at once by attribution patching, `Δlogit ≈ −∂logit/∂h · h`, the first-order effect of removing it, from one backward pass. Each row carries a mini-board of where on the board the unit does its work. Same colours as the head grid: blue carries the move, orange suppresses it. 
+
+Under the logit-lens curve, a strip shows the model's own top move at every readout point, so you can see when the played move takes over from what the early layers favoured.

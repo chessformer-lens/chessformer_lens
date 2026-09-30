@@ -2,7 +2,7 @@
 
 #### A toolkit + visualizer library  for mechanistic interpretability of transformer based chess models.
 
-Download a chessformer engine then `pip install chessformer_lens`
+Download a chessformer engine (Leela Chess Zero or Maia) then `pip install chessformer_lens`
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21877655.svg)](https://doi.org/10.5281/zenodo.21877655)
 
@@ -121,8 +121,8 @@ To me, the app is the pièce de résistance and usage should be rather intuitive
 
 
 Play a transformer-based chess bot ("chessformer") and watch
-its move policy, its attention (both semantic QKᵀ and unique geometric GAB), and its residual stream 
-evolve with model depth. The model loads on a background thread so the window opens instantly.
+its move policy, its attention (both semantic QKᵀ and unique geometric GAB), and — for any move you
+click — its logit through depth, the heads that carry it, and the neurons that carry it. The model loads on a background thread so the window opens instantly.
 
 
 ```bash
@@ -130,7 +130,8 @@ evolve with model depth. The model loads on a background thread so the window op
 chessformer_lens
 chessformer_lens 23m               
 chessformer_lens --model maia3-79m 
-MAIA3_ALIAS=5m chessformer_lens   
+CHESSFORMER_MODEL=5m chessformer_lens
+chessformer_lens bt4                # Leela Chess Zero BT4 — see below   
 ```
 
 
@@ -138,10 +139,31 @@ MAIA3_ALIAS=5m chessformer_lens
 CUDA to speed higher parameter models up. Model weights: <https://huggingface.co/UofTCSSLab> -->
 
 ---
+## Leela Chess Zero BT4
+
+**Weights.** Nothing is downloaded automatically. Fetch `BT4-1024x15x32h-swa-6147500.pb.gz` from [lczero.org](https://lczero.org) and convert it once with lc0 (the `.pb.gz` needs lc0's own protobuf schema; the ONNX export names every layer):
+```bash
+lc0 leela2onnx --input=BT4-1024x15x32h-swa-6147500.pb.gz --output=weights/Leela_BT4_large_model.onnx
+```
+
+**Load.** One alias table covers both families; neither is a default.
+```python
+from chessformer_lens import LeelaEngine, load_engine
+eng = LeelaEngine()                                            # ./weights/Leela_BT4_large_model.onnx
+eng = LeelaEngine(checkpoint_path="path/to/net.onnx", device="mps")
+eng = load_engine("bt4")                                       # or "23m", "79m", …
+```
+```bash
+chessformer_lens bt4                 # the app; or CHESSFORMER_MODEL=bt4 chessformer_lens
+```
+
+**Differences with Maia.** BT4 has no rating input: the `self_elo` / `oppo_elo` arguments are accepted and ignored (pass any int), the app hides its rating card, and `compare_residual` returns zero diffs. `evaluate()` gains `"mlh"`, the moves-left head's estimate of plies to game end, shown beside the W/D/L bar. Depth points are `emb, a0 … m14`: 31 of them, no `enc`, because the heads read the last block directly. 
+
+---
 
 ### Code layout: all found within the chessformer_lens package
-- `__init__.py` — the package surface: `MaiaEngine`, `build_cfg`, `pick_device`, `attention_widget`, `gab_widget`, `__version__`.
-- `engine.py` — `MaiaEngine`: the interp core (model + hooks + logit lens + head ablation + list of values through depth). No UI deps; imports cleanly in a notebook.
+- `__init__.py` — the package surface: `MaiaEngine`, `LeelaEngine`, `load_engine`, `build_cfg`, `pick_device`, `attention_widget`, `gab_widget`, `__version__`.
+- `engine.py` — the interp core (model + hooks + logit lens + head ablation + list of values through depth): `ChessformerEngine` holds every method, `MaiaEngine` and `LeelaEngine` supply only the model, its tokens and its move vocabulary. No UI deps; imports cleanly in a notebook.
 - `interp_plot.py` — matplotlib figures that the app uses
 - `interp_widget.py` — the app's two interactive panels as a self-contained notebook cell or standalone HTML page
 - `piece_art.py` — draws `pieces.py`'s cburnett pieces in matplotlib from PNGs
@@ -165,8 +187,10 @@ Created by David Litman
 Maia-3 comes from:
 Chessformer / Maia-3 (Monroe et al., ICLR 2026).
 
+BT4 comes from the Leela Chess Zero project (lczero.org); the smolgen / attention-body design it uses is described in the Chessformer paper and in lc0's own writeups.
 
-The Maia-3 model interpreter is completed; Leela will be completed soon. Both of these treat each square as a token—which allows for beautiful board readable attention patterns. Eventually other tokenization schemes will be tackled.
+
+Both Maia-3 and Leela BT4 are supported. Both treat each square as a token—which allows for beautiful board readable attention patterns. Eventually other tokenization schemes will be tackled.
 
 
 Please don't hesitate to give me feedback or thoughts by email or at [my personal website](https://davidlitman.com). I hope for this to be a useful and intuitive tool for the community.

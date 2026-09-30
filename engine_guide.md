@@ -2,14 +2,12 @@
 *(`engine.py`: the interpretability core behind the app, plots, and widgets)*
 
 An interpretability core for chessformers that treat the 64 squares as tokens.
-`MaiaEngine` loads a Maia-3 checkpoint, runs forward passes, and captures the
+`LeelaEngine ` loads a Leela Chess Zero BT4 checkpoint. `MaiaEngine` loads a Maia-3 checkpoint. Then runs forward passes, and captures the
 residual stream at every layer.
 
 `engine.py` imports cleanly into a notebook and is called by `interp_plot.py`
 (static figures), `interp_widget.py` (interactive panels), and the standalone
 app in `bridge.py` / `app.py` / `ui.py`.
-
-*The next release will do the same for Leela (LC0 BT4).*
 
 
 **Run the Model**
