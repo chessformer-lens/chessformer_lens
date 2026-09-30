@@ -1,6 +1,6 @@
 {
   "title": "chessformer_lens: an interpretability lens for square-token chess transformers",
-  "description": "A toolkit and visualizer for mechanistic interpretability of transformer-based chess models that tokenize the board by square. Provides an interp core (hooks, logit lens, head ablation, depth traces) plus interactive attention and GAB-decomposition panels.",
+  "description": "A toolkit and visualizer for mechanistic interpretability of transformer-based chess models that tokenize the board by square, with Maia-3 and Leela Chess Zero BT4 backends. Provides an interp core (hooks, logit lens, causal head and neuron ablation, depth traces) plus an interactive app: live attention, a neuron panel, and a one-move analysis of the logit lens, causal heads and causal neurons.",
   "upload_type": "software",
   "license": "MIT",
   "access_right": "open",
