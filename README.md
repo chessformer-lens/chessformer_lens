@@ -27,7 +27,7 @@ cd chessformer_lens
 pip install -r requirements.txt
 ```
 ---
-## Demo Notebook: [`demo.ipynb`](https://github.com/chessformer-lens/chessformer_lens/blob/main/demo.ipynb)
+## Demo Notebook: <a href="https://colab.research.google.com/github/chessformer-lens/chessformer_lens/blob/main/demo.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" width="200"></a>
 
 ---
 
