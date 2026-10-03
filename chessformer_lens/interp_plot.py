@@ -222,7 +222,7 @@ def draw_board(ax, board: chess.Board, *, move=None, heat=None, cmap=None,
       pieces      draw the pieces at all; False for a pure heat board.
       coords      file/rank labels around the edge.
       checker     overlay the app's faint checkerboard on top of `heat`, so the
-                  squares stay readable under a flat colour.
+                  squares stay readable under a flat color.
       piece_size  fraction of a square the artwork occupies.
     """
     _empty_board(ax)
@@ -446,7 +446,7 @@ def _wdl_bar(ax, wdl, *, y, h, tag=None):
 # ---------------------------------------------------------------------------
 def _depth_axes(ax, labels, curves, *, ylabel, invert=False, legend=False):
     """The app's depth chart. `labels` is one compact depth label per readout
-    point; `curves` is [(name, values, colour, lw)] sharing that x axis, with
+    point; `curves` is [(name, values, color, lw)] sharing that x axis, with
     None values left as gaps. `invert` flips y for rank, where 1 is at the top."""
     x = np.arange(len(labels))
     _panel(ax, face=CHART_BG)
@@ -666,7 +666,7 @@ def plot_carrier_heads(eng, board: chess.Board, elo: int = 1500, uci: str | None
 
 def _carrier_grid(ax, eng, board, elo, uci, oppo_elo):
     """The app's ablation grid: num_heads columns x one row per layer (`LNHH`),
-    coloured by Δlogit = ablated − clean, with the final layer excluded from the
+    colored by Δlogit = ablated − clean, with the final layer excluded from the
     scale."""
     g = eng.ablate_grid(board, elo, uci, oppo_elo)
     d = np.array(g["deltas"])
@@ -831,7 +831,7 @@ def plot_attention_layer(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
                     specific pair (a move's from- and to-square, say).
       shared_scale  normalize each row by one maximum across every head in it,
                     so a bright square means that head really is attending
-                    harder than its neighbours. False scales each panel to
+                    harder than its neighbors. False scales each panel to
                     itself, which keeps a head's *shape* legible regardless of
                     magnitude but makes a flat head look as decisive as a sharp
                     one.

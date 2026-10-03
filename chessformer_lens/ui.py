@@ -1365,7 +1365,7 @@ function drawMlChart(){
     h+=`<text x="${X(i)}" y="${MT+ih+14}" fill="#8b93a3" font-size="9" text-anchor="middle" font-family="monospace">${s.label}</text>`;
   });
   // the model's own top move at each readout point: one segment per run of the
-  // same move, coloured like the compared move when it is one of them
+  // same move, colored like the compared move when it is one of them
   if(mlTop && mlTop.length===A.length){
     const y0=MT+ih+22, sh=14, half=perStep/2, cmap={}; series.forEach(m=>cmap[m.uci]=m.color);
     h+=`<text x="${ML-4}" y="${y0+10}" fill="#8b93a3" font-size="8" text-anchor="end" font-family="monospace">top</text>`;
@@ -1410,7 +1410,7 @@ function renderAblGrid(g){
   const box=$('mlgridbox'); if(box) box.style.width=Math.max(300, gridW)+'px';
   // The final layer writes straight into the logits, so ablating its heads always
   // looks like a huge Δ and drowns out the earlier structure — leave it out of the
-  // carrier attribution (colour scale + "strongest" pick), just dim it in the grid.
+  // carrier attribution (color scale + "strongest" pick), just dim it in the grid.
   const NO_CARRIER_LAYER=noCarrierLayer();
   const skip=L=>L===NO_CARRIER_LAYER;
   let m=1e-9, sL=-1, sH=-1;
@@ -1490,7 +1490,7 @@ function renderNeurons(d){
 /* ---- the network diagram: input squares, one column of dots per MLP layer, output.
    The selected layer's dots are its most active units on this position (from
    neurons_overview); other columns show the same count faintly. Carrier units of
-   the microscope's primary move get a coloured ring. ---- */
+   the microscope's primary move get a colored ring. ---- */
 function renderNet(){
   const svg=$('netsvg'); if(!svg) return;
   const info=MODEL_INFO||{}; const nb=(neurOv&&neurOv.n_layers)||info.num_blocks||8;

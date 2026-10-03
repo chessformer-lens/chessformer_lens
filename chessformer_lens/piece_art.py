@@ -14,7 +14,7 @@ then just `imshow`. They live in this file rather than a `piece_art/` directory
 so the figure layer is one importable module with no package_data to ship and no
 paths to resolve at runtime.
 
-Pieces keep their own colours (white with a black outline, black), so a board
+Pieces keep their own colors (white with a black outline, black), so a board
 here looks like a board there.
 
     from chessformer_lens.piece_art import draw_piece

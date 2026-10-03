@@ -1,6 +1,6 @@
 # chessformer_lens
 
-#### A toolkit + visualizer library  for mechanistic interpretability of transformer based chess models.
+#### A toolkit and app for mechanistic interpretability of transformer based chess models.
 
 Download a chessformer engine (Leela Chess Zero or Maia) then `pip install chessformer_lens`
 
@@ -14,53 +14,22 @@ Download a chessformer engine (Leela Chess Zero or Maia) then `pip install chess
 
 ---
 
-## Case study: Knight Fork Carrier Head
-**Download chessformer_lens locally:**
-
-
 Pip install:
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install https://github.com/CSSLab/maia3/archive/1e13597c42d4858b7cfd7cfdae01e297263364b2.zip --quiet
 pip install chessformer_lens
 ```
-
-Clone install:
+or Clone if you want to edit the code:
 ```bash
 git clone https://github.com/chessformer-lens/chessformer_lens
 cd chessformer_lens
 pip install -r requirements.txt
 ```
+---
+## Demo Notebook: [`demo.ipynb`](https://github.com/chessformer-lens/chessformer_lens/blob/main/demo.ipynb)
 
-Quick interpretability demo (n=10): **attention layer 5 head 5 seems to be the carrier head for knight forks**
-
-In python:
-```python
-# Gather ten positions with knights forking King and Queen, then ablate every
-# head in the model to see which one is most causally linked to the output.
-import chess
-import matplotlib.pyplot as plt
-from chessformer_lens import MaiaEngine
-import chessformer_lens.interp_plot as ip
-
-eng = MaiaEngine()
-
-knight_forks = [
-{"fen": '1r2k3/3qn3/3p4/p2P1Pp1/PpP3Np/1P3Q1P/3K1PP1/7R w - - 0 37', "move":'g4f6'},
-{"fen": '5b2/6p1/3p2k1/2p3pn/7r/8/P2NKPQ1/R6R b - - 2 25', "move":'h5f4'},
-{"fen": '6k1/5p1p/p3p1p1/1p2n3/1P1q4/P2p2P1/3Q1N1P/6K1 b - - 2 37', "move":'e5f3'},
-{"fen": 'rn1q1knr/pb2p1b1/6p1/5pN1/1pPP3p/1P6/P1B2PPP/1RQ2RK1 w - - 2 20', "move":'g5e6'},
-{"fen": '5r1k/3nrBp1/b1pp1n1p/p3q2P/Pp2PN2/3PB1Q1/1PP3P1/2KR3R w - - 1 22', "move":'f4g6'},
-{"fen": '6k1/1pq2ppp/p7/3p4/1P1Nn3/P2QPP2/1B4Pb/7K b - - 1 26', "move":'e4f2'},
-{"fen": '4r1k1/6b1/3p2pp/3Pnp2/4N2Q/6P1/P1q2P1P/4R1K1 b - - 0 26',"move": 'e5f3'},
-{"fen": '5rk1/pp5p/2p1p1p1/6N1/3PQBP1/2q4P/P7/3n3K b - - 1 25', "move":'d1f2'},
-{"fen": 'r2q1rk1/ppp3p1/3ppn1B/2b1p3/3nP3/3P2QN/PPP2PPP/RN3RK1 b - - 2 11',"move": 'd4e2'},
-{"fen": 'r1b2rk1/1pp2p1p/4p1p1/2PqP3/p1nPN2B/P1PQ4/6PP/R4RK1 w - - 2 21',"move": 'e4f6'}]
-
-for pos in knight_forks:
-    ip.plot_move_report(eng, chess.Board(pos["fen"]), 2400, pos["move"])
-    plt.show()
-```
+---
 
 ![A knight-fork position's move report](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot10.png)
 ---
@@ -86,7 +55,19 @@ Users are encouraged to read the user guides for each of these modules which can
 *Image from paper produced with chessformer_lens*
 
 ---
-## Quickstart in colab or notebook:
+## Leela Chess Zero
+
+This is an extremely strong engine that has many many more layers and parameters but functionally the same architecture as others like Maia-3.
+
+**Weights:** Download the network file `BT4-1024x15x32h-swa-6147500.pb.gz` from [lczero.org](https://lczero.org) and pass its path. The engine reads lc0's `.pb.gz` directly.
+
+**Load.** One alias table covers both families; neither is a default.
+```python
+from chessformer_lens import LeelaEngine, load_engine
+eng = LeelaEngine(checkpoint_path="BT4-1024x15x32h-swa-6147500.pb.gz")
+```
+---
+## Quickstart in notebook:
 
 Recall that FEN is the modern notation for a chess position
 ```python
@@ -139,24 +120,7 @@ chessformer_lens bt4                # Leela Chess Zero BT4 — see below
 CUDA to speed higher parameter models up. Model weights: <https://huggingface.co/UofTCSSLab> -->
 
 ---
-## Leela Chess Zero BT4
 
-**Weights.** Download the network file `BT4-1024x15x32h-swa-6147500.pb.gz` from [lczero.org](https://lczero.org) and pass its path. The engine reads lc0's `.pb.gz` directly; no conversion and no lc0 install needed. 
-
-**Load.** One alias table covers both families; neither is a default.
-```python
-from chessformer_lens import LeelaEngine, load_engine
-eng = LeelaEngine(checkpoint_path="BT4-1024x15x32h-swa-6147500.pb.gz")
-eng = load_engine("BT4-1024x15x32h-swa-6147500.pb.gz", device="mps")
-eng = load_engine("bt4")               # looks for weights/Leela_BT4_large_model.pb.gz
-```
-```bash
-chessformer_lens BT4-1024x15x32h-swa-6147500.pb.gz      # the app
-```
-
-**Differences with Maia.** BT4 has no rating input. `evaluate()` gains `"mlh"`, the moves-left head's estimate of plies to game end. Depth points are `emb, a0 … m14`: 31 of them, and there is no `enc`, because the heads read the last block directly. 
-
----
 
 ### Code layout: all found within the chessformer_lens package
 - `__init__.py` — the package surface: `MaiaEngine`, `LeelaEngine`, `load_engine`, `build_cfg`, `pick_device`, `attention_widget`, `gab_widget`, `__version__`.

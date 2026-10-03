@@ -633,9 +633,9 @@ def _leela_planes(board: chess.Board) -> torch.Tensor:
         pos = game[i]
         view = pos.mirror() if we_black else pos           # side to move = White
         base = 13 * k
-        for colour, off in ((chess.WHITE, 0), (chess.BLACK, 6)):
+        for color, off in ((chess.WHITE, 0), (chess.BLACK, 6)):
             for j, piece in enumerate(chess.PIECE_TYPES):   # P N B R Q K
-                planes[base + off + j] = _bits(view.pieces_mask(piece, colour))
+                planes[base + off + j] = _bits(view.pieces_mask(piece, color))
         if reps[i] >= 1:
             planes[base + 12] = 1.0
         if filled and pos.ep_square is not None:           # undo the double push
@@ -1634,27 +1634,9 @@ class ChessformerEngine:
         `ablate_head` — a real intervention, not a correlational read of
         activations.
 
-        Heads are cheap to ablate one by one; neurons are not (BT4 has 23k of
-        them, each firing on 64 squares), so every unit is scored at once by
-        attribution patching: one backward pass giving, for every hidden unit
-        h of every MLP (layer L, square s, neuron n), the first-order estimate
-        of the logit change from zeroing it, Δ ≈ −(∂logit/∂h)·h. Same sign
-        convention as `ablate_grid`: negative = removing the unit would lower
-        the move's logit (a carrier), positive = it was suppressing the move.
-        Summed over squares that ranks the units; kept per square it says
-        where on the board each does its work. The last layer is skipped by
-        default, as the head grid does (it writes straight into the logits).
-
-        The estimate is a linearization — Post-LN and the bilinear policy head
-        can bend it — so with verify=True the 2·top_k strongest candidates are
-        re-measured by exact zero-ablation (`ablate_neuron`) and the table is
-        the top_k by |exact|; otherwise `exact` is None and the table is the
-        top_k by |est|.
-
-        `move` is any form `to_move` reads. Returns {uci, san, base_logit,
-        n_layers, n_neurons, layer_abs: [nb] (Σ|Δ| over each layer's units),
-        top: [{layer, neuron, est, exact, squares: [64] canonical, peak}]}.
-        Costs one forward + one backward pass, plus 2·top_k with verify."""
+        Every unit is scored at once by attribution patching: one backward pass giving, 
+        for every hidden unit h of every MLP (layer L, square s, neuron n), the first-order estimate
+        of the logit change from zeroing it, Δ ≈ −(∂logit/∂h)·h. """
         info = self.move_info(board, move)
         idx = info["idx"]
         layers = self.model.transformer.layers

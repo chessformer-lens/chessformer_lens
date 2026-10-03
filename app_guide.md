@@ -49,6 +49,6 @@ One drawer, `Analyze one move`, docked at the bottom with a `▲ pull up` grip. 
 
 `Causal heads` — (layers × heads) forward passes, each with one head's exact residual write removed, recording `Δlogit = ablated − clean`. Hover for exact values; the largest-|Δ| head is ringed red; click a cell to open that head in the attention panel. The final layer is dimmed and striped, excluded from carrier attribution, because it writes straight to the logits and muddles the earlier structure.
 
-`Causal neurons` — the same question at neuron grain. Ablating every MLP unit one by one is computationally unfeasible so every unit is scored at once by attribution patching, `Δlogit ≈ −∂logit/∂h · h`, the first-order effect of removing it, from one backward pass. Each row carries a mini-board of where on the board the unit does its work. Same colours as the head grid: blue carries the move, orange suppresses it. 
+`Causal neurons` — the same question at neuron grain. Ablating every MLP unit one by one is computationally unfeasible so every unit is scored at once by attribution patching, `Δlogit ≈ −∂logit/∂h · h`, the first-order effect of removing it, from one backward pass. Each row carries a mini-board of where on the board the unit does its work. Same colors as the head grid: blue carries the move, orange suppresses it. 
 
-Under the logit-lens curve, a strip shows the model's own top move at every readout point, so you can see when the played move takes over from what the early layers favoured.
+Under the logit-lens curve, a strip shows the model's own top move at every readout point, so you can see when the played move takes over from what the early layers favored.
