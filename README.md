@@ -17,7 +17,7 @@ Download a chessformer engine (Leela Chess Zero or Maia) then `pip install chess
 Pip install:
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install https://github.com/CSSLab/maia3/archive/1e13597c42d4858b7cfd7cfdae01e297263364b2.zip --quiet
+pip install https://github.com/CSSLab/maia3/archive/1e13597c42d4858b7cfd7cfdae01e297263364b2.zip --quiet   # only needed for Maia-3 models
 pip install chessformer_lens
 ```
 or Clone if you want to edit the code:
@@ -108,7 +108,8 @@ click — its logit through depth, the heads that carry it, and the neurons that
 
 ```bash
 #Various ways to launch, note that higher parameter models have 16 and 32 heads per layer, and 512 and 1024 dim of the model (d_model):
-chessformer_lens
+chessformer_lens                    # no model named: opens a model picker
+chessformer_lens --list             # print every engine and its aliases
 chessformer_lens 23m               
 chessformer_lens --model maia3-79m 
 CHESSFORMER_MODEL=5m chessformer_lens
@@ -123,12 +124,14 @@ CUDA to speed higher parameter models up. Model weights: <https://huggingface.co
 
 
 ### Code layout: all found within the chessformer_lens package
-- `__init__.py` — the package surface: `MaiaEngine`, `LeelaEngine`, `load_engine`, `build_cfg`, `pick_device`, `attention_widget`, `gab_widget`, `__version__`.
-- `engine.py` — the interp core (model + hooks + logit lens + head ablation + list of values through depth): `ChessformerEngine` holds every method, `MaiaEngine` and `LeelaEngine` supply only the model, its tokens and its move vocabulary. No UI deps; imports cleanly in a notebook.
+- `__init__.py` — the package surface: `MaiaEngine`, `LeelaEngine`, `load_engine`, `build_cfg`, `pick_device`, `Conditioning`, `ModelAdapter`, `register_adapter`, `available_models`, `attention_widget`, `gab_widget`, `__version__`.
+- `engine.py` — the interp core (model + hooks + logit lens + head ablation + list of values through depth): `ChessformerEngine` holds every method and works on any model a `ModelAdapter` describes; `MaiaEngine` and `LeelaEngine` are thin wrappers. No UI deps; imports cleanly in a notebook.
+- `core.py` — the model-agnostic layer: `ModelAdapter`, the adapter registry, and the types the engine speaks in (`Conditioning`, `TokenLayout`, `ValueEstimate`, …).
+- `adapters/` — one adapter per model family: `lc0.py` (Leela BT4, no maia3 needed), `maia3.py` (Maia-3), `smolgen.py` (the smolgen/GAB attention both use).
 - `interp_plot.py` — matplotlib figures that the app uses
 - `interp_widget.py` — the app's two interactive panels as a self-contained notebook cell or standalone HTML page
 - `piece_art.py` — draws `pieces.py`'s cburnett pieces in matplotlib from PNGs
-- `bridge.py` — the game state + the JSON API the UI calls.
+- `bridge.py` — the game state + the JSON API the UI calls (`LensApi`).
 - `ui.py` — the whole interface (HTML/CSS/JS) as one string including guide to change template.
 - `pieces.py` — SVG piece set as data URIs.
 - `app.py` — app launcher (native window via pywebview); the `chessformer_lens` command is its `main()`.
@@ -151,7 +154,7 @@ Chessformer / Maia-3 (Monroe et al., ICLR 2026).
 BT4 comes from the Leela Chess Zero project (lczero.org); the smolgen / attention-body design it uses is described in the Chessformer paper and in lc0's own writeups.
 
 
-Both Maia-3 and Leela BT4 are supported. Both treat each square as a token—which allows for beautiful board readable attention patterns. Eventually other tokenization schemes will be tackled.
+Both Maia-3 and Leela BT4 are supported. Both treat each square as a token—which allows for beautiful board readable attention patterns. The core now works through model adapters, so other models can plug in; for models whose tokens aren't squares, the board views show a "not available yet" notice for now.
 
 
 Please don't hesitate to give me feedback or thoughts by email or at [my personal website](https://davidlitman.com). I hope for this to be a useful and intuitive tool for the community.

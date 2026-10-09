@@ -1,29 +1,27 @@
-"""Interpretability core for chess transformers.
+"""Mechanistic Interpretability core for chess transformers.
 
-`ChessformerEngine` holds every read and intervention path below and works on
+`ChessformerEngine` class contains every read and intervention path below and works on
 any model a `ModelAdapter` describes (see core.py): the adapter supplies the
 model, its input tokens, its move vocabulary and a view of its internals; the
 engine does the rest. Built-in families, by alias (`load_engine`):
 
-  Leela Chess Zero  lc0 attention-body nets such as BT4 (185M params, 15 layers
-                    x 32 heads x 1024d), from lc0's .pb.gz — `LeelaEngine`
-  Maia-3            the Chessformer checkpoints (3M ablation / 5M / 23M / 79M),
-                    conditioned on a rating pair — `MaiaEngine`
+  MaiaEngine    a Maia-3 checkpoint (5M / 23M / 79M / 3M-ablation), conditioned
+                on a rating pair — `self_elo` / `oppo_elo` are real inputs
+  LeelaEngine   Leela Chess Zero BT4 (185M params, 15 layers x 32 heads x 1024d),
 
-and anything registered with `register_adapter` (tests/toy_adapter.py is a
-model whose tokens are not squares). There is no default model: name one. Every method takes the position and the
-model's conditioning — the legacy `(self_elo, oppo_elo)` pair, or one
-`Conditioning` — which a model without a rating input ignores.
 
   evaluate              one forward pass yielding the full normalized policy over
                         legal moves (in descending order), the W/D/L for the side to
                         move (`value` for any value head), and auxiliary heads such
                         as the moves-left estimate
   evaluate_batch        the same over many positions without touching the
-                        activation snapshot (what a search calls)
+
   select_move           pick a move at a rating (temperature 0 = argmax)
   tokens                the position as the model's input tokens
+
   layout                what each token of the residual stream stands for
+
+
   run_with_cache        forward pass returning (out, cache): the whole
                         residual stream, transformer_lens style
   run_with_hooks        forward pass with intervention hooks: activation
@@ -40,7 +38,9 @@ model's conditioning — the legacy `(self_elo, oppo_elo)` pair, or one
   gab_coeffs            the coefficients head h applies to the GAB bank
   gab_templates         the static square-pair template bank every layer shares
   head_writes           exact residual writes of one layer's attention
-
+  
+  
+    
   ablate_head           forward pass with one head's write removed, exactly
   ablate_grid           the carrier heatmap of one move: every head ablated in
                         turn, Δlogit = ablated − clean (negative = the head
@@ -84,13 +84,9 @@ adapter registry (`resolve_engine` validates an alias without loading weights,
 a model family, and `pick_device` resolves the torch device (explicit >
 $CHESSFORMER_DEVICE > cuda > mps > cpu).
 
-Every tensor a read path returns is on CPU. Activations are (tokens, d_model);
-on the square-token models the token axis is the board in the model's
-canonical side-to-move frame (square = rank*8 + file, Black mirrored
-vertically) and `layout(board)` says so — every other model's layout names its
-tokens. Depth reads the same as in the figures: `emb`, then `aN`/`mN` for
-layer N's attention and MLP sub-layers, then — where the heads read through a
-final norm — `enc`. `depth_points` hands you that axis directly (18 points on
+Every tensor a read path returns is on CPU. Depth reads the same as in the figures: 
+`emb`, then `aN`/`mN` for layer N's attention and MLP sub-layers, then `enc`. 
+`depth_points` hands you that axis directly (18 points on
 every Maia-3 size, 31 on BT4).
 
 engine.py imports cleanly into a notebook and is called by interp_plot.py
@@ -122,15 +118,12 @@ def _elo_out(x):
 
 
 class ChessformerEngine:
-    """Hook-based interpretability engine over any chess transformer a
+    """Hook-based mechanistic interpretability engine over any chess transformer a
     `ModelAdapter` describes.
 
     Provides read paths (run_with_cache, logit_lens, residual_stream, attention,
     gab_*) and intervention paths (run_with_hooks, ablate_head, ablate_grid,
     ablate_grid_batch). Every tensor a read path returns is on CPU.
-
-        ChessformerEngine(adapter)          an adapter you built
-        ChessformerEngine("bt4")            any registered alias (or use load_engine)
 
     What the model has, for code that degrades gracefully:
       caps                the adapter's Capabilities (conditioning, value kind,
@@ -368,8 +361,7 @@ class ChessformerEngine:
 
     @torch.no_grad()
     def evaluate_batch(self, boards, self_elo=None, oppo_elo=None):
-        """`evaluate` over many positions in one forward pass, leaving the
-        activation snapshot alone (see `no_capture`) — the call a search makes.
+        """`evaluate` over many positions in one forward pass.
         Returns one {policy, wdl, value, aux} dict per board."""
         boards = list(boards)
         if not boards:
@@ -404,7 +396,8 @@ class ChessformerEngine:
         Cached tensors are always on CPU, whatever `self.device` is. Contrast
         `run_with_hooks`, whose hook functions see activations on the live
         device — move tensors yourself when feeding a cached value into an
-        intervention."""
+        intervention. On a CPU-only setup (or with CHESSFORMER_DEVICE=cpu) 
+        both are on the CPU and none of this matters."""
         out = self.evaluate(board, self_elo, oppo_elo)
         cache = {k: v.squeeze(0).clone() for k, v in self._activations.items()}
         return out, cache
@@ -433,16 +426,10 @@ class ChessformerEngine:
 
         return_type='policy' -> the evaluate() dict; 'logits' -> the raw
         (logits_move, value) tensors, unmasked. Hooks are always removed
-        afterward, even on error.
-
-        Two gotchas. attn_NN is the write after the output projection, which
-        mixes every head into every channel, so slicing attn_NN channels does
-        not isolate a head — use `ablate_head()` / `head_writes()` for that.
-        And the capture hooks from __init__ fire before your hook on the same
-        module, so after a patched run `_activations[name]` (and any cache
-        taken from it) holds the clean output of the patched module, while
-        downstream entries do reflect the patch. Take your clean cache before
-        you patch, not after.
+        afterward, even on error.        
+        Slicing attn_NN channels does not isolate a head
+        use `ablate_head()` / `head_writes()` for that.
+        Take your clean cache before you patch, not after.
 
         Example — halve layer 5's whole attention write:
             self.run_with_hooks(board, 1500, fwd_hooks=[("attn_05", lambda a: a * 0.5)])
@@ -464,9 +451,8 @@ class ChessformerEngine:
                    *, legal_only: bool = True):
         """Decode a residual-stream activation through the policy head (logit lens).
 
-        `activation` is (tokens, dim) or (1, tokens, dim) — e.g. any value from
-        a cache. With no `board`, returns the raw (n_moves,) move logits. With a
-        `board`, returns the top move as a dict {idx, uci, san, from, to, piece,
+        `activation` is (tokens, dim), any value from
+        a cache. Returns the top move as a dict {idx, uci, san, from, to, piece,
         logit}, masked to legal moves when `legal_only` (`uci`/`san`/`piece` are
         None if the argmax index doesn't decode to a legal move).
 

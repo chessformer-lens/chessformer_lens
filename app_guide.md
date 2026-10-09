@@ -1,6 +1,8 @@
 # App Guide 
 *(If you cloned the repo look at Screenshots/chessformer_lens_demo.mp4)*:
 
+Launched with no model named, the app opens a picker listing every engine; choose one to load it (`chessformer_lens --list` prints them).
+
 **Play or Set up a Position**
 Click to move your pieces. Select an Elo for the engine (Maia-3 is created to mimic how HUMANS play at that strength, with all of our innate biases)
 and use `New game`, and a dropdown:`You play White` / `You play Black` / `Set up position` / `Random position`.
@@ -16,8 +18,8 @@ moves are recorded in SAN notation.
 
 **Read the Position**
 
-At the top in the center there is a `Win / Draw / Loss · side to move` stacked bar. 
-Under it is the `Maia rating (self_elo)` slider: 600-2800, step 25, default 1500; Dragging reevaluates the same position. 
+At the top in the center there is a `Win / Draw / Loss · side to move` stacked bar (`Expected score · side to move` for models with a single value output). 
+Under it is the `Rating (self_elo)` slider: 600-2800, step 25, default 1500; Dragging reevaluates the same position. 
 Under that is the scrollable ranked list: `Policy over N legal moves`: every legal move gets a row. 
 
 
@@ -35,6 +37,8 @@ signed `Δ = p(ablated) − p(clean)` — the moves the head was suppressing ris
 
 The `Neurons` panel to the right does the same for one MLP neuron. A network diagram shows one column of dots per MLP layer. Click a column to pick the layer, a dot to pick the neuron. The dots in the selected layer are its most active units on this position. Below, the neuron's activation on every square, and `Ablate this neuron` removes its exact write on every square.
 
+For models whose tokens aren't board squares, the attention boards and the neuron's activation board are replaced by a "not available yet" notice; the chips and both ablation toggles still work.
+
 
 
 **Analyze One Move**
@@ -49,6 +53,6 @@ One drawer, `Analyze one move`, docked at the bottom with a `▲ pull up` grip. 
 
 `Causal heads` — (layers × heads) forward passes, each with one head's exact residual write removed, recording `Δlogit = ablated − clean`. Hover for exact values; the largest-|Δ| head is ringed red; click a cell to open that head in the attention panel. The final layer is dimmed and striped, excluded from carrier attribution, because it writes straight to the logits and muddles the earlier structure.
 
-`Causal neurons` — the same question at neuron grain. Ablating every MLP unit one by one is computationally unfeasible so every unit is scored at once by attribution patching, `Δlogit ≈ −∂logit/∂h · h`, the first-order effect of removing it, from one backward pass. Each row carries a mini-board of where on the board the unit does its work. Same colors as the head grid: blue carries the move, orange suppresses it. 
+`Causal neurons` — the same question at neuron grain. Ablating every MLP unit one by one is computationally unfeasible so every unit is scored at once by attribution patching, `Δlogit ≈ −∂logit/∂h · h`, the first-order effect of removing it, from one backward pass. Each row carries a mini-board of where on the board the unit does its work (not shown for models whose tokens aren't squares). Same colors as the head grid: blue carries the move, orange suppresses it. 
 
 Under the logit-lens curve, a strip shows the model's own top move at every readout point, so you can see when the played move takes over from what the early layers favored.

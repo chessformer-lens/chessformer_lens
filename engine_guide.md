@@ -1,7 +1,7 @@
 # Engine Guide
 *(`engine.py`: the interpretability core behind the app, plots, and widgets)*
 
-An interpretability core for chessformers that treat the 64 squares as tokens.
+A mechanistic interpretability core for chess transformers.
 `LeelaEngine ` loads a Leela Chess Zero BT4 checkpoint. `MaiaEngine` loads a Maia-3 checkpoint. Then runs forward passes, and captures the
 residual stream at every layer.
 
@@ -13,10 +13,14 @@ app in `bridge.py` / `app.py` / `ui.py`.
 **Run the Model**
 
 - `evaluate`: one forward pass yielding the full normalized policy over legal
-  moves (in descending order) and the W/D/L for the side to move.
+  moves (in descending order) and the W/D/L for the side to move, plus
+  `value` (expected score, for any value head) and `aux` (extra heads).
+- `evaluate_batch`: `evaluate` over many positions, leaving the activation
+  snapshot alone.
 - `select_move`: pick a move at a rating (temperature 0 = argmax), through the
   released engine's own sampler.
 - `tokens`: the position as the model's input tokens, padded to fill `history`.
+- `layout`: what each token of the residual stream stands for.
 - `run_with_cache`: forward pass returning `(out, cache)`, the whole residual
   stream, TransformerLens style.
 - `run_with_hooks`: forward pass with intervention hooks for activation
@@ -28,6 +32,7 @@ app in `bridge.py` / `app.py` / `ui.py`.
 
 - `attention`: the 64×64 components of one (layer, head): semantic `QKᵀ`,
   geometric `GAB`, and the softmax the model actually runs.
+- `attention_terms`: every score term of one layer, all heads, in one pass.
 - `qk_scores`: one layer's scaled `QKᵀ` logits.
 - `gab_bias`: one layer's generated bias.
 - `gab_coeffs`: the coefficients head h applies to the GAB bank.
@@ -44,7 +49,7 @@ app in `bridge.py` / `app.py` / `ui.py`.
 
 **Tracing**
 
-- `residual_stream`: per-square views of how the stream is built up, one row
+- `residual_stream`: per-token views of how the stream is built up, one row
   per readout point.
 - `compare_residual`: the same position at two ratings, differenced. Shows where
   skill diverges *inside* the stream, not just in the output.
