@@ -40,12 +40,16 @@ _LAZY = {
     "format_engine_list": "chessformer_lens.engine",
     "build_cfg": "chessformer_lens.engine",
     "pick_device": "chessformer_lens.engine",
+    "Conditioning": "chessformer_lens.core",
+    "ModelAdapter": "chessformer_lens.core",
+    "register_adapter": "chessformer_lens.core",
+    "available_models": "chessformer_lens.core",
     "attention_widget": "chessformer_lens.interp_widget",
     "gab_widget": "chessformer_lens.interp_widget",
 }
 
-_SUBMODULES = ("engine", "interp_plot", "interp_widget", "bridge", "ui", "app",
-               "pieces", "piece_art")
+_SUBMODULES = ("engine", "core", "adapters", "interp_plot", "interp_widget", "bridge", "ui",
+               "app", "pieces", "piece_art")
 
 
 def __getattr__(name):
@@ -63,8 +67,10 @@ def __dir__():
 if TYPE_CHECKING:  # so type checkers and IDEs still see the real symbols
     from .engine import (ChessformerEngine, MaiaEngine, LeelaEngine, load_engine,
                          resolve_engine, format_engine_list, build_cfg, pick_device)
+    from .core import Conditioning, ModelAdapter, register_adapter, available_models
     from .interp_widget import attention_widget, gab_widget
 
 __all__ = ["ChessformerEngine", "MaiaEngine", "LeelaEngine", "load_engine",
            "resolve_engine", "format_engine_list", "build_cfg", "pick_device",
+           "Conditioning", "ModelAdapter", "register_adapter", "available_models",
            "attention_widget", "gab_widget", "__version__"]
