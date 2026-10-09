@@ -75,5 +75,12 @@ Issues = "https://github.com/chessformer-lens/chessformer_lens/issues"
 [tool.setuptools.packages.find]
 include = ["chessformer_lens*"]
 
+[tool.pytest.ini_options]
+pythonpath = ["."]          # test the checkout, not whatever copy is installed
+testpaths = ["tests"]
+markers = [
+    "golden: compares every legacy output against goldens recorded at a known-good commit",
+]
+
 # No package-data: the pieces rasterised offline for the matplotlib figure layer
 # are carried as base64 inside piece_art.py, so the wheel is pure Python.
