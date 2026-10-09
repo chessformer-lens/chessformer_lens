@@ -6,7 +6,6 @@ import os
 import subprocess
 import sys
 
-import chess
 import pytest
 import torch
 

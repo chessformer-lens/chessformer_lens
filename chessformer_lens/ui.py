@@ -2,7 +2,7 @@
 ui.py — the entire interface (HTML + CSS + JS) as one string.
 
 Pure markup: no model, and the only Python is the piece-set injection at the
-bottom (pieces.py -> `PIECE_URI`). The page talks to `MaiaApi` (bridge.py)
+bottom (pieces.py -> `PIECE_URI`). The page talks to `LensApi` (bridge.py)
 over `window.pywebview.api`. Edit the app's look and front-end behavior here.
 """
 
@@ -288,6 +288,31 @@ INDEX_HTML = r"""<!DOCTYPE html>
     border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 12px}
   @keyframes spin{to{transform:rotate(360deg)}}
   .mlh{margin-top:6px} .mlh:empty{display:none}
+
+  /* a model whose tokens are not the 64 squares (body.tokmode): the board panels
+     give way to a notice until a token-level view exists */
+  .tokmsg{display:none;font-size:11px;color:var(--muted);line-height:1.55;background:var(--chart-bg);
+    border:1px dashed var(--line);border-radius:8px;padding:10px 12px;margin-top:4px}
+  body.tokmode .tokmsg{display:block}
+  body.tokmode #attcap, body.tokmode #attset, body.tokmode #neuboard{display:none}
+  .nrow.nofp{grid-template-columns:66px 1fr 1fr}
+
+  /* model picker: nothing loads until a model is chosen */
+  #picker{position:fixed;inset:0;background:rgba(10,12,16,.86);display:none;
+    align-items:center;justify-content:center;z-index:60}
+  #picker .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:20px 22px;width:min(560px,92vw);max-height:86vh;overflow:auto}
+  #picker h2{margin:0 0 4px;font-size:15px}
+  .pkfam{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;
+    letter-spacing:.6px;margin:16px 0 6px}
+  .pkmodel{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;
+    text-align:left;margin-bottom:6px}
+  .pkmodel .nm{font-weight:600;font-size:13px}
+  .pkmodel .al{font-family:var(--mono);font-size:10px;color:var(--muted)}
+  .pkmodel .nt{font-size:10px;color:var(--muted)}
+  .pkmodel:disabled{opacity:.45;cursor:not-allowed}
+  .pkrow{display:flex;gap:6px;margin-top:14px}
+  .pkerr{color:var(--loss);font-size:11px;margin-top:8px;white-space:pre-wrap;font-family:var(--mono)}
 </style>
 </head>
 <body>
@@ -306,7 +331,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div class="right">
     <div class="card">
       <div class="elorow">
-        <h2 style="margin:0">Maia rating (self_elo)</h2>
+        <h2 style="margin:0">Rating (self_elo)</h2>
         <span class="eloval" id="eloval">1500</span>
       </div>
       <input type="range" id="elo" min="600" max="2800" step="25" value="1500">
@@ -319,7 +344,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
 
     <div class="card">
-      <h2>Win / Draw / Loss · side to move</h2>
+      <h2 id="wdltitle">Win / Draw / Loss · side to move</h2>
       <div class="wdl" id="wdl"><div class="w" style="width:33%">—</div><div class="d" style="width:34%"></div><div class="l" style="width:33%"></div></div>
       <div class="leghint mlh" id="mlh"></div>
     </div>
@@ -352,13 +377,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <div class="chiprow"><span class="lbl">Head</span><div class="chips" id="headChips"></div></div>
         <div class="ablrow"><button id="ablbtn">Ablate this head</button><span class="ablnote" id="ablnote">removes its exact residual write — red bars on the policy chart</span></div>
       </div>
-      <div class="attcap">Click a square to set the query.</div>
-      <div class="attset">
+      <div class="attcap" id="attcap">Click a square to set the query.</div>
+      <div class="tokmsg" id="attmsg">Attention view not available yet for this model: its tokens
+        aren't board squares. A token-level view is planned. Head ablation, the logit lens and
+        the carrier-head grid still work, and eng.attention() returns the full matrices in a
+        notebook.</div>
+      <div class="attset" id="attset">
         <div class="attpair">
           <div><div class="attlabel">semantic attention (QKᵀ) </div><div class="attboard" id="att_qk"></div></div>
-          <div><div class="attlabel">geometric attention (GAB) </div><div class="attboard" id="att_gab"></div></div>
+          <div id="att_gab_box"><div class="attlabel" id="att_gab_lbl">geometric attention (GAB) </div><div class="attboard" id="att_gab"></div></div>
         </div>
-        <div><div class="attlabel">final head attention matrix (scaled softmax(QKᵀ + GAB)) </div><div class="attboard" id="att_sum"></div></div>
+        <div><div class="attlabel" id="att_sum_lbl">final head attention matrix (scaled softmax(QKᵀ + GAB)) </div><div class="attboard" id="att_sum"></div></div>
         <div>
           <div class="attlegend" style="margin-top:0"><span>0</span><div class="legbar"></div><span>max</span></div>
           <div class="leghint">query's 64 weights (one per key square) sum to 1</div>
@@ -380,9 +409,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <div class="ablrow"><button id="nablbtn">Ablate this neuron</button></div>
         <div class="ablnote" id="nablnote">removes its exact write on every square — red bars on the policy chart</div>
       </div>
-      <div><div class="attlabel" id="nlabel">L0·n0 · activation per square</div><div class="attboard" id="att_neuron"></div></div>
-      <div class="attlegend"><span>−</span><div class="legbar div"></div><span>+</span></div>
-      <div class="leghint">what this unit fires on, square by square</div>
+      <div class="tokmsg" id="neumsg">Per-square activation view not available yet for this
+        model: its tokens aren't board squares. Picking and ablating a unit still work.</div>
+      <div id="neuboard">
+        <div><div class="attlabel" id="nlabel">L0·n0 · activation per square</div><div class="attboard" id="att_neuron"></div></div>
+        <div class="attlegend"><span>−</span><div class="legbar div"></div><span>+</span></div>
+        <div class="leghint">what this unit fires on, square by square</div>
+      </div>
     </div>
   </div>
 </div>
@@ -414,6 +447,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 
 <div id="loading"><div class="box"><div class="spinner"></div><div id="loadtext">Loading model…</div></div></div>
+<div id="picker"><div class="box">
+  <h2>Choose a model</h2>
+  <div class="sub">nothing loads until you pick one · launch as <b>chessformer_lens &lt;alias&gt;</b> to skip this</div>
+  <div id="pickerlist"></div>
+  <div class="pkrow"><input id="pickerin" class="fenbox" spellcheck="false" placeholder="or type an alias, an lc0 .pb.gz path, a Hugging Face repo id"><button id="pickerload">Load</button></div>
+  <div class="pkerr" id="pickererr"></div>
+</div></div>
 <div id="promo"><div class="box"><div>Promote to</div><div class="glyphs" id="promoglyphs"></div></div></div>
 
 <script>
@@ -425,6 +465,9 @@ function pieceImg(sym){ const i=document.createElement('img');
 
 let API=null, cur=null, orient='white', sel=null, busy=false;
 let elo=1500, temp=1, pendingPromo=null, MODEL_INFO=null, setupMode=false;
+// false for a model whose tokens are not the 64 squares: the board panels
+// (attention, neuron activation, carrier footprints) show a notice instead
+let IS_BOARD=true;
 let cmpOn=false, cmpElo=1100;
 const START_FEN='rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
@@ -446,26 +489,31 @@ function tryBoot(){
   if(waitN>120){ showLoading('Bridge not connecting — check the terminal for errors.'); return; }
   setTimeout(tryBoot,100);
 }
-showLoading('Loading model…');
+showLoading('Starting…');
 tryBoot();
 fitLayout();
 
 async function boot(){
   if(booted || booting) return;
   booting=true;
-  showLoading('Loading model…');
   try{
     API = window.pywebview.api;
-    let info = await API.info();
-    if(info.target) showLoading('Loading '+info.target+'…');   // name the real model
-    let n=0;
-    while(!info.ready && !info.error){ await sleep(400); info = await API.info(); if(++n>300) break; }
-    if(info.error){ showLoading('Model failed to load:\n'+info.error); return; }
-    if(!info.ready){ showLoading('Model load timed out — check the terminal.'); return; }
+    let info = await API.info(), pickErr = null;
+    // No default model: when none was named, or the named one fails to load,
+    // the picker asks. One model per launch.
+    for(;;){
+      if(info.needs_model || pickErr){ info = await pickModel(pickErr); pickErr = null; }
+      showLoading('Loading '+(info.target||'model')+'…');   // name the real model
+      let n=0;
+      while(!info.ready && !info.error){ await sleep(400); info = await API.info(); if(++n>300) break; }
+      if(info.ready) break;
+      if(info.error){ pickErr = 'Model failed to load:\n'+info.error; continue; }
+      showLoading('Model load timed out — check the terminal.'); return;
+    }
     MODEL_INFO = info;
     setModelInfo();
     ensureAttUi(info);
-    console.log('[maia] bridge ready', info);
+    console.log('[lens] bridge ready', info);
     $('loading').style.display='none';
     fitLayout();
     booted=true;
@@ -478,18 +526,65 @@ async function boot(){
   }
 }
 
+/* ---- model picker: every registered model, grouped by family ---- */
+let pickResolve=null;
+async function pickModel(err){
+  $('loading').style.display='none';
+  $('pickererr').textContent = err || '';
+  const list=$('pickerlist'); list.innerHTML='';
+  let r={models:[]};
+  try{ r = await API.models(); }catch(e){ r={models:[], error:String(e)}; }
+  if(r.error) $('pickererr').textContent = (err ? err+'\n' : '') + r.error;
+  let fam=null;
+  for(const m of (r.models||[])){
+    if(m.family!==fam){
+      fam=m.family;
+      const h=document.createElement('div'); h.className='pkfam'; h.textContent=fam; list.appendChild(h);
+    }
+    const b=document.createElement('button'); b.className='pkmodel'; b.disabled=!m.available;
+    const nm=document.createElement('span'); nm.className='nm'; nm.textContent=m.display_name;
+    const al=document.createElement('span'); al.className='al';
+    al.textContent=[m.alias, ...(m.aliases||[])].join(', ');
+    b.append(nm, al);
+    if(m.note){ const nt=document.createElement('span'); nt.className='nt'; nt.textContent=m.note; b.appendChild(nt); }
+    b.onclick=()=>chooseModel(m.alias);
+    list.appendChild(b);
+  }
+  $('picker').style.display='flex';
+  return new Promise(res=>{ pickResolve=res; });
+}
+async function chooseModel(alias){
+  if(!alias || !API) return;
+  $('pickererr').textContent='';
+  const info = await API.load_model(alias);
+  if(info.error && !info.loading){ $('pickererr').textContent = info.error; return; }
+  $('picker').style.display='none';
+  const r=pickResolve; pickResolve=null;
+  if(r) r(info);
+}
+$('pickerload').onclick=()=>chooseModel($('pickerin').value.trim());
+$('pickerin').addEventListener('keydown', e=>{ if(e.key==='Enter') chooseModel($('pickerin').value.trim()); });
+
 function setModelInfo(){
   if(!MODEL_INFO) return;
   const i=MODEL_INFO;
+  IS_BOARD = i.is_board !== false;
+  document.body.classList.toggle('tokmode', !IS_BOARD);
   $('modelinfo').textContent =
-    `${i.alias||i.target||'Maia3'} · ${i.device||'cpu'} · `+
-    `${i.num_blocks||8} layers × ${i.num_heads||8} heads × ${i.dim_vit||256}d`;
+    `${i.alias||i.target||'model'} · ${i.device||'cpu'} · `+
+    `${i.num_blocks||8} layers × ${i.num_heads||8} heads × ${i.dim_vit||256}d`+
+    (IS_BOARD ? '' : ` · ${i.n_tokens} tokens`);
   // A model with no rating input (Leela BT4) gets no rating card: the engine
   // ignores the value, so the slider and the second-rating compare would be
   // dead controls. Everything else on the page is derived from the engine.
   const eloCard = $('elo').closest('.card');
   if(eloCard) eloCard.style.display = (i.conditioning === false) ? 'none' : '';
+  // a scalar value head has no win/draw/loss split: the card shows its expected score
+  $('wdltitle').textContent = i.value_kind==='scalar' ? 'Expected score · side to move'
+                                                       : 'Win / Draw / Loss · side to move';
+  if(!nablOn) nablNote(NABLNOTE());
 }
+function modelName(){ return (MODEL_INFO && (MODEL_INFO.alias||MODEL_INFO.target)) || 'The engine'; }
 
 /* ---- controls ---- */
 $('newbtn').onclick = ()=>{ if(!busy) newGame(); };
@@ -507,7 +602,7 @@ $('color').addEventListener('change', ()=>{
   else newGame();                     // white<->black mid-game: start over
 });
 $('fenload').onclick = ()=>{ if(!busy) doSetFen($('fenin').value.trim()); };
-/* A random position is a short Maia self-play walk (bridge.random_position),
+/* A random position is a short self-play walk (bridge.random_position),
    and the walk comes back as frames so we can replay it: the board rockets
    through the game, then eases into the position you are handed. */
 const WALK_MS=2000;     // budget for the fast part, whatever the walk's length
@@ -519,7 +614,7 @@ async function doRandom(){
   let r;
   try{ r = await API.random_position(elo); }
   catch(e){ busy=false; setStatus('⚠ random position failed — see console');
-            console.warn('[maia] random_position failed', e); return; }
+            console.warn('[lens] random_position failed', e); return; }
   if(!r || r.error){ busy=false; setStatus('⚠ '+((r&&r.error)||'random position failed')); return; }
   await playWalk(r);
   cur=r; sel=null; renderBoard(); renderMoves();
@@ -601,7 +696,7 @@ async function probe(){
   } else {
     const d = await API.policy(elo, true);
     if(d.error) return;
-    cur = d; renderPolicy(d.policy, d.wdl, d.activation_file, null, d.mlh); renderBoard();
+    cur = d; renderPolicy(d.policy, d.wdl, d.activation_file, null, d.mlh, d.value); renderBoard();
   }
   updateAttention(); updateMoveLens();
 }
@@ -626,21 +721,24 @@ async function doUndo(){
 
 /* ---- main loop ---- */
 async function advance(){
-  // show policy for whoever is to move; if Maia, let it reply
+  // show policy for whoever is to move; if it's the engine's turn, let it reply
   if(cur.game_over){ finishUI(); return; }
   busy=true;
   let d = await API.policy(elo, true);
-  cur = d; renderBoard(); renderPolicy(d.policy, d.wdl, d.activation_file, null, d.mlh);
+  cur = d; renderBoard();
+  renderPolicy(d.policy, d.wdl, d.activation_file, null, d.mlh, d.value);
   setStatus();
-  if(d.maia_to_move){
-    setStatus(`Maia (${cur.turn}) is thinking…`);
+  if(d.engine_to_move){
+    setStatus(`${modelName()} (${cur.turn}) is thinking…`);
     await sleep(1500);
-    const r = await API.maia_move(elo, temp);
+    const r = await API.engine_move(elo, temp);
     cur = r; renderBoard(); renderMoves();
-    renderPolicy(r.maia_policy, r.maia_wdl, r.activation_file, r.maia_move && r.maia_move.uci, r.maia_mlh);
+    renderPolicy(r.engine_policy, r.engine_wdl, r.activation_file,
+                 r.engine_move && r.engine_move.uci, r.engine_mlh, r.engine_value);
     if(!r.game_over){
       const h = await API.policy(elo, true);
-      cur = h; renderBoard(); renderPolicy(h.policy, h.wdl, h.activation_file, null, h.mlh);
+      cur = h; renderBoard();
+      renderPolicy(h.policy, h.wdl, h.activation_file, null, h.mlh, h.value);
     }
   }
   busy=false;
@@ -673,7 +771,7 @@ function renderBoard(){
   const pieces = cur ? parseFen(cur.fen) : {};
   const last = cur && cur.last_move ? [cur.last_move.slice(0,2),cur.last_move.slice(2,4)] : [];
   const targets = (sel && !setupMode) ? legalTargets(sel) : {};
-  const hlSq = attQueryReal || null;
+  const hlSq = IS_BOARD ? (attQueryReal || null) : null;
   for(let row=0;row<8;row++) for(let col=0;col<8;col++){
     const name=sqName(row,col);
     const fileIdx=FILES.indexOf(name[0]), rankNum=+name[1];
@@ -792,8 +890,8 @@ function askPromo(base, promos){
 
 /* ---- panels ---- */
 let lastPolArgs=null;         // last renderPolicy call, so overlays can repaint it
-function renderPolicy(pol, wdl, actfile, playedUci, mlh){
-  lastPolArgs=[pol,wdl,actfile,playedUci,mlh];
+function renderPolicy(pol, wdl, actfile, playedUci, mlh, value){
+  lastPolArgs=[pol,wdl,actfile,playedUci,mlh,value];
   const box=$('policy'); box.innerHTML='';
   const abl=ablPolicy();      // {uci: p_ablated} while the ablation toggle is live
   $('wdl').classList.toggle('cmp', !!abl);
@@ -830,14 +928,16 @@ function renderPolicy(pol, wdl, actfile, playedUci, mlh){
     if(abl){ box.insertAdjacentHTML("beforeend",
       `<div style="font-size:10px;color:var(--muted);margin-top:5px">sorted by Δ = p(ablated) − p(clean)</div>`); }
   }
-  if(wdl){
+  if(wdl || value){
     if(abl){
-      $('wdl').innerHTML = wdlRowHtml('clean', wdl) + wdlRowHtml('abl', ablData.wdl_abl);
-    } else {
+      $('wdl').innerHTML = valueRowHtml('clean', wdl, value) + valueRowHtml('abl', ablData.wdl_abl, ablData.value_abl);
+    } else if(wdl){
       const w=Math.round(wdl.win*100), d=Math.round(wdl.draw*100), l=Math.max(0,100-w-d);
       $('wdl').innerHTML=`<div class="w" style="width:${w}%">${w>8?w+'%':''}</div>`+
         `<div class="d" style="width:${d}%">${d>8?d+'%':''}</div>`+
         `<div class="l" style="width:${l}%">${l>8?l+'%':''}</div>`;
+    } else {
+      $('wdl').innerHTML = scoreHtml(value.expected, 8);
     }
   }
   // moves-left head (Leela): expected plies to the end of the game
@@ -887,12 +987,14 @@ function fillAttCells(el){          // 64 heat cells; click = set query
   }
 }
 function buildAttBoards(){
+  if(!IS_BOARD) return;                  // no board panels: the notices stand in
   ATT_IDS.forEach(id=>{
     const el=$(id); if(!el || el.children.length) return;
     fillAttCells(el);
   });
 }
 function relabelAttCoords(){
+  if(!IS_BOARD) return;
   ATT_IDS.forEach(id=>{
     const el=$(id); if(!el) return;
     for(const cell of el.children){
@@ -910,24 +1012,34 @@ function paintRow(id, row, colf, markQuery=true){
     cell.classList.toggle('q', markQuery && name===attQueryReal);
   }
 }
+function termLabel(n){ return n==='content' ? 'QKᵀ' : (n==='gab' ? 'GAB' : n); }
 function renderAttention(){
-  if(!lastAtt || !cur) return;
+  if(!lastAtt || !cur || !IS_BOARD) return;
   const q = realToCanon(attQueryReal, cur.turn);
-  const qk = lastAtt.qk[q], gab = lastAtt.gab[q], attn = lastAtt.attn && lastAtt.attn[q];
-  if(!qk || !gab) return;
-  // QKᵀ and GAB are pre-softmax logits: diverging scale centered on 0,
+  const qk = lastAtt.qk[q], attn = lastAtt.attn && lastAtt.attn[q];
+  if(!qk) return;
+  // the second panel: the generated bias on smolgen models, else the first other term
+  const extraName = lastAtt.gab ? 'gab' : Object.keys(lastAtt.terms||{})[0];
+  const extra = !extraName ? null : (extraName==='gab' ? lastAtt.gab[q] : lastAtt.terms[extraName][q]);
+  // The score terms are pre-softmax logits: diverging scale centered on 0,
   // symmetric per board (blue = negative, orange = positive).
   const dv = row => { let m=0; for(const v of row){ const a=Math.abs(v); if(a>m)m=a; } m=m||1; return v=>divmap(v/m); };
-  paintRow('att_qk',  qk,  dv(qk));
-  paintRow('att_gab', gab, dv(gab));
-  // Third board = the head's ACTUAL attention: softmax(qk + gab) straight from the
-  // engine. It's a probability distribution (this query's row sums to 1), so use a
+  paintRow('att_qk', qk, dv(qk));
+  $('att_gab_box').style.display = extra ? '' : 'none';
+  if(extra){
+    $('att_gab_lbl').textContent = extraName==='gab' ? 'geometric attention (GAB) ' : extraName+' ';
+    paintRow('att_gab', extra, dv(extra));
+  }
+  $('att_sum_lbl').textContent = 'final head attention matrix (scaled softmax('+
+    (lastAtt.term_names||['content','gab']).map(termLabel).join(' + ')+')) ';
+  // Last board = the head's ACTUAL attention: the softmax of the terms straight from
+  // the engine. It's a probability distribution (this query's row sums to 1), so use a
   // sequential viridis scale from 0 to the row's peak weight, not the logit scale.
   if(attn){
     let am=0; for(const v of attn){ if(v>am)am=v; } am=am||1;
     paintRow('att_sum', attn, v=>viridis(v/am));
   } else {
-    const sum = qk.map((v,i)=>v+gab[i]);   // fallback: pre-softmax logits
+    const sum = qk.map((v,i)=>v+(extra?extra[i]:0));   // fallback: pre-softmax logits
     paintRow('att_sum', sum, dv(sum));
   }
 }
@@ -942,6 +1054,7 @@ async function updateAttention(){
   ensureAttUi(MODEL_INFO);
   updateAblation();          // keeps the red policy overlay in step with the picked head
   updateNeuron();            // and the neuron panel (its activation + overlay) with the board
+  if(!IS_BOARD) return;      // nothing to draw on: the notice stands in (ablation above still runs)
   try{
     const d = await API.attention(elo, attLayer, attHead);
     if(d && !d.error){
@@ -951,7 +1064,7 @@ async function updateAttention(){
       }
       lastAtt=d; renderAttention();
     }
-  }catch(e){ console.warn('[maia] attention update failed', e); }
+  }catch(e){ console.warn('[lens] attention update failed', e); }
 }
 
 /* ---- exact single-head ablation (engine.ablate_head) ----
@@ -992,12 +1105,12 @@ async function updateAblation(){
       ablNote('⚠ '+(d && d.error ? d.error : 'ablation failed'), true);
     } else {
       const p={}; for(const r of d.rows) p[r.uci]=r.p_abl;
-      ablData={label:`L${d.layer}·h${d.head}`, p:p, wdl_abl:d.wdl_abl}; ablKey=key;
+      ablData={label:`L${d.layer}·h${d.head}`, p:p, wdl_abl:d.wdl_abl, value_abl:d.value_abl}; ablKey=key;
       ablNote(`L${d.layer}·h${d.head} write removed · red = ablated`);
     }
     repaintPolicy();
   }catch(e){
-    console.warn('[maia] ablation failed', e);
+    console.warn('[lens] ablation failed', e);
     ablData=null; ablKey=null; ablNote('⚠ ablation failed — see console', true); repaintPolicy();
   }finally{
     ablBusy=false;
@@ -1012,7 +1125,7 @@ $('ablbtn').onclick=()=>{ ablOn=!ablOn; if(ablOn && nablOn){ nablOn=false; updat
    removal as the red overlay on the policy chart. ---- */
 let nLayer=0, nIdx=0, lastNeu=null, nablOn=false, nablBusy=false, nablDirty=false;
 let neurOv=null, neurOvKey=null;   // per-layer most-active units, cached per position
-const NABLNOTE='removes its exact write on every square — red bars on the policy chart';
+function NABLNOTE(){ return `removes its exact write on every ${IS_BOARD?'square':'token'} — red bars on the policy chart`; }
 function neuronKeyNow(){ return cur ? `${cur.fen}|${elo}|n|${nLayer}|${nIdx}` : null; }
 function nablNote(msg, err){ const n=$('nablnote'); if(!n) return; n.textContent=msg; n.classList.toggle('err', !!err); }
 function clampNeuron(){
@@ -1021,7 +1134,7 @@ function clampNeuron(){
   $('nlayer').value=nLayer; $('nidx').value=nIdx;
 }
 function renderNeuron(){
-  if(!lastNeu || !cur) return;
+  if(!lastNeu || !cur || !IS_BOARD) return;
   const a=lastNeu.act; let m=1e-9; for(const v of a){ const x=Math.abs(v); if(x>m)m=x; }
   paintRow('att_neuron', a, v=>divmap(v/m), false);
   $('nlabel').textContent=`L${lastNeu.layer}·n${lastNeu.neuron} · activation per square`;
@@ -1033,20 +1146,22 @@ async function updateNeuron(){
   const okey=`${cur.fen}|${elo}`;
   if(neurOvKey!==okey){
     try{ const o=await API.neurons_overview(elo); if(o && !o.error){ neurOv=o; neurOvKey=okey; } }
-    catch(e){ console.warn('[maia] neurons_overview failed', e); }
+    catch(e){ console.warn('[lens] neurons_overview failed', e); }
   }
   renderNet();
-  try{
-    const d=await API.neuron(elo, nLayer, nIdx);
-    if(d && !d.error){ lastNeu=d; renderNeuron(); }
-  }catch(e){ console.warn('[maia] neuron update failed', e); }
+  if(IS_BOARD){                         // its activation per square: a board to paint
+    try{
+      const d=await API.neuron(elo, nLayer, nIdx);
+      if(d && !d.error){ lastNeu=d; renderNeuron(); }
+    }catch(e){ console.warn('[lens] neuron update failed', e); }
+  }
   updateNeuronAblation();
 }
 async function updateNeuronAblation(){
   const btn=$('nablbtn'); if(!btn) return;
   btn.classList.toggle('on', nablOn);
   btn.textContent = nablOn ? '✓ Ablating this neuron' : 'Ablate this neuron';
-  if(!nablOn){ if(!ablOn){ ablData=null; ablKey=null; } nablNote(NABLNOTE); repaintPolicy(); return; }
+  if(!nablOn){ if(!ablOn){ ablData=null; ablKey=null; } nablNote(NABLNOTE()); repaintPolicy(); return; }
   if(!API || !cur || cur.game_over) return;
   const key=neuronKeyNow();
   if(ablData && ablKey===key) return;
@@ -1057,12 +1172,12 @@ async function updateNeuronAblation(){
     if(!d || d.error){ ablData=null; ablKey=null; nablNote('⚠ '+(d && d.error ? d.error : 'ablation failed'), true); }
     else {
       const p={}; for(const r of d.rows) p[r.uci]=r.p_abl;
-      ablData={label:`L${d.layer}·n${d.neuron}`, p:p, wdl_abl:d.wdl_abl}; ablKey=key;
+      ablData={label:`L${d.layer}·n${d.neuron}`, p:p, wdl_abl:d.wdl_abl, value_abl:d.value_abl}; ablKey=key;
       nablNote(`L${d.layer}·n${d.neuron} write removed · red = ablated`);
     }
     repaintPolicy();
   }catch(e){
-    console.warn('[maia] neuron ablation failed', e);
+    console.warn('[lens] neuron ablation failed', e);
     ablData=null; ablKey=null; nablNote('⚠ ablation failed — see console', true); repaintPolicy();
   }finally{
     nablBusy=false;
@@ -1157,6 +1272,17 @@ function wdlRowHtml(tag, w){
     `<div class="d" style="width:${D}%">${D>12?D+'%':''}</div>`+
     `<div class="l" style="width:${L}%">${L>12?L+'%':''}</div></div>`;
 }
+// a scalar value head: the side to move's expected score against the rest
+function scoreHtml(e, minLabel){
+  const S=Math.round(e*100);
+  return `<div class="w" style="width:${S}%">${S>minLabel?S+'%':''}</div>`+
+    `<div class="l" style="width:${100-S}%"></div>`;
+}
+function valueRowHtml(tag, w, v){
+  if(w) return wdlRowHtml(tag, w);
+  if(!v) return '';
+  return `<div class="wdlrow"><span class="wdltag">${tag}</span>${scoreHtml(v.expected, 12)}</div>`;
+}
 let lastCmp=null;             // last compare payload, so overlays can repaint it
 function renderCompare(d){
   lastCmp=d;
@@ -1185,8 +1311,8 @@ function renderCompare(d){
   box.insertAdjacentHTML("beforeend",
     `<div style="font-size:10px;color:var(--muted);margin-top:5px">Δ = p(${d.elo_b}) − p(${d.elo_a})</div>`);
   const wdl=$('wdl'); wdl.classList.add('cmp');
-  wdl.innerHTML = wdlRowHtml(d.elo_a, d.wdl_a) + wdlRowHtml(d.elo_b, d.wdl_b)
-    + (abl?wdlRowHtml('abl', ablData.wdl_abl):'');
+  wdl.innerHTML = valueRowHtml(d.elo_a, d.wdl_a, d.value_a) + valueRowHtml(d.elo_b, d.wdl_b, d.value_b)
+    + (abl?valueRowHtml('abl', ablData.wdl_abl, ablData.value_abl):'');
   $('actfile').textContent='';
   markLensedRows();
 }
@@ -1298,7 +1424,7 @@ async function updateMoveLens(){
         else $('nnote').textContent='carrier neurons failed: '+((nd && nd.error)||'?');
       } else renderNeurons(mlNeu);
     } while(mlDirty);
-  }catch(e){ console.warn('[maia] move microscope failed', e); }
+  }catch(e){ console.warn('[lens] move microscope failed', e); }
   finally{ mlBusy=false; }
   markLensedRows();
 }
@@ -1463,19 +1589,21 @@ function renderNeurons(d){
   let m=1e-9; for(const t of d.top) for(const v of t.squares){ const a=Math.abs(v); if(a>m)m=a; }
   const f=v=>(v>=0?'+':'−')+Math.abs(v).toFixed(2), cls=v=>v<0?'neg':'pos';
   d.top.forEach((t,k)=>{
-    const row=document.createElement('div'); row.className='nrow'+(k===0?' strong':'');
-    const cv=document.createElement('canvas'); cv.width=8; cv.height=8;
-    const ctx=cv.getContext('2d');
-    for(let r=0;r<8;r++) for(let c=0;c<8;c++){
-      ctx.fillStyle=divmap(t.squares[realToCanon(sqName(r,c), cur.turn)]/m); ctx.fillRect(c,r,1,1);
-    }
+    const row=document.createElement('div'); row.className='nrow'+(k===0?' strong':'')+(IS_BOARD?'':' nofp');
     const ex=t.exact;
     row.innerHTML=`<span>L${t.layer}·n${t.neuron}</span>`;
-    row.appendChild(cv);
+    if(IS_BOARD){                                      // its per-square footprint, as a mini-board
+      const cv=document.createElement('canvas'); cv.width=8; cv.height=8;
+      const ctx=cv.getContext('2d');
+      for(let r=0;r<8;r++) for(let c=0;c<8;c++){
+        ctx.fillStyle=divmap(t.squares[realToCanon(sqName(r,c), cur.turn)]/m); ctx.fillRect(c,r,1,1);
+      }
+      row.appendChild(cv);
+    }
     row.insertAdjacentHTML('beforeend',
       `<span class="${cls(t.est)}">Δ ${f(t.est)}</span>`+
       `<span class="${ex==null?'dim':cls(ex)}">${ex==null?'':'exact '+f(ex)}</span>`);
-    row.title=`layer ${t.layer} neuron ${t.neuron} · acts most at ${canonToReal(t.peak, cur.turn)} · `+
+    row.title=`layer ${t.layer} neuron ${t.neuron}`+(IS_BOARD?` · acts most at ${canonToReal(t.peak, cur.turn)}`:'')+` · `+
       `${(ex!=null?ex:t.est)<0?'carries':'suppresses'} ${d.san} · click to open it in the neuron panel`;
     row.onclick=()=>{ nLayer=t.layer; nIdx=t.neuron; updateNeuron(); };
     el.appendChild(row);
@@ -1483,7 +1611,9 @@ function renderNeurons(d){
   renderNet();
   const NO=noCarrierLayer();
   $('nnote').innerHTML=`base logit ${d.base_logit.toFixed(2)} · ${d.n_layers}×${d.n_neurons} units scored in one backward pass · `+
-    `Δ = first-order effect of removing the unit on ${d.san}'s logit · blue = carrier, orange = suppressor · mini-board = where on the board it acts · `+
+    `Δ = first-order effect of removing the unit on ${d.san}'s logit · blue = carrier, orange = suppressor · `+
+    (IS_BOARD ? 'mini-board = where on the board it acts · '
+              : 'per-square footprints not available yet for this model (its tokens aren\'t board squares) · ')+
     `L${NO} excluded, as in the head grid · click a row to open it in the neuron panel`;
 }
 

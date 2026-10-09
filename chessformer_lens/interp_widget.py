@@ -1,8 +1,9 @@
 """
 The app's two interactive panels, each as a self-contained notebook cell.
 
-  attention_widget  the scaled QKᵀ logits and the generated GAB of every layer
-                    and head, fp16 (~1.4 MB); the JS takes softmax(QKᵀ + GAB)
+  attention_widget  every score term of every layer and head — the scaled QKᵀ
+                    logits and, on smolgen models, the generated GAB — fp16
+                    (~1.4 MB on the 5M); the JS takes the softmax of their sum
                     itself, so every layer, head and query square is live
   gab_widget        the static template bank plus every head's mixing
                     coefficients (~750 KB); `gab_bias == coeffs @ templates`
@@ -10,7 +11,9 @@ The app's two interactive panels, each as a self-contained notebook cell.
                     rebuilds any head's bias and decomposes any square pair
 
 The position and the Elo are baked in — only Python has the model, so changing
-those means re-running the cell.
+those means re-running the cell. Both pages are boards, so they need a model
+whose tokens are the 64 squares (`eng.layout(board).is_board`); for any other
+model they are not available yet (eng.attention() has the full matrices).
 
 Where it renders: each widget is an <iframe srcdoc> — Colab, JupyterLab, VS Code
 and classic Jupyter all execute scripts inside one, whereas a bare <script> in
@@ -28,16 +31,17 @@ import json
 import chess
 import numpy as np
 
+from .core import canon_square as _canon
 from .pieces import PIECE_URI
 
 
-def _canon(square: int, turn: bool) -> int:
-    """python-chess square -> the model's canonical index (side-to-move frame,
-    square = rank*8 + file). The app's realToCanon(). Duplicated verbatim in
-    interp_plot.py so each module imports standalone — keep both, and the
-    app's JS, in sync."""
-    rank, file = chess.square_rank(square), chess.square_file(square)
-    return (rank if turn == chess.WHITE else 7 - rank) * 8 + file
+def _require_board(eng, board: chess.Board):
+    """These pages draw boards: refuse a model whose tokens are not the squares."""
+    if not eng.layout(board).is_board:
+        raise ValueError(
+            f"The attention widgets are not available yet for {eng.arch.display_name}: its "
+            "tokens aren't board squares. A token-level view is planned; eng.attention() "
+            "returns the full matrices in a notebook.")
 
 
 def _f16(t) -> str:
@@ -88,13 +92,23 @@ def _common(eng, board: chess.Board, elo: int, oppo_elo) -> dict:
 
 
 def attention_payload(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None) -> dict:
-    """The attention panel's data: scaled QKᵀ and the generated GAB for every
-    layer and head, base64 fp16 (n_blocks, n_heads, 64, 64) each — the JS takes
-    the softmax itself. Plus every key from `_common`."""
-    nb = eng.cfg.num_blocks
-    qk = np.stack([eng.qk_scores(board, elo, oppo_elo, layer=L).numpy() for L in range(nb)])
-    gab = np.stack([eng.gab_bias(board, elo, oppo_elo, layer=L).numpy() for L in range(nb)])
-    return {**_common(eng, board, elo, oppo_elo), "qk": _f16(qk), "gab": _f16(gab)}
+    """The attention panel's data: every score term of every layer and head,
+    base64 fp16 (n_blocks, n_heads, 64, 64) each — the JS takes the softmax of
+    their sum itself. `qk` is the content term, `gab` the generated bias (None
+    on a model without one), `terms` any others by name, `term_names` all of
+    them in order, and `mask` a flat 64*64 0/1 list (1 = blocked) or None.
+    Plus every key from `_common`."""
+    _require_board(eng, board)
+    layers = [eng.attention_terms(board, elo, oppo_elo, layer=L) for L in range(eng.cfg.num_blocks)]
+    names = list(layers[0]["terms"])
+    stacked = {n: np.stack([t["terms"][n].numpy() for t in layers]) for n in names}
+    mask = layers[0]["mask"]
+    return {**_common(eng, board, elo, oppo_elo),
+            "qk": _f16(stacked["content"]),
+            "gab": _f16(stacked["gab"]) if "gab" in stacked else None,
+            "term_names": names,
+            "terms": {n: _f16(v) for n, v in stacked.items() if n not in ("content", "gab")},
+            "mask": mask.flatten().int().tolist() if mask is not None else None}
 
 
 def gab_payload(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None) -> dict:
@@ -105,6 +119,7 @@ def gab_payload(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None) -> d
     A single layer built without GAB comes back as null coefficients; a model
     built entirely without GAB has no template bank at all, so gab_templates()
     raises RuntimeError here — use `attention_widget` on those."""
+    _require_board(eng, board)
     coeffs = []
     for L in range(eng.cfg.num_blocks):
         try:
@@ -353,10 +368,9 @@ _ATTENTION_PAGE = _CSS + r"""
       <div class="attboard pos" id="bpos"></div>
     </div>
     <div class="attset">
-      <div class="attpair">
+      <div class="attpair" id="attpair">
         <div><div class="attlabel">semantic attention (QKᵀ) </div><div class="attboard" id="att_qk"></div></div>
-        <div><div class="attlabel">geometric attention (GAB) </div><div class="attboard" id="att_gab"></div></div>
-        <div><div class="attlabel">final head attention matrix (scaled softmax(QKᵀ + GAB)) </div><div class="attboard" id="att_sum"></div></div>
+        <div><div class="attlabel" id="att_sum_lbl">final head attention matrix</div><div class="attboard" id="att_sum"></div></div>
       </div>
       <div>
         <div class="attlegend" style="margin-top:0"><span>0</span><div class="legbar"></div><span>max</span></div>
@@ -370,17 +384,28 @@ _ATTENTION_PAGE = _CSS + r"""
 <script id="payload" type="application/json">__PAYLOAD__</script>
 <script>
 """ + _JS_COMMON + r"""
-const QK = unpack(D.qk), GAB = unpack(D.gab);     // (NB, NH, 64, 64) each
+const QK = unpack(D.qk);                           // (NB, NH, 64, 64)
+// every other score term, in the model's order: GAB on the smolgen models
+const NAMES = D.term_names || ['content', 'gab'];
+const TERMS = NAMES.filter(n => n !== 'content').map(n => ({
+  name: n, label: n === 'gab' ? 'GAB' : n,
+  title: n === 'gab' ? 'geometric attention (GAB) ' : n + ' ',
+  buf: unpack(n === 'gab' ? D.gab : D.terms[n])}));
+const MASK = D.mask;                               // flat 64*64, 1 = blocked, or null
 let layer = D.layer, head = D.head, q = D.query, k = null;
 
 const rowOf = (buf, qq) => {
   const off = ((layer * NH + head) * 64 + qq) * 64;
   return buf.subarray(off, off + 64);
 };
-function softmax(a, b){                            // the head's actual attention
+function softmax(rows, qq){                        // softmax of the summed rows, masked
   const z = new Float64Array(64);
   let mx = -Infinity;
-  for(let i = 0; i < 64; i++){ z[i] = a[i] + (b ? b[i] : 0); if(z[i] > mx) mx = z[i]; }
+  for(let i = 0; i < 64; i++){
+    z[i] = 0; for(const r of rows) z[i] += r[i];
+    if(MASK && MASK[qq * 64 + i]) z[i] = -Infinity;
+    if(z[i] > mx) mx = z[i];
+  }
   let s = 0;
   for(let i = 0; i < 64; i++){ z[i] = Math.exp(z[i] - mx); s += z[i]; }
   for(let i = 0; i < 64; i++) z[i] /= s;
@@ -389,37 +414,47 @@ function softmax(a, b){                            // the head's actual attentio
 function renderPair(){
   const el = $('pair');
   if(k === null){ el.innerHTML = '<span class="k">hover a square to read that pair</span>'; return; }
-  const qk = rowOf(QK, q), gab = rowOf(GAB, q);
-  const at = softmax(qk, gab), plain = softmax(qk);
+  const qk = rowOf(QK, q), extra = TERMS.map(t => rowOf(t.buf, q));
+  const at = softmax([qk, ...extra], q), plain = softmax([qk], q);
   const f = v => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(2);
+  let sum = qk[k]; extra.forEach(r => { sum += r[k]; });
   el.innerHTML =
     `<b>${nameOf(q)} → ${nameOf(k)}</b> &nbsp; <span class="k">QKᵀ</span> ${f(qk[k])}` +
-    ` &nbsp; <span class="k">GAB</span> ${f(gab[k])}` +
-    ` &nbsp; <span class="k">sum</span> ${f(qk[k] + gab[k])} &nbsp;→&nbsp; ` +
-    `<b>${(at[k] * 100).toFixed(1)}%</b> of this query's attention ` +
-    `<span class="k">(without GAB ${(plain[k] * 100).toFixed(1)}%)</span>`;
+    TERMS.map((t, i) => ` &nbsp; <span class="k">${t.label}</span> ${f(extra[i][k])}`).join('') +
+    (TERMS.length ? ` &nbsp; <span class="k">sum</span> ${f(sum)}` : '') + ` &nbsp;→&nbsp; ` +
+    `<b>${(at[k] * 100).toFixed(1)}%</b> of this query's attention` +
+    (TERMS.length ? ` <span class="k">(QKᵀ alone ${(plain[k] * 100).toFixed(1)}%)</span>` : '');
 }
 function onHover(){ renderPair(); marks(); }
 function renderAll(){
   buildChips($('layerChips'), NB, layer, i => { layer = i; k = null; renderAll(); });
   buildChips($('headChips'),  NH, head,  i => { head  = i; k = null; renderAll(); });
-  // QKᵀ and GAB are pre-softmax logits: diverging scale centered on 0, symmetric
-  // per board (blue = negative, orange = positive).
-  const qk = rowOf(QK, q), gab = rowOf(GAB, q);
-  paintRow($('att_qk'),  qk,  symScale(qk));
-  paintRow($('att_gab'), gab, symScale(gab));
-  // Third board = the head's ACTUAL attention. It's a probability distribution
+  // The score terms are pre-softmax logits: diverging scale centered on 0,
+  // symmetric per board (blue = negative, orange = positive).
+  const qk = rowOf(QK, q), extra = TERMS.map(t => rowOf(t.buf, q));
+  paintRow($('att_qk'), qk, symScale(qk));
+  TERMS.forEach((t, i) => paintRow($('att_t' + i), extra[i], symScale(extra[i])));
+  // Last board = the head's ACTUAL attention. It's a probability distribution
   // (this query's row sums to 1), so use a sequential viridis scale from 0 to the
   // row's peak weight, not the logit scale.
-  const at = softmax(qk, gab);
+  const at = softmax([qk, ...extra], q);
   let am = 0; for(const v of at){ if(v > am) am = v; }
   paintRow($('att_sum'), at, v => viridis(v / (am || 1)));
   renderPair(); marks();
 }
+// one board per extra term, between QKᵀ and the final attention
+TERMS.forEach((t, i) => {
+  const box = document.createElement('div');
+  box.innerHTML = `<div class="attlabel"></div><div class="attboard" id="att_t${i}"></div>`;
+  box.firstChild.textContent = t.title;
+  $('attpair').insertBefore(box, $('att_sum').parentNode);
+});
+$('att_sum_lbl').textContent = 'final head attention matrix (scaled softmax(' +
+  ['QKᵀ', ...TERMS.map(t => t.label)].join(' + ') + '))';
 $('sub').innerHTML = `${D.turn} to move${D.conditioning === false ? '' : ' · rating (self_elo) ' + D.elo}` +
   (D.best_san ? ` · plays <b>${D.best_san}</b>` : '') + `<br>${D.fen}`;
 fillAttCells($('bpos'), {pieces: true});
-['att_qk','att_gab','att_sum'].forEach(id => fillAttCells($(id)));
+['att_qk', ...TERMS.map((t, i) => 'att_t' + i), 'att_sum'].forEach(id => fillAttCells($(id)));
 renderAll();
 </script>
 """

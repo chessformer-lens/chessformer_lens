@@ -15,7 +15,7 @@
                         its carrier grid as three panels of one figure
   plot_attention        "Live attention · this position": semantic QKᵀ, geometric
                         GAB, and the head's final attention, for one query square
-  plot_attention_layer  the same three, for every head in a layer at once
+  plot_attention_layer  the same, for every head in a layer at once
   plot_attention_atlas  one head's whole 64x64 matrix as 64 small boards, each
                         drawn at its own query square and an option to overlay
                         the pieces
@@ -37,6 +37,7 @@ from matplotlib import font_manager
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 
+from .core import canon_square as _canon
 from .piece_art import draw_piece
 
 # ---------------------------------------------------------------------------
@@ -111,15 +112,6 @@ def _divmap(v: float) -> tuple:
     v = max(-1.0, min(1.0, float(v)))
     end = _BLUE if v < 0 else _ORANGE
     return tuple((m + (e - m) * abs(v)) / 255 for m, e in zip(_MID, end))
-
-
-def _canon(square: int, turn: bool) -> int:
-    """python-chess square -> the model's canonical index (side-to-move frame,
-    square = rank*8 + file). The app's realToCanon(). Duplicated verbatim in
-    interp_widget.py so each module imports standalone — keep both, and the
-    app's JS, in sync."""
-    rank, file = chess.square_rank(square), chess.square_file(square)
-    return (rank if turn == chess.WHITE else 7 - rank) * 8 + file
 
 
 def _depth_label(step) -> str:
@@ -348,14 +340,15 @@ def plot_position(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
             ax_p.text(0, -.02, f"+{extra} more legal moves · Δ = p({elo_b}) − p({elo})",
                       transform=ax_p.transAxes, fontsize=_fs(7), color=MUTED, va="top")
 
-    # ---- win / draw / loss -------------------------------------------------
+    # ---- win / draw / loss, or the expected score of a scalar value head ---
     ax_w.axis("off")
-    _h2(ax_w, "Win / Draw / Loss · side to move", y=1.15)
+    _h2(ax_w, "Win / Draw / Loss · side to move" if res["wdl"] is not None
+        else "Expected score · side to move", y=1.15)
     if res_b is None:
-        _wdl_bar(ax_w, res["wdl"], y=.05, h=.62)
+        _value_bar(ax_w, res, y=.05, h=.62)
     else:
-        _wdl_bar(ax_w, res["wdl"], y=.52, h=.36, tag=str(elo))
-        _wdl_bar(ax_w, res_b["wdl"], y=.06, h=.36, tag=str(elo_b))
+        _value_bar(ax_w, res, y=.52, h=.36, tag=str(elo))
+        _value_bar(ax_w, res_b, y=.06, h=.36, tag=str(elo_b))
     return fig
 
 
@@ -433,17 +426,30 @@ def _policy_rows(ax, board, rows, played):
                     color=ACCENT2 if d >= 0 else LOSS)
 
 
+def _value_bar(ax, res, *, y, h, tag=None):
+    """The app's value card for one evaluate() result: the win / draw / loss bar,
+    or — on a scalar value head — the side to move's expected score."""
+    if res.get("wdl") is not None:
+        return _wdl_bar(ax, res["wdl"], y=y, h=h, tag=tag)
+    s = round(res["value"].expected * 100)
+    _bar_parts(ax, ((s, WIN), (100 - s, LOSS)), y=y, h=h, tag=tag)
+
+
 def _wdl_bar(ax, wdl, *, y, h, tag=None):
     """The app's .wdl bar: win / draw / loss, labelled when the slice is wide."""
+    w, d = round(wdl["win"] * 100), round(wdl["draw"] * 100)
+    _bar_parts(ax, ((w, WIN), (d, DRAW), (max(0, 100 - w - d), LOSS)), y=y, h=h, tag=tag)
+
+
+def _bar_parts(ax, parts, *, y, h, tag=None):
+    """A 100% bar of (percent, color) parts, each labelled when wide enough."""
     x0 = 0.0
     if tag is not None:
         ax.text(0, y + h / 2, tag, transform=ax.transAxes, va="center", ha="left",
                 fontsize=_fs(7), color=MUTED, family=MONO)
         x0 = .075
-    w, d = round(wdl["win"] * 100), round(wdl["draw"] * 100)
-    l = max(0, 100 - w - d)
     span = 1 - x0
-    for val, col in ((w, WIN), (d, DRAW), (l, LOSS)):
+    for val, col in parts:
         width = span * val / 100
         ax.add_patch(plt.Rectangle((x0, y), width, h, transform=ax.transAxes,
                                    fc=col, lw=0, clip_on=False))
@@ -776,6 +782,7 @@ def plot_attention(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
                    `interp_widget.attention_widget` lets you sweep.
       query        square name ('e4') whose attention row is drawn; defaults to
                    the from-square of the model's move."""
+    _board_only(eng, board, "plot_attention")
     att = eng.attention(board, elo, oppo_elo, layer=layer, head=head)
     if query is None:
         best = eng.evaluate(board, elo, oppo_elo)["policy"][0][0]
@@ -783,15 +790,18 @@ def plot_attention(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
     else:
         q = _canon(chess.parse_square(query), board.turn)
 
-    qk, gab, attn = (np.array(att[k])[q] for k in ("qk", "gab", "attn"))
+    terms = _att_terms(att)
+    panels = [(f"{long} · {short}", np.array(m)[q], True) for short, long, m in terms]
+    panels.append((f"attention · softmax({' + '.join(t[0] for t in terms)})",
+                   np.array(att["attn"])[q], False))
+    n = len(panels)
 
     fig = _fig(figsize, width, titles)
-    gs = GridSpec(1, 3, figure=fig, wspace=.08, left=.03, right=.97, top=.70, bottom=.14)
+    gs = GridSpec(1, n, figure=fig, wspace=.08, left=.03, right=.97, top=.70, bottom=.14)
     viridis = plt.get_cmap("viridis")
-    labels = ["semantic · QKᵀ", "geometric · GAB", "attention · softmax(QKᵀ + GAB)"]
-    for i, (row, lab) in enumerate(zip((qk, gab, attn), labels)):
+    for i, (lab, row, diverging) in enumerate(panels):
         ax = fig.add_subplot(gs[0, i])
-        if i < 2:
+        if diverging:
             mx = float(np.abs(row).max()) or 1
             draw_board(ax, board, heat=row / mx, cmap=_divmap, pieces=False,
                        query=q, coords=True)
@@ -810,12 +820,32 @@ def plot_attention(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
     # pre-softmax logits, 0 -> max for the head's actual attention. The app ships
     # only the viridis one — a static figure has no hover readout, so the
     # diverging scale has to be spelled out here.
-    span = (.97 - .03) / 3
-    _legbar(fig, .03 + span * .55, .055, span * .9, DIVMAP, "−max", "+max")
-    _legbar(fig, .03 + span * 2.08, .055, span * .82, plt.get_cmap("viridis"), "0", "max")
-    _ftext(fig, .03 + span * 2.08, .028, "query's 64 weights (one per key square) sum to 1",
+    span = (.97 - .03) / n
+    _legbar(fig, .03 + span * ((n - 1) / 2 - .45), .055, span * .9, DIVMAP, "−max", "+max")
+    _legbar(fig, .03 + span * (n - .92), .055, span * .82, plt.get_cmap("viridis"), "0", "max")
+    _ftext(fig, .03 + span * (n - .92), .028, "query's 64 weights (one per key square) sum to 1",
              fontsize=_fs(8.5), color=MUTED, family=MONO, va="top")
     return fig
+
+
+def _att_terms(att):
+    """The pre-softmax score terms of an `eng.attention()` dict, in the model's
+    order: [(short name, long name, matrix)] — QKᵀ, then GAB or whatever else."""
+    out = [("QKᵀ", "semantic", att["qk"])]
+    if att.get("gab") is not None:
+        out.append(("GAB", "geometric", att["gab"]))
+    out += [(n, n, m) for n, m in (att.get("terms") or {}).items()]
+    return out
+
+
+def _board_only(eng, board, what):
+    """The attention figures draw on the board, so they need a model whose
+    tokens are the 64 squares; refuse the others plainly."""
+    if not eng.layout(board).is_board:
+        raise ValueError(
+            f"{what} is not available yet for {eng.arch.display_name}: its tokens aren't "
+            "board squares. A token-level view is planned; eng.attention() returns the "
+            "full matrices in a notebook.")
 
 
 def plot_attention_layer(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
@@ -847,6 +877,7 @@ def plot_attention_layer(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
                     magnitude but makes a flat head look as decisive as a sharp
                     one.
       figsize       defaults to a size that keeps the boards square."""
+    _board_only(eng, board, "plot_attention_layer")
     H = eng.cfg.num_heads
     if query is None:
         best = eng.evaluate(board, elo, oppo_elo)["policy"][0][0]
@@ -858,22 +889,24 @@ def plot_attention_layer(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
     # eng.attention() computes all heads and returns one, so calling it H times
     # redoes cheap work over a cached activation — worth it to stay on the
     # public API.
-    rows = ("qk", "gab", "attn")
-    data = {k: np.empty((H, 64)) for k in rows}
+    data, long_names = {}, {}
     for h in range(H):
         att = eng.attention(board, elo, oppo_elo, layer=layer, head=h)
-        for k in rows:
-            data[k][h] = np.array(att[k])[q]
+        for short, long, m in _att_terms(att):
+            data.setdefault(short, np.empty((H, 64)))[h] = np.array(m)[q]
+            long_names[short] = long
+        data.setdefault("attn", np.empty((H, 64)))[h] = np.array(att["attn"])[q]
+    rows = [*long_names, "attn"]
+    row_titles = {sh: (f"{lg} ({sh})" if lg != sh else sh) for sh, lg in long_names.items()}
+    row_titles["attn"] = "attention"
 
     peak = int(data["attn"][:, t].argmax() if t is not None
                else data["attn"].max(axis=1).argmax())
-    figsize = figsize or (1.28 * H + .5, 4.9)
+    figsize = figsize or (1.28 * H + .5, 4.9 * len(rows) / 3)
     fig = _fig(figsize, width, titles)
-    gs = GridSpec(3, H, figure=fig, wspace=.06, hspace=.20,
+    gs = GridSpec(len(rows), H, figure=fig, wspace=.06, hspace=.20,
                   left=.045, right=.985, top=.775, bottom=.125)
     viridis = plt.get_cmap("viridis")
-    row_titles = {"qk": "semantic (QKᵀ)", "gab": "geometric (GAB)",
-                  "attn": "attention"}
 
     for r, k in enumerate(rows):
         row_max = float(np.abs(data[k]).max()) or 1
@@ -910,8 +943,8 @@ def plot_attention_layer(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
         pick = (f"{_canon_name(q, board.turn)}→{_canon_name(t, board.turn)}: "
                 f"H{peak} at {pct:.1f}% ({pct / (100 / 64):.1f}× uniform)")
     fig.text(.045, _inch_y(fig, .52),
-             f"query {_canon_name(q, board.turn)}{_elo_tag(eng, elo)} · {3 * H} boards "
-             f"({H} heads × semantic / geometric / final) · "
+             f"query {_canon_name(q, board.turn)}{_elo_tag(eng, elo)} · {len(rows) * H} boards "
+             f"({H} heads × {' / '.join([*long_names.values(), 'final'])}) · "
              f"{'one scale per row' if shared_scale else 'per-panel scale'} · "
              f"{pick}",
              fontsize=_fs(10), color=MUTED, family=MONO, va="top")
@@ -951,6 +984,7 @@ def plot_attention_atlas(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=N
       layer, head   which head to open up.
       pieces        draw the position on every panel too.
       oppo_elo      the opponent's rating; defaults to `elo` for both sides."""
+    _board_only(eng, board, "plot_attention_atlas")
     att = eng.attention(board, elo, oppo_elo, layer=layer, head=head)
     M = np.array(att[component])                          # (64, 64), row = query
     div = component in ("qk", "gab")
