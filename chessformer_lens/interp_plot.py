@@ -82,6 +82,17 @@ WIDTHS = {"col": 3.3, "page": 6.9}
 RING_OUT, RING_IN = "#ffffff", "#18181b"
 
 
+# Declared for type checkers only: set_theme() fills these in through globals(),
+# and a bare annotation creates no runtime name.
+BG: str; PANEL: str; PANEL2: str; LINE: str; TEXT: str; MUTED: str
+ACCENT: str; ACCENT2: str; SQ_LIGHT: str; SQ_DARK: str
+WIN: str; DRAW: str; LOSS: str; INK: str; HL: str; QRING: str
+MOVE: tuple; CHART_BG: str; COORD: str; CHECKER: tuple; EXCL: tuple
+KIND_COL: dict; MLCOLORS: list; POS: str; NEG: str
+_MID: tuple; _BLUE: tuple; _ORANGE: tuple
+DIVMAP: LinearSegmentedColormap
+
+
 def set_theme(name: str = "dark"):
     """Switch every figure drawn from here on to THEMES[name]."""
     global DIVMAP
@@ -725,7 +736,7 @@ def plot_move_report(eng, board: chess.Board, elo: int = 1500, uci=None, *,
         f, r = chess.square_file(sq), chess.square_rank(sq)
         ax_b.add_patch(plt.Rectangle((f - .5, r - .5), 1, 1, lw=0,
                                      fc=MOVE[0] if (f + r) % 2 else MOVE[1], zorder=3))
-#
+
     _depth_axes(ax_c, [_depth_label(s) for s in steps],
                 [(san, [s["logit"] for s in steps], ACCENT, 2.2)], ylabel="logit")
     ranks = [s["rank"] for s in steps]
