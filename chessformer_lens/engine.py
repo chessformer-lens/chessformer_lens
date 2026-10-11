@@ -1218,9 +1218,11 @@ class LeelaEngine(ChessformerEngine):
 
     def __init__(self, alias="bt4", device=None, checkpoint_path=None,
                  activation_dir="activations"):
-        """`alias` is a Leela alias or a path to lc0's .pb.gz (or an .onnx
-        export). Without `checkpoint_path`, <stem>.pb.gz then <stem>.onnx are
-        looked for in $CHESSFORMER_WEIGHTS, then ./weights. Nothing is downloaded."""
+        """`alias` names an official net, `bt4` (the base BT4) or `bt4-332`
+        (policytune-332), or is a path to an lc0 .pb.gz (or an .onnx export).
+        Without `checkpoint_path` the net is looked for in $CHESSFORMER_WEIGHTS,
+        ./weights and the cache, and downloaded from lczero.org on first use
+        (CHESSFORMER_NO_DOWNLOAD=1 refuses instead)."""
         super().__init__(Lc0Adapter.load(alias, device=device, checkpoint_path=checkpoint_path),
                          activation_dir)
 

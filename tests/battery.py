@@ -414,7 +414,8 @@ def bt4_weights() -> Path | None:
             p = Path(d).expanduser() / f"Leela_BT4_large_model{sfx}"
             if p.exists():
                 return p
-    return None
+    from chessformer_lens.adapters.lc0 import _find_lc0_net
+    return _find_lc0_net("bt4-332")          # the goldens' net, under its official name
 
 
 def make_engine(name: str, activation_dir):

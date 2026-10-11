@@ -536,11 +536,99 @@ class Lc0Vocab(PolicyVocab):
 
 # ----- the adapter ----------------------------------------------------------------
 
-# alias -> (display name, file stem looked for in $CHESSFORMER_WEIGHTS or ./weights)
-_LEELA_SPECS = {"bt4": ("Leela BT4", "Leela_BT4_large_model")}
+# The official lc0 nets (https://lczero.org/play/networks/bestnets/). Both are BT4;
+# policytune-332 is BT4 fine-tuned for a better policy. A file is recognised by its
+# exact size, so a renamed copy still says which net it is.
+_LC0_NETS = {
+    "bt4": dict(
+        display_name="Leela BT4", file="BT4-1024x15x32h-swa-6147500.pb.gz",
+        url="https://storage.lczero.org/files/networks-contrib/big-transformers/"
+            "BT4-1024x15x32h-swa-6147500.pb.gz",
+        size=335897546, sha256="66e6c1b5308c34230801dc171df580d7a66ec916dc2211246a485ef8e545c67e"),
+    "bt4-332": dict(
+        display_name="Leela BT4 policytune-332",
+        file="BT4-1024x15x32h-swa-6147500-policytune-332.pb.gz",
+        url="https://storage.lczero.org/files/networks-contrib/"
+            "BT4-1024x15x32h-swa-6147500-policytune-332.pb.gz",
+        size=382645315,
+        sha256="e6ada9d6c4a769bfab3aa0848d82caeb809aa45f83e6c605fc58a31d21bdd618"),
+}
 _LEELA_SUFFIXES = (".pb.gz", ".pb", ".onnx")     # lc0's own weights file, or an ONNX export
-_LEELA_ALIASES = {"bt4": "bt4", "leela-bt4": "bt4", "lc0-bt4": "bt4",
-                  "leela": "bt4", "lc0": "bt4", "bt4-1024x15x32h": "bt4"}
+_LEELA_ALIASES = {"bt4": "bt4", "leela-bt4": "bt4", "lc0-bt4": "bt4", "leela": "bt4",
+                  "lc0": "bt4", "bt4-1024x15x32h": "bt4", "bt4-base": "bt4",
+                  "bt4-332": "bt4-332", "bt4-it332": "bt4-332", "bt4-policytune": "bt4-332",
+                  "leela-bt4-332": "bt4-332"}
+_LEELA_LEGACY_FILE = "Leela_BT4_large_model.pb.gz"   # the old fixed name; used only if its size matches
+
+
+def lc0_cache_dir() -> Path:
+    """Where downloaded lc0 nets go: $CHESSFORMER_CACHE, else ~/.cache/chessformer_lens."""
+    return Path(os.environ.get("CHESSFORMER_CACHE")
+                or Path.home() / ".cache" / "chessformer_lens").expanduser()
+
+
+def _weights_dirs() -> list:
+    dirs = [Path(os.environ["CHESSFORMER_WEIGHTS"]).expanduser()] \
+        if os.environ.get("CHESSFORMER_WEIGHTS") else []
+    return dirs + [Path("weights"), lc0_cache_dir()]
+
+
+def identify_lc0_net(path) -> str | None:
+    """Which official net (`_LC0_NETS` key) a weights file is, by its exact size."""
+    try:
+        size = Path(path).stat().st_size
+    except OSError:
+        return None
+    return next((k for k, net in _LC0_NETS.items() if net["size"] == size), None)
+
+
+def _find_lc0_net(name):
+    """A local copy of net `name`: its official file name in $CHESSFORMER_WEIGHTS,
+    ./weights or the cache, or the old fixed name if its size says it is this net."""
+    for d in _weights_dirs():
+        if (d / _LC0_NETS[name]["file"]).exists():
+            return d / _LC0_NETS[name]["file"]
+        if identify_lc0_net(d / _LEELA_LEGACY_FILE) == name:
+            return d / _LEELA_LEGACY_FILE
+    return None
+
+
+def download_lc0_net(name, dest_dir=None):
+    """Download official net `name` from lczero.org into `dest_dir` (default:
+    `lc0_cache_dir()`), checking its sha256; returns the file's path. Written to
+    a .part file first, so an interrupted download never looks complete."""
+    import hashlib
+    import ssl
+    import urllib.request
+
+    net = _LC0_NETS[name]
+    dest_dir = Path(dest_dir or lc0_cache_dir())
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / net["file"]
+    part = dest.with_name(dest.name + ".part")
+    print(f"chessformer_lens: {net['display_name']} weights are not on this machine; "
+          f"downloading them now ({net['size'] / 1e6:.0f} MB, one time).\n"
+          f"  from:  {net['url']}\n  to:    {dest}", flush=True)
+    try:        # python.org's macOS builds ship without system CAs; certifi has them
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        ctx = ssl.create_default_context()
+    req = urllib.request.Request(net["url"], headers={"User-Agent": "chessformer_lens"})
+    digest, done, shown = hashlib.sha256(), 0, 0
+    with urllib.request.urlopen(req, context=ctx, timeout=60) as resp, open(part, "wb") as fh:
+        while chunk := resp.read(1 << 20):
+            fh.write(chunk)
+            digest.update(chunk)
+            done += len(chunk)
+            if done * 10 // net["size"] > shown:
+                shown = done * 10 // net["size"]
+                print(f"  {min(100, shown * 10)}%", end="\n" if shown >= 10 else "", flush=True)
+    if digest.hexdigest() != net["sha256"]:
+        part.unlink(missing_ok=True)
+        raise RuntimeError(f"{net['file']}: checksum mismatch after download; try again")
+    part.replace(dest)
+    return dest
 
 
 @_register_builtin
@@ -555,23 +643,24 @@ class Lc0Adapter(ModelAdapter):
     @classmethod
     def resolve(cls, alias):
         key = str(alias).strip().lower()
-        if key in _LEELA_ALIASES or key.endswith(_LEELA_SUFFIXES):
-            return _LEELA_SPECS[_LEELA_ALIASES.get(key, "bt4")][0]
+        if key in _LEELA_ALIASES:
+            return _LC0_NETS[_LEELA_ALIASES[key]]["display_name"]
+        if key.endswith(_LEELA_SUFFIXES):
+            net = identify_lc0_net(Path(str(alias).strip()).expanduser())
+            return _LC0_NETS[net]["display_name"] if net else "Leela (lc0 net)"
         return None
 
     @classmethod
     def models(cls):
-        weights_dir = Path(os.environ.get("CHESSFORMER_WEIGHTS", "weights")).expanduser()
         out = []
-        for name, (display_name, stem) in _LEELA_SPECS.items():
-            found = next((weights_dir / (stem + sfx) for sfx in _LEELA_SUFFIXES
-                          if (weights_dir / (stem + sfx)).exists()), None)
+        for name, net in _LC0_NETS.items():
+            found = _find_lc0_net(name)
             out.append({
-                "alias": name, "display_name": display_name,
+                "alias": name, "display_name": net["display_name"],
                 "aliases": [a for a, n in _LEELA_ALIASES.items() if n == name and a != name],
-                "available": found is not None,
-                "note": (str(found) if found else
-                         f"needs {weights_dir / (stem + '.pb.gz')} from lczero.org"),
+                "available": True,
+                "note": str(found) if found else
+                f"downloads {net['size'] / 1e6:.0f} MB from lczero.org on first use",
             })
         return out
 
@@ -581,28 +670,44 @@ class Lc0Adapter(ModelAdapter):
 
     @classmethod
     def load(cls, alias="bt4", *, device=None, checkpoint_path=None, **_):
-        """`alias` is a Leela alias or a path to lc0's .pb.gz (or an .onnx
-        export). Without `checkpoint_path`, <stem>.pb.gz then <stem>.onnx are
-        looked for in $CHESSFORMER_WEIGHTS, then ./weights. Nothing is downloaded."""
+        """`alias` names an official net, `bt4` (the base BT4) or `bt4-332`
+        (policytune-332), or is a path to an lc0 .pb.gz (or an .onnx export).
+        Without `checkpoint_path` the net is looked for in $CHESSFORMER_WEIGHTS,
+        ./weights and the download cache (`lc0_cache_dir()`), and downloaded from
+        lczero.org on first use (set CHESSFORMER_NO_DOWNLOAD=1 to refuse instead).
+        Which net was loaded is printed, recognised by the file's size."""
         key = str(alias).strip()
         if key.lower().endswith(_LEELA_SUFFIXES):
-            name, checkpoint_path = "bt4", checkpoint_path or key
+            name, checkpoint_path = None, checkpoint_path or key
         else:
             name = _LEELA_ALIASES.get(key.lower())
             if name is None:
                 from ..core import format_catalog
                 raise ValueError(f"Unknown Leela alias {alias!r}.\n\n{format_catalog()}")
-        display_name, stem = _LEELA_SPECS[name]
         if checkpoint_path is None:
-            weights_dir = Path(os.environ.get("CHESSFORMER_WEIGHTS", "weights")).expanduser()
-            found = [weights_dir / (stem + sfx) for sfx in _LEELA_SUFFIXES
-                     if (weights_dir / (stem + sfx)).exists()]
-            checkpoint_path = found[0] if found else weights_dir / (stem + ".pb.gz")
+            checkpoint_path = _find_lc0_net(name)
+            if checkpoint_path is None:
+                if os.environ.get("CHESSFORMER_NO_DOWNLOAD"):
+                    raise FileNotFoundError(
+                        f"{_LC0_NETS[name]['display_name']}: {_LC0_NETS[name]['file']} is not in "
+                        f"{', '.join(map(str, _weights_dirs()))} and CHESSFORMER_NO_DOWNLOAD is set. "
+                        f"Download it from {_LC0_NETS[name]['url']}")
+                checkpoint_path = download_lc0_net(name)
         checkpoint_path = Path(checkpoint_path).expanduser()
         if not checkpoint_path.exists():
             raise FileNotFoundError(
-                f"{display_name}: no weights at {checkpoint_path}. Download the network "
-                f"(.pb.gz) from https://lczero.org and pass its path.")
+                f"no lc0 weights at {checkpoint_path}. Download a network (.pb.gz) from "
+                f"https://lczero.org and pass its path.")
+        net = identify_lc0_net(checkpoint_path)
+        if net is not None:
+            display_name = _LC0_NETS[net]["display_name"]
+            note = (f"  (you asked for {_LC0_NETS[name]['display_name']})"
+                    if name is not None and name != net else "")
+        else:
+            display_name = f"Leela ({checkpoint_path.name})"
+            note = "  (not one of the official nets this package knows)"
+        print(f"chessformer_lens: loading {display_name} from {checkpoint_path}{note}", flush=True)
+        name = net or name or "bt4"
 
         self = cls()
         self.device = pick_device(device)

@@ -309,7 +309,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     text-align:left;margin-bottom:6px}
   .pkmodel .nm{font-weight:600;font-size:13px}
   .pkmodel .al{font-family:var(--mono);font-size:10px;color:var(--muted)}
-  .pkmodel .nt{font-size:10px;color:var(--muted)}
+  .pkmodel .nt{font-size:10px;color:var(--muted);word-break:break-all}
   .pkmodel:disabled{opacity:.45;cursor:not-allowed}
   .pkrow{display:flex;gap:6px;margin-top:14px}
   .pkerr{color:var(--loss);font-size:11px;margin-top:8px;white-space:pre-wrap;font-family:var(--mono)}
