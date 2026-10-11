@@ -29,6 +29,8 @@ pip install -r requirements.txt
 ---
 ## Demo Notebook: <a href="https://colab.research.google.com/github/chessformer-lens/chessformer_lens/blob/main/demo.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" width="200"></a>
 
+Quickstarts in Colab: [Leela BT4](https://colab.research.google.com/github/chessformer-lens/chessformer_lens/blob/main/notebooks/leela_quickstart.ipynb) · [Maia-3](https://colab.research.google.com/github/chessformer-lens/chessformer_lens/blob/main/notebooks/maia_quickstart.ipynb)
+
 ---
 
 ![A knight-fork position's move report](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/Screenshot10.png)
