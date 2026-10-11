@@ -2,6 +2,7 @@
 App Guide: see app_guide.md
 
 From repo run: python -m chessformer_lens.app
+In a browser instead of a window: chessformer_lens --web (see web.py)
 """
 import argparse
 import os
@@ -11,10 +12,7 @@ from .bridge import LensApi
 from .ui import INDEX_HTML
 
 
-def resolve_alias():
-    """The engine named on the command line (or $CHESSFORMER_MODEL), or None:
-    there is no default model, and without one the window opens on a model
-    picker. `--list` prints every registered engine and exits."""
+def _args():
     ap = argparse.ArgumentParser(description="Chessformer interpretability app")
     ap.add_argument("model", nargs="?", default=None,
                     help="engine alias, e.g. bt4 or maia3-23m, or a path to an lc0 "
@@ -24,8 +22,24 @@ def resolve_alias():
                     help="same as the positional argument")
     ap.add_argument("--list", action="store_true",
                     help="print every registered engine and its aliases, then exit")
-    args = ap.parse_args()
+    ap.add_argument("--web", action="store_true",
+                    help="serve the app to your web browser instead of opening a window")
+    ap.add_argument("--port", type=int, default=0,
+                    help="with --web: the port to listen on (default: any free one)")
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="with --web: the address to listen on (default 127.0.0.1, this "
+                         "machine only). 0.0.0.0 puts the whole app, including loading "
+                         "models, on your network")
+    ap.add_argument("--no-browser", action="store_true",
+                    help="with --web: print the address instead of opening a browser")
+    return ap.parse_args()
 
+
+def resolve_alias(args=None):
+    """The engine named on the command line (or $CHESSFORMER_MODEL), or None:
+    there is no default model, and without one the window opens on a model
+    picker. `--list` prints every registered engine and exits."""
+    args = args or _args()
     from .engine import format_engine_list, resolve_engine
     if args.list:
         print(format_engine_list())
@@ -44,7 +58,13 @@ def resolve_alias():
 
 
 def main():
-    alias = resolve_alias()
+    args = _args()
+    alias = resolve_alias(args)
+    if args.web:
+        from .web import serve
+        serve(alias, host=args.host, port=args.port, open_browser=not args.no_browser,
+              block=True)
+        return
     try:
         import webview  # pywebview
     except ImportError:

@@ -54,22 +54,26 @@ class LensApi:
     `compare_residual` are not wired to any control — they're kept as a stable
     surface for poking at the model from the webview console."""
 
-    def __init__(self, alias=None):
-        self.engine = None
-        self.ready = False
+    def __init__(self, alias=None, engine=None):
+        """`engine`: an engine already loaded (a notebook's), used as is."""
+        self.engine = engine
+        self.ready = engine is not None
         self.error = None
-        # which engine to load: explicit arg > env var > none, in which case the
-        # page asks (see `models` / `load_model`)
-        self.alias = (alias or os.environ.get("CHESSFORMER_MODEL")
-                      or os.environ.get("MAIA3_ALIAS") or None)
-        self.target_name = self._display_name(self.alias) if self.alias else None
+        if engine is not None:
+            self.alias, self.target_name = engine.spec.name, engine.spec.display_name
+        else:
+            # which engine to load: explicit arg > env var > none, in which case
+            # the page asks (see `models` / `load_model`)
+            self.alias = (alias or os.environ.get("CHESSFORMER_MODEL")
+                          or os.environ.get("MAIA3_ALIAS") or None)
+            self.target_name = self._display_name(self.alias) if self.alias else None
         self.board = chess.Board()
         self.human = chess.WHITE
         self.human_both = False
         self.san_history = []
         self._lock = threading.Lock()
         self._loading = False
-        if self.alias:
+        if self.alias and not self.ready:
             self._start_load()
 
     @staticmethod

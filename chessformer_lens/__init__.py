@@ -49,7 +49,7 @@ _LAZY = {
 }
 
 _SUBMODULES = ("engine", "core", "adapters", "interp_plot", "interp_widget", "bridge", "ui",
-               "app", "pieces", "piece_art")
+               "app", "web", "pieces", "piece_art")
 
 
 def __getattr__(name):
