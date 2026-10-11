@@ -2,7 +2,9 @@
 
 #### A toolkit and app for mechanistic interpretability of transformer based chess models.
 
-`pip install chessformer_lens`; Leela's BT4 net downloads itself on first use, and Maia-3 needs its own package (below).
+`pip install chessformer_lens`
+
+**Try the app in your browser, no install needed:** <a href="https://colab.research.google.com/github/chessformer-lens/chessformer_lens/blob/main/app_quickstart.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21877655.svg)](https://doi.org/10.5281/zenodo.21877655)
 
@@ -17,8 +19,9 @@
 Pip install:
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install https://github.com/CSSLab/maia3/archive/1e13597c42d4858b7cfd7cfdae01e297263364b2.zip --quiet   # only needed for Maia-3 models
 pip install chessformer_lens
+# for Maia-3 models, first: pip install https://github.com/CSSLab/maia3/archive/1e13597c42d4858b7cfd7cfdae01e297263364b2.zip
+# Leela's BT4 net downloads itself on first use
 ```
 or Clone if you want to edit the code:
 ```bash
@@ -28,8 +31,6 @@ pip install -r requirements.txt
 ```
 ---
 ## Demo Notebook: <a href="https://colab.research.google.com/github/chessformer-lens/chessformer_lens/blob/main/demo.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" width="200"></a>
-
-Quickstarts in Colab: [Leela BT4](https://colab.research.google.com/github/chessformer-lens/chessformer_lens/blob/main/notebooks/leela_quickstart.ipynb) · [Maia-3](https://colab.research.google.com/github/chessformer-lens/chessformer_lens/blob/main/notebooks/maia_quickstart.ipynb)
 
 ---
 
@@ -59,7 +60,7 @@ Users are encouraged to read the user guides for each of these modules which can
 ---
 ## Leela Chess Zero
 
-This is an extremely strong engine that has many many more layers and parameters but functionally the same architecture as others like Maia-3.
+This is an extremely strong engine that has many many more layers and parameters but the same square-token design as others like Maia-3.
 
 **Weights:** `bt4` (the base BT4 net) or `bt4-332` (its policytune-332 fine-tune) download from [lczero.org](https://lczero.org) on first use into `~/.cache/chessformer_lens`. A path to any lc0 `.pb.gz` works too.
 
@@ -74,7 +75,7 @@ eng = LeelaEngine("bt4")
 Recall that FEN is the modern notation for a chess position
 ```python
 !pip install -q https://github.com/CSSLab/maia3/archive/1e13597c42d4858b7cfd7cfdae01e297263364b2.zip
-!pip install -q chessformer_lens
+!pip install -q "chessformer_lens>=2.0"
 
 import chess
 from chessformer_lens import MaiaEngine
@@ -100,7 +101,7 @@ iw.attention_widget(eng, board, 1500,layer=4,head=3)
 
 
 
-To me, the app is the pièce de résistance and usage should be rather intuitive, nonetheless, a detailed guide can be found in [`app_README.md`](https://github.com/chessformer-lens/chessformer_lens/blob/main/app_guide.md).
+To me, the app is the pièce de résistance and usage should be rather intuitive, nonetheless, a detailed guide can be found in [`app_guide.md`](https://github.com/chessformer-lens/chessformer_lens/blob/main/app_guide.md).
 
 
 Play a transformer-based chess bot ("chessformer") and watch
@@ -115,13 +116,11 @@ chessformer_lens --list             # print every engine and its aliases
 chessformer_lens 23m               
 chessformer_lens --model maia3-79m 
 CHESSFORMER_MODEL=5m chessformer_lens
-chessformer_lens bt4                # Leela Chess Zero BT4 — see below   
+chessformer_lens bt4                # Leela Chess Zero BT4 — see above   
 chessformer_lens --web              # the same app in your web browser
 ```
 
 
-<!-- understand about set `MAIA3_DEVICE=mps` (Apple Silicon) or run on
-CUDA to speed higher parameter models up. Model weights: <https://huggingface.co/UofTCSSLab> -->
 
 ---
 

@@ -23,7 +23,7 @@ weights/
 
 # Project working data
 activations/
-tests/golden/
+tests/
 *.pt
 NOTES.md
 tests.ipynb
