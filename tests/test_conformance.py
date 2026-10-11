@@ -147,6 +147,13 @@ def test_no_capture_leaves_snapshot(eng):
     assert all(torch.equal(snap[k], eng._activations[k]) for k in snap)
 
 
+def test_no_capture_refuses_snapshot_reads(eng):
+    with eng.no_capture():
+        for read in (lambda b: eng.head_writes(b, 1500, layer=0), lambda b: eng.run_with_cache(b, 1500)):
+            with pytest.raises(RuntimeError, match="no_capture"):
+                read(battery.board_for("start"))
+
+
 def test_attention_is_a_distribution_over_its_terms(eng):
     b = battery.board_for("ruy_black")
     for L in {0, eng.arch.n_layers - 1}:

@@ -242,14 +242,20 @@ class ChessformerEngine:
     @contextmanager
     def no_capture(self):
         """Forward passes inside leave the activation snapshot (and `_aux`) as
-        they were — for running the model on other positions, e.g. a search,
-        without disturbing what a panel is showing. The numbers are unchanged."""
+        they were — for running the model on other positions without
+        disturbing what a panel is showing. The numbers are unchanged."""
         prev = self._capture_paused
         self._capture_paused = True
         try:
             yield self
         finally:
             self._capture_paused = prev
+
+    def _snap(self, name):
+        """A snapshot activation; inside no_capture it would be the previous position's."""
+        if self._capture_paused:
+            raise RuntimeError("activation reads inside no_capture() would answer for the previous position")
+        return self._activations[name]
 
     # ----- the forward pass ---------------------------------------------------
     def tokens(self, board: chess.Board) -> torch.Tensor:
@@ -399,7 +405,7 @@ class ChessformerEngine:
         intervention. On a CPU-only setup (or with CHESSFORMER_DEVICE=cpu) 
         both are on the CPU and none of this matters."""
         out = self.evaluate(board, self_elo, oppo_elo)
-        cache = {k: v.squeeze(0).clone() for k, v in self._activations.items()}
+        cache = {k: self._snap(k).squeeze(0).clone() for k in self._activations}
         return out, cache
 
     @staticmethod
@@ -491,7 +497,7 @@ class ChessformerEngine:
         (1, tokens, dim) on the live device — exactly the tensor its query, key
         and value (and, on smolgen models, its GAB generator) are made from."""
         self.evaluate(board, self_elo, oppo_elo)
-        return self._activations[self.adapter.attn_input_key(int(layer))].to(self.device)
+        return self._snap(self.adapter.attn_input_key(int(layer))).to(self.device)
 
     def _decompose(self, board, self_elo, oppo_elo, layer):
         """(attention input x, Conditioning, AttnDecomp) of one layer, batch of one."""
@@ -653,7 +659,7 @@ class ChessformerEngine:
         recon = writes.sum(1)
         if dec.b_O is not None:
             recon = recon + dec.b_O
-        target = self._activations[f"attn_{L:02d}"].to(self.device)
+        target = self._snap(f"attn_{L:02d}").to(self.device)
         check_recon(recon, target, f"head_writes reconstruction failed for layer {L}")
         return writes
 
@@ -709,7 +715,7 @@ class ChessformerEngine:
 
         # ---- delta: the vector each structure adds to the stream, in order ----
         def per_sq_norm(name):
-            return self._activations[name][0].norm(dim=-1).tolist()   # (tokens,)
+            return self._snap(name)[0].norm(dim=-1).tolist()   # (tokens,)
 
         delta = [{"label": "emb", "kind": "emb", "norm": per_sq_norm("embed_in")}]
         for i in range(nb):
@@ -722,7 +728,7 @@ class ChessformerEngine:
         # Same resolution as delta: emb, then (post-attn, post-mlp) per layer, enc.
         legal = self._legal_mask(board).to(self.device)
         moves = [{"label": lab, "kind": kind,
-                  **self._lens_move(self._activations[name][0], board, legal)}
+                  **self._lens_move(self._snap(name)[0], board, legal)}
                  for name, lab, kind in self._lens_steps()]
 
         return {"delta": delta, "moves": moves, "layout": self.layout(board).to_json()}
@@ -924,7 +930,7 @@ class ChessformerEngine:
         n_legal = int(legal.sum())
         steps = []
         for name, lab, kind in self._lens_steps():
-            logits = self.adapter.unembed(self._activations[name][0].to(self.device))
+            logits = self.adapter.unembed(self._snap(name)[0].to(self.device))
             lg = float(logits[idx])
             masked = logits.masked_fill(~legal, float("-inf"))
             prob = float(torch.softmax(masked, dim=-1)[idx]) if n_legal else None
@@ -1008,7 +1014,7 @@ class ChessformerEngine:
                     # ablated passes below are compared against, so it is re-run per
                     # layer rather than cached (an ablated forward overwrites it)
                     self._forward_batch(boards, cond)
-                    x = self._activations[self.adapter.attn_input_key(L)].to(self.device)
+                    x = self._snap(self.adapter.attn_input_key(L)).to(self.device)
                     writes = self._head_writes_from_x(x, L, cond)
                     for h in range(nh):
                         w = writes[:, h]
@@ -1174,7 +1180,7 @@ class ChessformerEngine:
 
         `activation_dir` is created here, on the first save, rather than in
         __init__."""
-        snap = {k: v.squeeze(0).clone() for k, v in self._activations.items()}
+        snap = {k: self._snap(k).squeeze(0).clone() for k in self._activations}
         snap["meta"] = meta or {}
         self.activation_dir.mkdir(parents=True, exist_ok=True)
         path = self.activation_dir / filename
