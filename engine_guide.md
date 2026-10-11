@@ -2,12 +2,12 @@
 *(`engine.py`: the interpretability core behind the app, plots, and widgets)*
 
 A mechanistic interpretability core for chess transformers.
-`LeelaEngine ` loads a Leela Chess Zero BT4 checkpoint. `MaiaEngine` loads a Maia-3 checkpoint. Then runs forward passes, and captures the
+`LeelaEngine ` loads a Leela Chess Zero BT4 checkpoint (`bt4` / `bt4-332`, downloaded on first use). `MaiaEngine` loads a Maia-3 checkpoint. Then runs forward passes, and captures the
 residual stream at every layer.
 
 `engine.py` imports cleanly into a notebook and is called by `interp_plot.py`
 (static figures), `interp_widget.py` (interactive panels), and the standalone
-app in `bridge.py` / `app.py` / `ui.py`.
+app in `bridge.py` / `app.py` / `ui.py` (and `web.py`, in a browser).
 
 
 **Run the Model**
@@ -70,6 +70,7 @@ app in `bridge.py` / `app.py` / `ui.py`.
 **Others**
 
 - `save_activations`: persist the most recent forward pass's snapshot to disk.
+- `no_capture`: a context in which forward passes leave the snapshot alone.
 - `remove_hooks`: detach the capture hooks, for a bare forward with no CPU copies.
 
 **More info**
@@ -79,6 +80,7 @@ side-to-move frame (square = rank*8 + file). Depth reads the same as in the
 figures: emb, then aN/mN for layer N's attention and MLP sub-layers, then
 enc — depth_points hands you that axis directly.
 
-Module level, beside the class: build_cfg builds the args-namespace the model
-expects from a registry alias, and pick_device resolves the torch device
-(explicit > $MAIA3_DEVICE > cuda > cpu).
+Module level: load_engine builds the engine an alias names, resolve_engine
+checks an alias without loading weights, register_adapter adds a model family,
+and pick_device resolves the torch device
+(explicit > $CHESSFORMER_DEVICE > cuda > mps > cpu).

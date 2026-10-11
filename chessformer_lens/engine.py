@@ -3,18 +3,20 @@
 `ChessformerEngine` class contains every read and intervention path below and works on
 any model a `ModelAdapter` describes (see core.py): the adapter supplies the
 model, its input tokens, its move vocabulary and a view of its internals; the
-engine does the rest. Built-in families, by alias (`load_engine`):
+engine does the rest. Model-specific code lives in adapters/. Built-in families,
+by alias (`load_engine`):
 
   MaiaEngine    a Maia-3 checkpoint (5M / 23M / 79M / 3M-ablation), conditioned
                 on a rating pair — `self_elo` / `oppo_elo` are real inputs
   LeelaEngine   Leela Chess Zero BT4 (185M params, 15 layers x 32 heads x 1024d),
+                no rating input; `bt4` / `bt4-332` download on first use
 
 
   evaluate              one forward pass yielding the full normalized policy over
                         legal moves (in descending order), the W/D/L for the side to
                         move (`value` for any value head), and auxiliary heads such
                         as the moves-left estimate
-  evaluate_batch        the same over many positions without touching the
+  evaluate_batch        the same over many positions
 
   select_move           pick a move at a rating (temperature 0 = argmax)
   tokens                the position as the model's input tokens
@@ -91,7 +93,7 @@ every Maia-3 size, 31 on BT4).
 
 engine.py imports cleanly into a notebook and is called by interp_plot.py
 (static figures),  interp_widget.py (interactive panels), and the standalone
-app in bridge.py/app.py/ui.py.
+app in bridge.py/app.py/ui.py (and web.py, in a browser).
 """
 from __future__ import annotations
 

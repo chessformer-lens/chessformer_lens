@@ -2,7 +2,7 @@
 
 #### A toolkit and app for mechanistic interpretability of transformer based chess models.
 
-Download a chessformer engine (Leela Chess Zero or Maia) then `pip install chessformer_lens`
+`pip install chessformer_lens`; Leela's BT4 net downloads itself on first use, and Maia-3 needs its own package (below).
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21877655.svg)](https://doi.org/10.5281/zenodo.21877655)
 
@@ -61,12 +61,12 @@ Users are encouraged to read the user guides for each of these modules which can
 
 This is an extremely strong engine that has many many more layers and parameters but functionally the same architecture as others like Maia-3.
 
-**Weights:** Download the network file `BT4-1024x15x32h-swa-6147500.pb.gz` from [lczero.org](https://lczero.org) and pass its path. The engine reads lc0's `.pb.gz` directly.
+**Weights:** `bt4` (the base BT4 net) or `bt4-332` (its policytune-332 fine-tune) download from [lczero.org](https://lczero.org) on first use into `~/.cache/chessformer_lens`. A path to any lc0 `.pb.gz` works too.
 
 **Load.** One alias table covers both families; neither is a default.
 ```python
 from chessformer_lens import LeelaEngine, load_engine
-eng = LeelaEngine(checkpoint_path="BT4-1024x15x32h-swa-6147500.pb.gz")
+eng = LeelaEngine("bt4")
 ```
 ---
 ## Quickstart in notebook:
@@ -116,6 +116,7 @@ chessformer_lens 23m
 chessformer_lens --model maia3-79m 
 CHESSFORMER_MODEL=5m chessformer_lens
 chessformer_lens bt4                # Leela Chess Zero BT4 — see below   
+chessformer_lens --web              # the same app in your web browser
 ```
 
 
@@ -137,6 +138,7 @@ CUDA to speed higher parameter models up. Model weights: <https://huggingface.co
 - `ui.py` — the whole interface (HTML/CSS/JS) as one string including guide to change template.
 - `pieces.py` — SVG piece set as data URIs.
 - `app.py` — app launcher (native window via pywebview); the `chessformer_lens` command is its `main()`.
+- `web.py` — the same app served to a web browser (`chessformer_lens --web`, or `web.serve()` in a notebook).
 
 These come with concise but detailed docstrings.
 

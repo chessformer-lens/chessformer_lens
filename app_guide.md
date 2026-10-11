@@ -1,7 +1,7 @@
 # App Guide 
-*(If you cloned the repo look at Screenshots/chessformer_lens_demo.mp4)*:
 
-Launched with no model named, the app opens a picker listing every engine; choose one to load it (`chessformer_lens --list` prints them).
+Launched with no model named, the app opens a picker listing every engine; choose one to load it (`chessformer_lens --list` prints them). Leela's nets download on first use.
+`chessformer_lens --web` opens the same app in your web browser instead of a window.
 
 **Play or Set up a Position**
 Click to move your pieces. Select an Elo for the engine (Maia-3 is created to mimic how HUMANS play at that strength, with all of our innate biases)
