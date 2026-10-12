@@ -235,7 +235,12 @@ MANY = r"""
   const opened = cur.fen, strip = $('mpstrip').offsetHeight, drawer = $('mlens').classList.contains('open');
   await mpBack();
   for (let i = 0; i < 300 && busy; i++) await wait(100);
-  console.log('DIAG ' + JSON.stringify({tab, empty, cardNeuron, picked, cells, strong, tiles, stat, pieces, first: first.fen,
+  $('mppool').value = 'fens'; mpFens = [start, '', '# a comment', first.fen];   // as a chosen file would set them
+  await mpScan();
+  for (let i = 0; i < 600; i++) { const s = await API.scan_status(); if (s.state === 'done') break; await wait(20); }
+  await mpTick();
+  const fensStat = $('mpstat').textContent;
+  console.log('DIAG ' + JSON.stringify({tab, empty, fensStat, cardNeuron, picked, cells, strong, tiles, stat, pieces, first: first.fen,
     opened, strip, drawer, back: cur.fen === start, stripAfter: $('mpstrip').offsetHeight,
     layers: MODEL_INFO.num_blocks}));
 })();
@@ -253,5 +258,6 @@ def test_many_positions_tab(tmp_path):
     assert "scanned 1,000 of 1,000 ordinary positions" in diag["stat"] and "elo 1500" in diag["stat"]
     assert diag["opened"] == diag["first"] and diag["strip"] > 0 and not diag["drawer"]
     assert diag["back"] and diag["stripAfter"] == 0
+    assert "scanned 2 of 2 positions from the file" in diag["fensStat"]
     assert {"scan_start", "scan_status", "scan_report", "neuron_positions",
             "open_position", "go_back"} <= set(calls)

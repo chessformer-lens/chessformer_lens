@@ -21,7 +21,8 @@ from pathlib import Path
 import chess
 
 from .core import available_models
-from .engine import LeelaEngine, NeuronScan, find_lc0, load_engine, ordinary_positions, resolve_engine
+from .engine import (LeelaEngine, NeuronScan, find_lc0, load_engine, load_positions,
+                     ordinary_positions, resolve_engine)
 
 # Cached activations are working data, not package content: they land under the
 # directory the app is launched from, so an installed copy is never written to.
@@ -681,9 +682,21 @@ class LensApi:
         to go back to."""
         return self._game_return[0] if self._game_return is not None else self.board
 
-    def _pool(self, pool):
+    def _pool(self, pool, fens=None):
         """(positions, label) for a pool name: the bundled ordinary positions,
-        or every position of the game, its history kept."""
+        every position of the game (its history kept), or `fens`, a list of
+        FEN strings the page read from a file."""
+        if pool == "fens":
+            lines = [l.strip() for l in (fens or []) if l.strip() and not l.lstrip().startswith("#")]
+            if not lines:
+                raise ValueError("no FENs in the file")
+            for i, line in enumerate(lines, 1):
+                try:
+                    chess.Board(line)
+                except ValueError:
+                    raise ValueError(f"line {i} is not a FEN: {line[:60]}") from None
+            boards = load_positions(lines)
+            return boards, f"{len(boards):,} positions from the file"
         if pool == "game":
             game = self._game()
             root, boards = game.root(), []
@@ -696,16 +709,17 @@ class LensApi:
         boards = ordinary_positions()
         return boards, f"{len(boards):,} ordinary positions"
 
-    def scan_start(self, pool="ordinary", elo=1500):
-        """Scan a pool for the neurons that fire most (`NeuronScan`),
-        on a background thread a batch at a time. The same pool and rating
-        again returns the scan already made."""
+    def scan_start(self, pool="ordinary", elo=1500, fens=None):
+        """Scan a pool for the neurons that fire most (`NeuronScan`), on a
+        background thread a batch at a time: "ordinary" (the bundled
+        positions), "game", or "fens" (`fens`: the lines of a file of FENs).
+        The same pool and rating again returns the scan already made."""
         if not self.ready:
             return {"error": self.error or "model still loading"}
         elo = int(elo) if self.engine.has_conditioning else None
         game = self._game()
         key = (pool, elo, (game.root().fen(), tuple(m.uci() for m in game.move_stack))
-               if pool == "game" else None)
+               if pool == "game" else tuple(fens) if pool == "fens" else None)
         with self._scan_mutex:                  # one scan at a time, even with web.py's threads
             sc = self._scan
             if sc is not None and sc["key"] == key and sc["state"] in ("running", "paused", "done"):
@@ -713,7 +727,7 @@ class LensApi:
             if sc is not None:
                 self._halt(sc)
             try:
-                boards, label = self._pool(pool)
+                boards, label = self._pool(pool, fens)
                 batch = 8 if str(self.engine.device) == "cpu" else 32
                 scan = NeuronScan(self.engine, boards, elo=elo or 0, batch_size=batch)
             except Exception as exc:

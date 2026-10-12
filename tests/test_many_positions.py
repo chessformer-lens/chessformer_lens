@@ -210,6 +210,16 @@ def test_the_apps_scan(tmp_path):
     eff = api.neuron_effects(L, n, [t["index"] for t in d["tiles"]], d["scan_id"])
     assert len(eff["effects"]) == 3 and {"top", "top_ablated", "changed"} <= set(eff["effects"][0])
     assert "error" in api.neuron_effects(L, n, [0], d["scan_id"] + 1)
+    assert "line 2 is not a FEN" in api.scan_start("fens", 1500, [OPERA, "nonsense"])["error"]
+    assert "no FENs" in api.scan_start("fens", 1500, ["", "# only a comment"])["error"]
+    st = api.scan_start("fens", 1500, [OPERA, "", "# a comment", BLACK])
+    for _ in range(300):
+        if api.scan_status()["state"] == "done":
+            break
+        time.sleep(.05)
+    st = api.scan_status()
+    assert st["state"] == "done" and st["total"] == 2 and st["label"] == "2 positions from the file"
+    assert api.scan_report(2)["n"] == 2
 
 
 @pytest.mark.skipif(not _maia_cached(), reason="Maia-3 5M weights not cached")

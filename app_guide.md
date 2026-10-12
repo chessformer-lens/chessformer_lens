@@ -56,3 +56,11 @@ One drawer, `Analyze one move`, docked at the bottom with a `▲ pull up` grip. 
 `Causal neurons` — the same question at neuron grain. Ablating every MLP unit one by one is computationally unfeasible so every unit is scored at once by attribution patching, `Δlogit ≈ −∂logit/∂h · h`, the first-order effect of removing it, from one backward pass. Each row carries a mini-board of where on the board the unit does its work (not shown for models whose tokens aren't squares). Same colors as the head grid: blue carries the move, orange suppresses it. 
 
 Under the logit-lens curve, a strip shows the model's own top move at every readout point, so you can see when the played move takes over from what the early layers favored.
+
+**Analyze Many Positions**
+
+The drawer's second tab. Pick a pool — the 1,000 ordinary positions bundled with the package (real Lichess games), this game, or a file of FENs (one per line) — and press `Scan`: every MLP neuron's peak activation on every position is recorded on a background thread, a batch at a time, so the rest of the app keeps answering (a scan that would take over a minute pauses and asks first). The grid on the left is each layer's ten strongest neurons by mean peak (brighter = higher; circles for neurons, squares for heads elsewhere). Click one, or press `Where else does it fire? ▸` in the Neurons panel, and the middle board shows where it fires on average (the model's frame, side to move at the bottom) with its mean, spread, max and rank in the layer; on the right are the eight positions where it fires most. Click a position to see it in every panel; a strip under the board steps through the eight, and `↩ back to the game` restores the game exactly as it was.
+
+**Search (Leela)**
+
+With a Leela model and the `lc0` program installed (`brew install lc0`; or set `$CHESSFORMER_LC0`), a `Search` card appears above the Win / Draw / Loss bar. Pick 100, 400 or 1600 nodes and press `Search`: lc0 runs its search on the same net, and the policy list shows each move's raw network probability (blue) over its share of the search's visits (green), with visits and Q on hover. The note says whether search agreed with the network's top move or *overruled* it. The principal variation appears as chips; click one to see that position in every panel, and `↩ back to the game` returns.

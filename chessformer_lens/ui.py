@@ -478,7 +478,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div class="mlhead">
     <span class="mltitle mltab" id="mltitle">Analyze one move</span>
     <span class="mltitle mltab off" id="mptitle">Analyze many positions</span>
-    <span id="mpctl"><select id="mppool"><option value="ordinary">1,000 ordinary positions</option><option value="game">this game</option></select>
+    <span id="mpctl"><select id="mppool"><option value="ordinary">1,000 ordinary positions</option><option value="game">this game</option><option value="fens">a file of FENs…</option></select><input type="file" id="mpfile" accept=".txt,.fen,.fens,.csv" style="display:none">
       <button class="primary" id="mpscan">Scan</button><button id="mpgo" style="display:none">Continue</button><button id="mpstop" style="display:none">Stop</button>
       <span class="mlhint" id="mpstat"></span></span>
     <span class="mltags"><span class="mltag">logit lens</span><span class="mltag">causal heads</span><span class="mltag">causal neurons</span><span class="mltag">residual stream</span></span>
@@ -1185,10 +1185,19 @@ function mpSizes(){                         // fit the drawer, as renderAblGrid 
 $('mpscan').onclick=()=>mpScan();
 $('mpstop').onclick=async()=>{ await API.scan_stop(); mpTick(); };
 $('mpgo').onclick=async()=>{ await API.scan_continue(); mpTick(); };
-$('mppool').onchange=()=>{ $('mpstat').textContent='press Scan'; };
+let mpFens=null, mpFile='';                 // the lines of the chosen file of FENs
+$('mppool').onchange=()=>{ if($('mppool').value==='fens' && !mpFens) $('mpfile').click(); else $('mpstat').textContent='press Scan'; };
+$('mpfile').onchange=()=>{
+  const f=$('mpfile').files[0]; if(!f) return;
+  f.text().then(t=>{ mpFens=t.split(/\r?\n/); mpFile=f.name;
+    $('mpstat').textContent=`${mpFens.filter(l=>l.trim()&&!l.trim().startsWith('#')).length} FENs from ${f.name} · press Scan`; });
+  $('mpfile').value='';
+};
 async function mpScan(){
   if(!API) return;
-  const r=await API.scan_start($('mppool').value, elo);
+  const pool=$('mppool').value;
+  if(pool==='fens' && !mpFens){ $('mpfile').click(); return; }
+  const r=await API.scan_start(pool, elo, pool==='fens' ? mpFens : null);
   if(r.error){ $('mpstat').textContent='⚠ '+r.error; return; }
   if(r.id!==mpScanId){ mpScanId=r.id; mpReport=null; mpData=null; mpShown=0; renderMpGrid(); renderMpUnit(); }
   mpTick();

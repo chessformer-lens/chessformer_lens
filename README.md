@@ -69,6 +69,13 @@ This is an extremely strong engine that has many many more layers and parameters
 from chessformer_lens import LeelaEngine, load_engine
 eng = LeelaEngine("bt4")
 ```
+**Search.** With the `lc0` program installed (`brew install lc0`), `eng.search(board, nodes=400)` runs Leela's search on the same net and returns every move's visits and Q beside the raw policy, the PV and the best move; `interp_plot.plot_search` draws it, and the app shows it as a Search card.
+
+---
+## Many positions at once
+
+`eng.top_neurons(positions)` ranks every layer's MLP neurons by how strongly they fire over a list of positions (FENs, boards or a PGN file; `ordinary_positions()` gives 1,000 bundled Lichess positions), `eng.top_positions(layer, neuron)` finds the positions where one neuron fires most, and `eng.neuron_effects` measures what it does there by exact ablation. `interp_plot.plot_top_neurons` / `plot_top_positions` draw them; the app has them as its "Analyze many positions" tab, which also takes a file of FENs.
+
 ---
 ## Quickstart in notebook:
 
