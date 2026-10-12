@@ -1568,8 +1568,7 @@ class LeelaEngine(ChessformerEngine):
         first}. `options` are lc0 UCI options, e.g. SmartPruningFactor=0.
         Raises RuntimeError without lc0."""
         import chess.engine
-        exe = lc0 or os.environ.get("CHESSFORMER_LC0") or shutil.which("lc0") or next(
-            (p for p in ("/opt/homebrew/bin/lc0", "/usr/local/bin/lc0") if Path(p).exists()), None)
+        exe = lc0 or find_lc0()
         if not exe or not (Path(exe).exists() or shutil.which(exe)):
             raise RuntimeError(f"lc0 not found ({exe or 'not on PATH'}): install it, e.g. brew install lc0, "
                                "or set $CHESSFORMER_LC0")
@@ -1620,6 +1619,16 @@ class LeelaEngine(ChessformerEngine):
 
 
 _ENGINE_CLASSES = {"maia3": MaiaEngine, "lc0": LeelaEngine}
+
+
+def find_lc0():
+    """The lc0 program for `LeelaEngine.search`: $CHESSFORMER_LC0, PATH, or the
+    usual install places (an app started from the Finder has no shell PATH)."""
+    env = os.environ.get("CHESSFORMER_LC0")
+    if env and Path(env).exists():
+        return env
+    return shutil.which("lc0") or next(
+        (p for p in ("/opt/homebrew/bin/lc0", "/usr/local/bin/lc0") if Path(p).exists()), None)
 
 
 # ----- aliases ----------------------------------------------------------------

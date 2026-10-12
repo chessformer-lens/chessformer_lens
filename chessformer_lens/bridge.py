@@ -21,7 +21,7 @@ from pathlib import Path
 import chess
 
 from .core import available_models
-from .engine import NeuronScan, load_engine, ordinary_positions, resolve_engine
+from .engine import LeelaEngine, NeuronScan, find_lc0, load_engine, ordinary_positions, resolve_engine
 
 # Cached activations are working data, not package content: they land under the
 # directory the app is launched from, so an installed copy is never written to.
@@ -79,7 +79,8 @@ class LensApi:
         self.san_history = []
         self._lock = threading.Lock()
         self._loading = False
-        self._game_return = None       # the game to go back to while a scanned position is shown
+        self._game_return = None       # the game to go back to while a scanned or PV position is shown
+        self._search = None            # the last search: {root board, result} (see `search`)
         self._scan = None              # the last "many positions" scan (see `scan_start`)
         self._scan_mutex = threading.Lock()
         self._scan_ids = itertools.count(1)
@@ -163,6 +164,8 @@ class LensApi:
             "conditioning": eng.has_conditioning if eng else None,
             "mlp_dim": int(eng.cfg.dim_vit * eng.cfg.mlp_ratio) if eng else None,
             "has_mlh": eng.has_mlh if eng else None,
+            # the Search card: Leela with lc0 installed
+            "search": bool(eng and isinstance(eng, LeelaEngine) and find_lc0()),
             "activation_dir": str(ACT_DIR) if SAVE_ACTIVATIONS else None,
         }
         if eng:
@@ -612,13 +615,66 @@ class LensApi:
         except Exception as exc:
             return {"error": f"{type(exc).__name__}: {exc}"}
 
+    # ----- search (Leela, through lc0) -----------------------------------------
+    def search(self, nodes=400):
+        """lc0's search on the current position (`LeelaEngine.search`): every
+        move's visits and Q beside the raw policy, the PV, and whether search
+        overruled the network's top move. Kept for `search_pv`."""
+        if not self.ready:
+            return {"error": self.error or "model still loading"}
+        if not self.info()["search"]:
+            return {"error": "search needs a Leela model and lc0 installed"}
+        if self.board.is_game_over():
+            return {**self._base(), "error": "game over"}
+        try:
+            with self._lock:
+                res = self.engine.search(self.board, int(nodes))
+                raw_top = self.engine.evaluate_batch([self.board])[0]["policy"][0][0]
+        except Exception as exc:
+            return {**self._base(), "error": f"{type(exc).__name__}: {exc}"}
+        self._search = {"root": self.board.copy(), "res": res, "raw_top": raw_top}
+        return {**self._base(), "search": self._search_payload()}
+
+    def _search_payload(self):
+        sc = self._search
+        root, res = sc["root"], sc["res"]
+        pv, b = [], root.copy()
+        for u in res["pv"]:
+            mv = chess.Move.from_uci(u)
+            num = f"{b.fullmove_number}." if b.turn == chess.WHITE else \
+                (f"{b.fullmove_number}…" if not pv else "")
+            pv.append({"uci": u, "san": b.san(mv), "num": num})
+            b.push(mv)
+        return {**res, "pv_moves": pv, "root_fen": root.fen(), "raw_top": sc["raw_top"],
+                "overruled": res["bestmove"] != sc["raw_top"]}
+
+    def search_pv(self, k=0):
+        """Show the position `k` plies along the last search's PV (0 = the
+        searched position) in every panel, history kept, in analyze mode.
+        `go_back` returns to the game as it was."""
+        if self._search is None:
+            return {**self._base(), "error": "no search yet"}
+        res = self._search["res"]
+        k = max(0, min(int(k), len(res["pv"])))
+        if self._game_return is None:
+            self._game_return = (self.board.copy(), list(self.san_history),
+                                 self.human_both, self.human)
+        board = self._search["root"].copy()
+        for u in res["pv"][:k]:
+            board.push_uci(u)
+        self.board, self.san_history, self.human_both = board, self._sans(board), True
+        return {**self._base(), "pv_index": k, "search": self._search_payload()}
+
     # ----- many positions (engine.top_neurons & co) ---------------------------
     def go_back(self):
-        """Leave a scanned position and restore the game exactly as it was."""
+        """Leave a scanned or PV position and restore the game exactly as it was."""
         if self._game_return is not None:
             self.board, self.san_history, self.human_both, self.human = self._game_return
             self._game_return = None
-        return self._base()
+        out = self._base()
+        if self._search is not None:
+            out["search"] = self._search_payload()
+        return out
 
     def _game(self):
         """The game being played: while a scanned position is shown, the one

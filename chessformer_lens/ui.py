@@ -152,7 +152,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   /* single-head ablation — a toggle; its result is the red overlay on the policy chart */
   .ablrow{display:flex;align-items:center;gap:8px;margin-top:2px}
   .snote{font-size:10px;color:var(--muted);font-family:var(--mono);line-height:1.5}
-  .snote b{color:var(--text)}
+  .snote b{color:var(--text)} .snote.err{color:var(--loss)} .snote .over{color:var(--loss)}
+  .pvrow{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+  .pvrow .chip{font-family:var(--mono)}
   #ablbtn{padding:4px 10px;font-size:11px}
   #ablbtn:hover{border-color:var(--abl)}
   #ablbtn.on{background:var(--abl);color:#1a0c0e;border-color:var(--abl);font-weight:700}
@@ -378,6 +380,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <div class="elorow"><span class="lbl">second rating</span><span class="eloval2" id="cmpval">1100</span></div>
         <input type="range" id="cmpelo" min="600" max="2800" step="25" value="1100">
       </div>
+    </div>
+
+    <div class="card" id="searchcard" style="display:none">
+      <div class="elorow">
+        <h2 style="margin:0" id="searchtitle">Search</h2>
+        <div class="chips" id="nodeChips" style="flex:0 0 auto" title="root visits to spend"></div>
+      </div>
+      <div class="ablrow"><button class="primary" id="searchbtn">Search</button>
+        <span class="snote" id="searchstat"></span></div>
+      <div class="snote" id="searchnote" style="margin-top:6px">what Leela's search makes of this policy</div>
+      <div class="pvrow" id="pvrow"></div>
+      <div class="ablrow" id="pvbackrow" style="display:none;margin-top:8px">
+        <button id="pvback">↩ back to the game</button>
+        <span class="snote">browsing the principal variation</span></div>
     </div>
 
     <div class="card">
@@ -639,6 +655,7 @@ function setModelInfo(){
   // dead controls. Everything else on the page is derived from the engine.
   const eloCard = $('elo').closest('.card');
   if(eloCard) eloCard.style.display = (i.conditioning === false) ? 'none' : '';
+  setupSearchUi(i);
   // a scalar value head has no win/draw/loss split: the card shows its expected score
   $('wdltitle').textContent = i.value_kind==='scalar' ? 'Expected score · side to move'
                                                        : 'Win / Draw / Loss · side to move';
@@ -668,7 +685,7 @@ $('fenload').onclick = ()=>{ if(!busy) doSetFen($('fenin').value.trim()); };
 const WALK_MS=2000;     // budget for the fast part, whatever the walk's length
 async function doRandom(){
   if(!API || busy) return;
-  sel=null; busy=true; setupMode=true; mpBrowse=null; renderStrip();
+  sel=null; busy=true; setupMode=true; pvIndex=null; mpBrowse=null; renderStrip();
   syncModeSelect();          // the walk leaves you in set-up mode; show that now
   setStatus('rolling a position…');
   let r;
@@ -724,7 +741,7 @@ async function resumeFrom(hc){
 }
 async function doSetFen(fen){
   if(!API || busy || !fen) return;
-  sel=null; mpBrowse=null; renderStrip();
+  sel=null; pvIndex=null; mpBrowse=null; renderStrip();
   const r = await API.set_fen(fen);
   if(r.error){ setStatus('⚠ '+r.error); return; }
   cur=r; $('color').value='setup'; setupMode=true;
@@ -762,7 +779,7 @@ async function probe(){
 }
 
 async function newGame(){
-  sel=null; busy=true; setupMode=false; mpBrowse=null; renderStrip();
+  sel=null; busy=true; setupMode=false; pvIndex=null; mpBrowse=null; renderStrip();
   let hc = $('color').value; if(hc==='setup'){ hc='white'; $('color').value='white'; }
   cur = await API.new_game(hc);
   orient = (hc==='black') ? 'black' : 'white';
@@ -803,6 +820,7 @@ async function advance(){
   }
   busy=false;
   setStatus();
+  renderSearch();
   if(cmpOn && !cur.game_over && cur.human_to_move) await refreshCompare();
   updateAttention(); updateMoveLens();
   if(cur.game_over) finishUI();
@@ -954,9 +972,11 @@ function renderPolicy(pol, wdl, actfile, playedUci, mlh, value){
   lastPolArgs=[pol,wdl,actfile,playedUci,mlh,value];
   const box=$('policy'); box.innerHTML='';
   const abl=ablPolicy();      // {uci: p_ablated} while the ablation toggle is live
+  const sr=abl ? null : searchRows();   // {uci: search row} for a searched position
   $('wdl').classList.toggle('cmp', !!abl);
   $('poltitle').textContent = abl
     ? `Policy · clean (blue) vs ${ablData.label} ablated (red)`
+    : sr ? 'Raw policy (blue) · search visits (green)'
     : (pol ? `Policy over ${pol.length} legal moves` : 'Policy over legal moves');
   if(pol && pol.length){
     // ablating re-sorts the list by signed Δ — the moves the head was holding up
@@ -966,7 +986,8 @@ function renderPolicy(pol, wdl, actfile, playedUci, mlh, value){
       : pol;
     list.forEach((m,i)=>{
       const row=document.createElement('div');
-      row.className='prow'+(abl?' cmp':(i===0?' top':''))+(playedUci&&m.uci===playedUci?' played':'');
+      row.className='prow'+(abl?' cmp':sr?' cmp'+(m.uci===lastSearch.bestmove?' top':''):(i===0?' top':''))
+        +(playedUci&&m.uci===playedUci?' played':'');
       row.dataset.uci=m.uci;
       row.onclick=()=>openMoveLens(m.uci, m.san);
       if(abl){
@@ -977,6 +998,15 @@ function renderPolicy(pol, wdl, actfile, playedUci, mlh, value){
           `<span class="dualbar"><span class="bar a" style="width:${Math.max(1,m.p*100).toFixed(1)}%"></span>`+
           `<span class="bar r" style="width:${Math.max(1,pb*100).toFixed(1)}%"></span></span>`+
           `<span class="pct delta ${cls}">${dlt>=0?'+':''}${dlt.toFixed(1)}</span>`;
+      } else if(sr){
+        // the network's raw probability over the share of the search's visits
+        const v=sr[m.uci]||{n:0,share:0,q:null};
+        row.title=`raw policy ${(m.p*100).toFixed(1)}% · ${v.n} visits (${(v.share*100).toFixed(1)}%)`+
+          (v.q==null?'':` · Q ${v.q>=0?'+':''}${v.q.toFixed(3)}`);
+        row.innerHTML=`<span class="san">${m.san}</span>`+
+          `<span class="dualbar"><span class="bar a" style="width:${Math.max(1,m.p*100).toFixed(1)}%"></span>`+
+          `<span class="bar b" style="width:${Math.max(1,v.share*100).toFixed(1)}%"></span></span>`+
+          `<span class="pct">${(v.share*100).toFixed(1)}%</span>`;
       } else {
         // bar width = the move's actual probability mass (0–100%), so the track reads as a true slider
         row.innerHTML=`<span class="san">${m.san}</span>`+
@@ -1006,6 +1036,93 @@ function renderPolicy(pol, wdl, actfile, playedUci, mlh, value){
   $('actfile').textContent = actfile ? '↳ saved '+actfile.split('/').slice(-1)[0] : '';
   markLensedRows();
 }
+/* ---- search (Leela): visits and Q beside the raw policy, the PV ----
+   One search is kept; its visits overlay the policy list while the board shows
+   the searched position, and its PV moves open that line in every panel. */
+let searchNodes=400, lastSearch=null, pvIndex=null, searching=false;
+const NODE_CHOICES=[100, 400, 1600];
+const PV_CHIPS=8;      // plies of the PV shown as chips; the rest is in the tooltip
+function setupSearchUi(info){
+  const card=$('searchcard'); if(!card) return;
+  card.style.display = info.search ? '' : 'none';
+  if(!info.search) return;
+  const el=$('nodeChips'); el.innerHTML='';
+  NODE_CHOICES.forEach(n=>{
+    const c=document.createElement('div'); c.className='chip'+(n===searchNodes?' active':'');
+    c.textContent=n; c.title=`${n} nodes`;
+    c.onclick=()=>{ searchNodes=n; el.querySelectorAll('.chip').forEach(x=>x.classList.toggle('active', x===c)); };
+    el.appendChild(c);
+  });
+}
+function searchRows(){
+  if(!lastSearch || !cur || lastSearch.root_fen!==cur.fen) return null;
+  return Object.fromEntries(lastSearch.rows.map(r=>[r.uci, r]));
+}
+function renderSearch(){
+  const note=$('searchnote'), stat=$('searchstat'), pv=$('pvrow');
+  if(!note || $('searchcard').style.display==='none') return;
+  pv.innerHTML='';
+  $('pvbackrow').style.display = pvIndex===null ? 'none' : '';
+  note.classList.remove('err');
+  if(searching) return;
+  const s=lastSearch;
+  stat.textContent='';
+  if(!s){ note.textContent="what Leela's search makes of this policy"; return; }
+  if(pvIndex===null && s.root_fen!==cur.fen){ note.textContent='new position · search again'; return; }
+  const row=u=>s.rows.find(r=>r.uci===u)||{san:u||'—'};
+  stat.textContent = `${s.nodes} nodes · ${s.seconds.toFixed(1)} s`
+    + (s.root.q==null ? '' : ` · Q ${s.root.q>=0?'+':''}${s.root.q.toFixed(3)}`);
+  note.innerHTML = s.overruled
+      ? `<b class="over">overruled</b> · plays <b>${row(s.bestmove).san}</b> over the raw <b>${row(s.raw_top).san}</b>`
+      : `agrees with the raw policy · <b>${row(s.bestmove).san}</b>`;
+  const line = s.pv_moves.map(m=>(m.num?m.num+' ':'')+m.san).join(' ');
+  s.pv_moves.slice(0, PV_CHIPS).forEach((m,i)=>{
+    const c=document.createElement('span');
+    c.className='chip'+(pvIndex===i+1?' active':'');
+    c.textContent=(m.num?m.num+' ':'')+m.san;
+    c.title=`show the position after ${m.san} in every panel\nPV: ${line}`;
+    c.onclick=()=>gotoPv(i+1);
+    pv.appendChild(c);
+  });
+  if(s.pv_moves.length > PV_CHIPS){
+    const more=document.createElement('span'); more.className='snote';
+    more.textContent=`+${s.pv_moves.length-PV_CHIPS} plies`; more.title='PV: '+line;
+    pv.appendChild(more);
+  }
+}
+async function doSearch(){
+  if(!API || busy || searching || !cur || cur.game_over) return;
+  searching=true; $('searchbtn').disabled=true;
+  const note=$('searchnote'); note.classList.remove('err');
+  note.textContent=`searching ${searchNodes} nodes…`; $('pvrow').innerHTML=''; $('searchstat').textContent='';
+  let r;
+  try{ r = await API.search(searchNodes); }catch(e){ r={error:String(e)}; }
+  searching=false; $('searchbtn').disabled=false;
+  if(!r || r.error){ note.textContent='⚠ '+((r&&r.error)||'search failed'); note.classList.add('err'); return; }
+  lastSearch=r.search;
+  renderSearch();
+  if(lastPolArgs) renderPolicy(...lastPolArgs);
+}
+async function gotoPv(k){
+  if(!API || busy || searching) return;
+  const r = await API.search_pv(k);
+  if(!r || r.error){ setStatus('⚠ '+((r&&r.error)||'could not open the PV')); return; }
+  cur=r; pvIndex=r.pv_index; lastSearch=r.search; setupMode=true; syncModeSelect();
+  mpBrowse=null; renderStrip();
+  sel=null; renderBoard(); renderMoves();
+  await advance();
+}
+async function leavePv(){
+  if(!API || busy) return;
+  const r = await API.go_back();
+  cur=r; pvIndex=null; mpBrowse=null; renderStrip(); setupMode=r.human_color==='both'; syncModeSelect();
+  if(r.search) lastSearch=r.search;
+  sel=null; renderBoard(); renderMoves();
+  await advance();
+}
+$('searchbtn').onclick=()=>doSearch();
+$('pvback').onclick=()=>leavePv();
+
 /* ---- "Analyze many positions": the drawer's second tab ----
    A pool (the bundled ordinary positions, or this game) is scanned once on a
    background thread; every neuron's peak per position is kept, so the grid of
@@ -1209,7 +1326,7 @@ async function mpOpenTile(i, data=mpData){
   const t=data.tiles[i]; if(!t) return;
   const r=await API.open_position(t.index, data.scan_id);
   if(!r || r.error){ setStatus('⚠ '+((r&&r.error)||'could not open the position')); return; }
-  cur=r; mpBrowse={k:i, data}; setupMode=true; syncModeSelect();
+  cur=r; mpBrowse={k:i, data}; pvIndex=null; setupMode=true; syncModeSelect();
   mpSel={layer:data.layer, neuron:data.neuron};        // the Neurons card shows that neuron
   nLayer=data.layer; nIdx=data.neuron; $('nlayer').value=data.layer; $('nidx').value=data.neuron;
   setDrawerOpen(false);                    // every panel in view; the strip steps on
@@ -1219,7 +1336,7 @@ async function mpOpenTile(i, data=mpData){
 async function mpBack(){
   if(!API || busy) return;
   const r=await API.go_back();
-  cur=r; mpBrowse=null; renderStrip(); setupMode=r.human_color==='both'; syncModeSelect();
+  cur=r; pvIndex=null; mpBrowse=null; renderStrip(); setupMode=r.human_color==='both'; syncModeSelect();
   sel=null; renderBoard(); renderMoves();
   await advance();
 }

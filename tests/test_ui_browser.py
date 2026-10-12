@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+import battery
 from test_conformance import _maia_cached
 
 _CANDIDATES = [os.environ.get("CHESSFORMER_CHROME"),
@@ -85,7 +86,7 @@ def _free_port():
         return s.getsockname()[1]
 
 
-def run_page(tmp_path, alias, script, budget_ms=60000):
+def run_page(tmp_path, alias, script, budget_ms=60000, device="cpu"):
     """Load the app for `alias` ("-" = none) with `script` appended; returns
     (the script's DIAG dict, uncaught JS errors, the bridge methods called)."""
     port = _free_port()
@@ -94,7 +95,7 @@ def run_page(tmp_path, alias, script, budget_ms=60000):
     calls.write_text("")
     server = subprocess.Popen([sys.executable, str(HERE / "ui_server.py"), str(port), alias,
                                str(js), str(calls)],
-                              env={**os.environ, "CHESSFORMER_DEVICE": "cpu"},
+                              env={**os.environ, **({"CHESSFORMER_DEVICE": device} if device else {})},
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         for _ in range(300):
@@ -163,6 +164,50 @@ def test_picker_reports_bad_names_and_loads_the_choice(tmp_path):
     assert diag["picker"] == "none" and diag["model"].startswith("Toy")
 
 
+SEARCH = r"""
+(async () => {
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  const $ = id => document.getElementById(id);
+  for (let i = 0; i < 1200 && !booted; i++) await wait(100);
+  for (let i = 0; i < 300 && busy; i++) await wait(100);
+  const card = $('searchcard').style.display;
+  await doSetFen('4kb1r/p2n1ppp/4q3/4p1B1/4P3/1Q6/PPP2PPP/2KR4 w k - 0 16');
+  await doSearch();
+  const note = $('searchnote').textContent, stat = $('searchstat').textContent,
+        title = $('poltitle').textContent;
+  const bars = document.querySelectorAll('#policy .prow .dualbar').length;
+  const top = (document.querySelector('#policy .prow.top .san') || {}).textContent;
+  const chips = [...document.querySelectorAll('#pvrow .chip')].map(c => c.textContent);
+  await gotoPv(2);
+  const pvFen = cur.fen, back = $('pvbackrow').style.display, moves = $('moves').textContent,
+        pvBars = document.querySelectorAll('#policy .prow .dualbar').length;
+  await leavePv();
+  console.log('DIAG ' + JSON.stringify({card, note, stat, title, bars, top, chips, pvFen, back, moves,
+    pvBars, fen: cur.fen, after: document.querySelectorAll('#policy .prow .dualbar').length,
+    backAfter: $('pvbackrow').style.display}));
+})();
+"""
+
+
+@pytest.mark.skipif(battery.bt4_weights() is None, reason="BT4 weights not found")
+@pytest.mark.skipif(battery.bt4_weights() is None or not shutil.which("lc0"),
+                    reason="lc0 and BT4 weights needed")
+def test_search_card_overlays_visits_and_opens_the_pv(tmp_path):
+    diag, errors, calls = run_page(tmp_path, str(battery.bt4_weights()), SEARCH,
+                                   budget_ms=240000, device=None)
+    assert not errors
+    assert diag["card"] == "" and "agrees" in diag["note"] and "nodes" in diag["stat"]
+    assert diag["title"].startswith("Raw policy") and diag["bars"] > 10 and diag["top"] == "Qb8+"
+    assert diag["chips"][:3] == ["16. Qb8+", "Nxb8", "17. Rd8#"]
+    assert diag["pvFen"].startswith("1n2kb1r/p4ppp/4q3/4p1B1/4P3/8/PPP2PPP/2KR4 w")
+    assert diag["back"] == "" and diag["moves"].endswith("Qb8+ Nxb8") and diag["pvBars"] == 0
+    assert diag["fen"].startswith("4kb1r/p2n1ppp/4q3/4p1B1/4P3/1Q6/PPP2PPP/2KR4 w")
+    assert diag["after"] == diag["bars"] and diag["backAfter"] == "none"
+    assert {"search", "search_pv", "go_back"} <= set(calls)
+
+
+# "Analyze many positions": scan the ordinary positions, pick a neuron, open one
+# of its positions, come back.
 MANY = r"""
 (async () => {
   const wait = ms => new Promise(r => setTimeout(r, ms));
