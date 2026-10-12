@@ -82,5 +82,5 @@ markers = [
     "golden: compares every legacy output against goldens recorded at a known-good commit",
 ]
 
-# No package-data: the pieces rasterised offline for the matplotlib figure layer
-# are carried as base64 inside piece_art.py, so the wheel is pure Python.
+[tool.setuptools.package-data]
+chessformer_lens = ["ordinary_positions.txt"]

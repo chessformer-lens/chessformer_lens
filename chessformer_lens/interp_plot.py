@@ -3,6 +3,10 @@
                         Win / Draw / Loss bar with a second rating overlaid
                         when you pass `elo_b`
   plot_board            just the position without the engine, policy, or eval
+  plot_top_neurons      the neurons that fire most on a list of positions, as a
+                        carrier-style grid, and where on the board one fires
+  plot_top_positions    the positions that make one MLP neuron fire most, with its
+                        activation painted on the squares
   plot_logit_curve      one move's logit at every readout point (up to 4 moves
                         overlaid)
   plot_policy_curve     the same curve after the softmax over legal moves
@@ -459,6 +463,138 @@ def _bar_parts(ax, parts, *, y, h, tag=None):
         x0 += width
         
 # ---------------------------------------------------------------------------
+# neurons over many positions  (eng.top_neurons / eng.top_positions)
+# ---------------------------------------------------------------------------
+def _rating_tag(eng, elo, oppo_elo):
+    if not getattr(eng, "has_conditioning", True) or elo is None:
+        return ""
+    return f" · elo {elo}" + ("" if oppo_elo in (None, elo) else f" vs {oppo_elo}")
+
+
+def _header(fig, title, accent, tag, hint):
+    """The two-line header of the move figures (`_curve_header`) for figures
+    about a neuron or a set of positions: title · accent, then a hint."""
+    _runs(fig, .06, _inch_y(fig, .26), [
+        (f"{title} · ", dict(fontsize=_fs(13), color=TEXT, fontweight="600")),
+        (accent, dict(fontsize=_fs(13), color=ACCENT2, fontweight="600")),
+        (f"  {tag.lstrip(' ·')}" if tag else "", dict(fontsize=_fs(10), color=MUTED, family=MONO)),
+    ])
+    _ftext(fig, .06, _inch_y(fig, .52), hint, fontsize=_fs(9.5), color=MUTED, family=MONO,
+           va="top")
+
+
+def _neuron_grid(ax, rep, k, sel):
+    """`_carrier_grid` for neurons: one row per layer, its `k` strongest neurons
+    left to right, coloured by mean peak on one scale for the whole grid, the
+    neuron's index in each cell, `sel` = (layer, neuron) ringed."""
+    nb = len(rep.layers)
+    rows = [rep.top(L, k) for L in rep.layers]
+    k = max(len(r) for r in rows)
+    m = max(r["mean"] for row in rows for r in row) or 1e-9
+    ax.set_xlim(0, k)
+    ax.set_ylim(nb, 0)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    for i, row in enumerate(rows):
+        for c, r in enumerate(row):
+            face = _divmap(r["mean"] / m)
+            ax.add_patch(plt.Rectangle((c, i), 1, 1, ec=BG, lw=.6, fc=face))
+            light = .2126 * face[0] + .7152 * face[1] + .0722 * face[2] > .45
+            ax.text(c + .5, i + .5, str(r["neuron"]), ha="center", va="center",
+                    fontsize=_fs(5.2), color=INK if light else TEXT, family=MONO, alpha=.8)
+            if (r["layer"], r["neuron"]) == sel:
+                ax.add_patch(plt.Rectangle((c, i), 1, 1, fc="none", ec=QRING, lw=2, zorder=3))
+    for c in range(k):
+        ax.text(c + .5, -.15, f"#{c + 1}", ha="center", va="bottom", fontsize=_fs(7),
+                color=MUTED, family=MONO)
+    for i, L in enumerate(rep.layers):
+        ax.text(-.15, i + .5, f"L{L}", ha="right", va="center", fontsize=_fs(7),
+                color=MUTED, family=MONO)
+    ax.text(0, -.85, f"top neurons · mean peak over {len(rep.positions):,} positions",
+            fontsize=_fs(8.5), color=MUTED, family=MONO, fontweight="600")
+
+
+def plot_top_neurons(eng, positions=None, *, report=None, k: int = 10, layer=None,
+                     neuron=None, elo: int = 1500, oppo_elo=None, figsize=(11, 5.4),
+                     width=None, titles=True):
+    """The neurons that fire most on `positions` (`eng.top_neurons`), drawn
+    like the carrier grid: one row per layer, its `k` strongest neurons left to
+    right, coloured by mean peak activation (raw, one scale for the grid). On
+    the right, where one of them fires: its activation averaged over the
+    positions, in the model's frame (the side to move at the bottom). That one
+    is (`layer`, `neuron`), or the grid's strongest. Pass `report` (a
+    `NeuronReport`) to draw one you already have."""
+    if report is None:
+        if positions is None:
+            raise ValueError("pass positions, or a report from eng.top_neurons")
+        report = eng.top_neurons(positions, k=k, elo=elo, oppo_elo=oppo_elo)
+    if layer is None or neuron is None:
+        best = max(report.rows, key=lambda r: r["mean"])
+        layer, neuron = best["layer"], best["neuron"]
+    row = next((r for r in report.rows if (r["layer"], r["neuron"]) == (layer, neuron)), None)
+    if row is None:
+        raise ValueError(f"L{layer}·n{neuron} is not in the report's top {k}")
+
+    fig = _fig(figsize, width, titles)
+    gs = GridSpec(1, 2, figure=fig, width_ratios=[1.45, 1], wspace=.16,
+                  left=.07, right=.97, top=_inch_y(fig, .95), bottom=.16)
+    ax_g, ax_b = fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1])
+    _neuron_grid(ax_g, report, k, (layer, neuron))
+    ax_g.text(0, len(report.layers) + .55,
+              f"strongest {'shown' if row is max(report.rows, key=lambda r: r['mean']) else 'ringed'}: "
+              f"L{layer}·n{neuron}, mean {row['mean']:.1f} · sd {row['std']:.1f} · max {row['max']:.1f}\n"
+              f"orange = mean peak activation, raw (no baseline)\n"
+              f"a neuron on everywhere can top its layer: check report.peaks_of",
+              fontsize=_fs(6.8), color=MUTED, family=MONO, va="top", linespacing=1.7)
+    sq = np.array(row["squares"])
+    draw_board(ax_b, chess.Board(None), heat=sq / (float(np.abs(sq).max()) or 1e-9),
+               cmap=_divmap, pieces=False, canonical=True)
+    ax_b.text(0, 1.03, f"L{layer}·n{neuron} · mean activation per square", transform=ax_b.transAxes,
+              fontsize=_fs(8.5), color=MUTED, family=MONO, fontweight="600")
+    ax_b.text(0, -.04, "average over the positions · the side to move at the bottom",
+              transform=ax_b.transAxes, fontsize=_fs(7.5), color=MUTED, family=MONO, va="top")
+    _header(fig, "Top neurons", f"{len(report.positions):,} positions",
+            _rating_tag(eng, report.elo, report.oppo_elo),
+            "each layer's neurons by their peak activation over the 64 squares, "
+            "averaged over the positions")
+    return fig
+
+
+def plot_top_positions(eng, layer: int, neuron: int, positions=None, *, results=None,
+                       k: int = 8, per_row: int = 4, elo: int = 1500, oppo_elo=None,
+                       figsize=None, width=None, titles=True):
+    """The `k` positions that make one MLP neuron fire most
+    (`eng.top_positions`; the bundled ordinary positions by default), each
+    drawn as `plot_position` draws a board, with the neuron's activation
+    painted on its squares (blue negative, orange positive, one scale for all
+    boards) and its peak square ringed. Pass `results` (from
+    `eng.top_positions`) to draw them without searching again."""
+    top = results if results is not None else eng.top_positions(
+        layer, neuron, positions, k=k, elo=elo, oppo_elo=oppo_elo)
+    top = top[:k] if k is not None else top
+    if not top:
+        raise ValueError("no positions to draw")
+    ncol = min(per_row, len(top))
+    nrow = -(-len(top) // ncol)
+    fig = _fig(figsize or (2.75 * ncol, 3.0 * nrow + .85), width, titles)
+    head = 1 - _inch_y(fig, .85)
+    m = max(max(abs(a) for a in t["act"]) for t in top) or 1e-9
+    for i, t in enumerate(top):
+        ax = fig.add_axes([(i % ncol) / ncol + .012, 1 - head - (i // ncol + 1) * (1 - head) / nrow,
+                           1 / ncol - .024, (1 - head) / nrow * .86])
+        b = t["board"]
+        draw_board(ax, b, heat=np.array(t["act"]) / m, cmap=_divmap, query=t["peak_canon"])
+        ax.set_title(f"{'White' if b.turn else 'Black'} to move · {t['peak']:.1f} on {t['square']}",
+                     fontsize=_fs(8.5), color=MUTED, pad=5, family=MONO)
+    where = "ordinary positions" if positions is None and results is None else "positions"
+    _header(fig, "Top positions", f"L{int(layer)}·n{int(neuron)}",
+            _rating_tag(eng, elo, oppo_elo),
+            f"the {len(top)} {where} where it fires most · its peak square ringed · "
+            f"one color scale")
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # depth curves  (one move's logit / probability / rank across the readout points)
 # ---------------------------------------------------------------------------
 def _depth_axes(ax, labels, curves, *, ylabel, invert=False, legend=False):
@@ -709,7 +845,7 @@ def _carrier_grid(ax, eng, board, elo, uci, oppo_elo):
             if (L, h) == (sL, sH):
                 ax.add_patch(plt.Rectangle((h, L), 1, 1, fc="none", ec=QRING, lw=2, zorder=3))
     for h in range(nh):
-        ax.text(h + .5, -.15, f"H{h}", ha="center", va="bottom", fontsize=_fs(7),
+        ax.text(h + .5, -.15, f"h{h}", ha="center", va="bottom", fontsize=_fs(7),
                 color=MUTED, family=MONO)
     for L in range(nb):
         ax.text(-.15, L + .5, f"L{L}", ha="right", va="center", fontsize=_fs(7),
@@ -718,7 +854,7 @@ def _carrier_grid(ax, eng, board, elo, uci, oppo_elo):
             color=MUTED, family=MONO, fontweight="600")
     v = d[sL, sH]
     ax.text(0, nb + .55,                      # the drawer's .mlnote, wrapped to the grid
-            f"base logit {g['base_logit']:.2f} · strongest L{sL}H{sH} {v:+.2f}\n"
+            f"base logit {g['base_logit']:.2f} · strongest L{sL}·h{sH} {v:+.2f}\n"
             f"blue = ablating the head drops {g['san']}'s logit (carrier)\n"
             f"orange = raises it (suppressor)\n"
             f"L{no_carrier} excluded (writes straight to the logits)",

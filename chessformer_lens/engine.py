@@ -58,6 +58,10 @@ by alias (`load_engine`):
                         flipping through the network layer by layer
   ablate_neuron         forward pass with one MLP unit's write removed exactly, on
                         every token
+  top_neurons           the MLP units that fire most over many positions
+  top_positions         the positions that make one MLP unit fire most
+  neuron_effects        what one MLP unit does on each position: the moves it pushes
+                        up and down, and whether removing it changes the top move
   residual_stream       per-token views of how the stream is built up, one row
                         per readout point
   compare_residual      the same position at two ratings, differenced, where
@@ -84,7 +88,9 @@ Module level: `load_engine(alias)` builds the engine an alias names from the
 adapter registry (`resolve_engine` validates an alias without loading weights,
 `format_engine_list` prints every family's aliases), `register_adapter` adds
 a model family, and `pick_device` resolves the torch device (explicit >
-$CHESSFORMER_DEVICE > cuda > mps > cpu).
+$CHESSFORMER_DEVICE > cuda > mps > cpu). `load_positions` reads FENs, boards
+or a PGN file into boards, `positions_from_pgn` samples one position per game,
+and `ordinary_positions` is a bundled pool of 1,000 from real games.
 
 Every tensor a read path returns is on CPU. Depth reads the same as in the figures: 
 `emb`, then `aN`/`mN` for layer N's attention and MLP sub-layers, then `enc`. 
@@ -97,10 +103,14 @@ app in bridge.py/app.py/ui.py (and web.py, in a browser).
 """
 from __future__ import annotations
 
+import itertools
+import random
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import chess
+import chess.pgn
 import torch
 
 from .adapters.lc0 import BT4Model, Lc0Adapter
@@ -111,7 +121,9 @@ from .core import (Conditioning, ModelAdapter, TokenLayout, canon_square, format
 
 __all__ = ["ChessformerEngine", "MaiaEngine", "LeelaEngine", "BT4Model",
            "load_engine", "resolve_engine", "format_engine_list",
-           "build_cfg", "pick_device", "register_adapter", "Conditioning"]
+           "build_cfg", "pick_device", "register_adapter", "Conditioning",
+           "load_positions", "positions_from_pgn", "ordinary_positions",
+           "NeuronReport", "NeuronScan"]
 
 
 def _elo_out(x):
@@ -1174,6 +1186,131 @@ class ChessformerEngine:
                 "n_layers": nb, "n_neurons": ff,
                 "layer_abs": per_neuron.abs().sum(1).tolist(), "top": top}
 
+    # ----- many positions (the helpers live below the class) ---------------
+    def _layer_ids(self, layers):
+        """Layer indices, checked: all of them if None."""
+        count = self.arch.n_layers
+        layers = list(range(count)) if layers is None else [int(L) for L in layers]
+        if not layers:
+            raise ValueError("no layers")
+        bad = [L for L in layers if not 0 <= L < count]
+        if bad:
+            raise ValueError(f"no layer(s) {bad}: this model has layers 0-{count - 1}")
+        return layers
+
+    def _mlp_hidden_batches(self, boards, layers, elo, oppo_elo, batch_size):
+        """Yield (start, {layer: (B, 64, ff) post-activation MLP hidden}) per batch."""
+        for start in range(0, len(boards), batch_size):
+            got, handles = {}, []
+
+            def keep(L):
+                def hook(_module, inp, _out):
+                    got[L] = inp[0].detach().float()
+                return hook
+
+            try:
+                for L in layers:
+                    handles.append(self.adapter.mlp_out(L).register_forward_hook(keep(L)))
+                with torch.no_grad(), self.no_capture():
+                    self.adapter.forward(boards[start:start + batch_size], Conditioning.coerce(elo, oppo_elo))
+            finally:
+                for h in handles:
+                    h.remove()
+            yield start, got
+
+    def _ratings(self, elo, oppo_elo):
+        """(elo, oppo_elo) as used, or (None, None) for a model with no rating input."""
+        if not self.has_conditioning:
+            return None, None
+        return int(elo), int(elo if oppo_elo is None else oppo_elo)
+
+    def top_neurons(self, positions, k=10, *, layers=None, elo=1500, oppo_elo=None,
+                    batch_size=32, n_best=5) -> NeuronReport:
+        """The MLP neurons that fire most on `positions` (FENs, boards, or a PGN
+        path, as `load_positions` reads them): for every layer, the `k` neurons
+        whose peak activation over the 64 squares, averaged over the positions, is
+        highest. Raw activations, no baseline. `elo` is the rating Maia-3 is
+        conditioned on (both sides unless `oppo_elo`); Leela ignores both. Memory:
+        one float per position, layer and neuron (BT4: ~92 KB a position).
+        `NeuronScan(eng, ...)` does the same a batch at a time."""
+        return NeuronScan(self, positions, layers=layers, elo=elo, oppo_elo=oppo_elo,
+                          batch_size=batch_size).run().report(k, n_best)
+
+    @torch.no_grad()
+    def top_positions(self, layer, neuron, positions=None, k=8, *, elo=1500, oppo_elo=None,
+                      batch_size=32) -> list:
+        """The `k` positions (all of them if k is None) that make one MLP neuron
+        fire most: from `positions` (as `load_positions` reads them), or the bundled
+        `ordinary_positions()`. Strongest first, each {index, fen, board, peak,
+        square (the real square it peaks on), peak_canon (the same, a model-frame
+        index), act (its 64 values, model-frame order)}. `elo`/`oppo_elo` as in
+        `top_neurons`."""
+        boards = ordinary_positions() if positions is None else load_positions(positions)
+        if not boards:
+            raise ValueError("no positions")
+        L = self._layer_ids([layer])[0]
+        u = int(neuron)
+        ff = self.arch.d_mlp
+        if not 0 <= u < ff:
+            raise ValueError(f"no neuron {u}: layer {L} has neurons 0-{ff - 1}")
+        if k is not None and int(k) < 1:
+            raise ValueError("k must be at least 1, or None for every position")
+        elo, oppo_elo = self._ratings(elo, oppo_elo)
+        acts = torch.zeros(len(boards), 64)
+        for start, got in self._mlp_hidden_batches(boards, [L], elo or 0, oppo_elo or 0, batch_size):
+            h = got[L][:, :, u].cpu()
+            acts[start:start + h.size(0)] = h
+        peak, where = acts.max(dim=1)
+        out = []
+        for i in peak.argsort(descending=True)[:None if k is None else int(k)].tolist():
+            b, canon = boards[i], int(where[i])
+            out.append({"index": i, "fen": b.fen(), "board": b, "peak": float(peak[i]),
+                        "square": chess.square_name(self._frame_square(canon, b)),
+                        "peak_canon": canon, "act": acts[i].tolist()})
+        return out
+
+    @torch.no_grad()
+    def neuron_effects(self, layer, neuron, positions, *, k=3, elo=1500, oppo_elo=None,
+                       batch_size=32) -> list:
+        """What one MLP neuron does on each of `positions`, exactly: the policy with
+        its write removed on every square (as `ablate_neuron` removes it, the later
+        layers reacting normally) against the clean policy. One dict per position:
+        {fen, top (the clean top move), p_top, top_ablated, p_top_ablated, changed
+        (the top move changes), supports: [(uci, Δp)] the `k` moves it raises
+        most, opposes: the `k` it lowers most}, Δp = p(clean) − p(without it).
+        The activation snapshot is left alone."""
+        boards = load_positions(positions)
+        if not boards:
+            raise ValueError("no positions")
+        L = self._layer_ids([layer])[0]
+        u = int(neuron)
+        lin2 = self.adapter.mlp_out(L)
+        if not 0 <= u < lin2.in_features:
+            raise ValueError(f"no neuron {u}: layer {L} has neurons 0-{lin2.in_features - 1}")
+        elo, oppo_elo = self._ratings(elo, oppo_elo)
+        elos = (elo or 0, oppo_elo or 0)
+        w2 = lin2.weight[:, u].float()
+        out = []
+        for start, got in self._mlp_hidden_batches(boards, [L], *elos, batch_size):
+            chunk = boards[start:start + batch_size]
+            write = got[L][:, :, u, None] * w2[None, None, :]          # (B, 64, dim)
+            clean = self.evaluate_batch(chunk, *elos)
+            handle = self.hook_points[f"mlp_{L:02d}"].register_forward_hook(
+                self._patch_hook(lambda a: a - write.to(a.dtype)))
+            try:
+                ablated = self.evaluate_batch(chunk, *elos)
+            finally:
+                handle.remove()
+            for b, c, a in zip(chunk, clean, ablated):
+                pc, pa = dict(c["policy"]), dict(a["policy"])
+                delta = sorted(((m, pc[m] - pa.get(m, 0.0)) for m in pc), key=lambda t: -t[1])
+                top, top_a = c["policy"][0][0], a["policy"][0][0]
+                out.append({"fen": b.fen(), "top": top, "p_top": pc[top], "top_ablated": top_a,
+                            "p_top_ablated": pa[top_a], "changed": top != top_a,
+                            "supports": [d for d in delta[:k] if d[1] > 0],
+                            "opposes": [d for d in delta[::-1][:k] if d[1] < 0]})
+        return out
+
     # ----- activation dump --------------------------------------------------
     def save_activations(self, filename: str, meta: dict | None = None) -> str:
         """Persist the most recent forward's residual-stream snapshot, plus a
@@ -1188,6 +1325,194 @@ class ChessformerEngine:
         path = self.activation_dir / filename
         torch.save(snap, path)
         return str(path)
+
+
+# ----- many positions -------------------------------------------------------
+# Positions in, neurons out: `eng.top_neurons`, `eng.top_positions`, `eng.neuron_effects`.
+# A position's score for a neuron is its peak activation over the 64 squares;
+# averages over many positions are in the model's frame (side to move at the bottom).
+
+def _board(item) -> chess.Board:
+    if isinstance(item, chess.Board):
+        return item.copy()
+    if isinstance(item, str):
+        return chess.Board(item.strip())
+    raise TypeError(f"a position is a FEN string or a chess.Board, not {type(item).__name__}")
+
+
+def load_positions(source, n=None, *, seed=0, **pgn_options) -> list:
+    """A list of boards from `source`: FEN strings and/or chess.Boards (copied,
+    history kept; any iterable), or the path to a PGN file, from which
+    `positions_from_pgn` samples one position per game (`n` games, 1,000 if
+    None; it takes `pgn_options`). For FENs and boards, `n` keeps the first n."""
+    if isinstance(source, (str, Path)) and str(source).lower().endswith(".pgn"):
+        return positions_from_pgn(source, n if n is not None else 1000, seed=seed, **pgn_options)
+    if isinstance(source, Path):
+        raise ValueError(f"{source}: only .pgn files are read; or pass FEN strings or boards")
+    if isinstance(source, (str, chess.Board)):
+        source = [source]
+    return [_board(x) for x in (source if n is None else itertools.islice(source, n))]
+
+
+def positions_from_pgn(path, n=1000, *, seed=0, min_ply=12, max_ply=100, max_games=None):
+    """One position per game, from `n` games sampled with `seed` among the first
+    `max_games` standard games of the PGN file at `path` (all of them if None).
+    In each game the position is a random ply in [min_ply, max_ply] with a move
+    still to come; a position where the game is over anyway (fivefold
+    repetition, the 75-move rule) is skipped. Boards keep the whole game as
+    history."""
+    rng = random.Random(seed)
+    offsets = []
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        while max_games is None or len(offsets) < max_games:
+            at = fh.tell()
+            headers = chess.pgn.read_headers(fh)
+            if headers is None:
+                break
+            if headers.get("Variant", "Standard").lower() in ("standard", "chess") \
+                    and "FEN" not in headers:
+                offsets.append(at)
+        boards = []
+        for at in rng.sample(offsets, len(offsets)):     # a seeded order over the games
+            if len(boards) == n:
+                break
+            fh.seek(at)
+            game = chess.pgn.read_game(fh)
+            moves = list(game.mainline_moves()) if game is not None else []
+            top = min(max_ply, len(moves) - 1)
+            if top < min_ply:
+                continue
+            board = game.board()
+            for mv in moves[:rng.randint(min_ply, top)]:
+                board.push(mv)
+            if not board.is_game_over():
+                boards.append(board)
+    return boards
+
+
+def ordinary_positions(n=None) -> list:
+    """The bundled pool of ordinary positions (ordinary_positions.txt says
+    where they come from), each with the 8 plies before it as history. The
+    first `n`, or all."""
+    text = (Path(__file__).parent / "ordinary_positions.txt").read_text()
+    boards = []
+    for line in [l for l in text.splitlines() if l and l[0] != "#"][:n]:
+        fen, _, moves = line.partition("|")
+        b = chess.Board(fen.strip())
+        for u in moves.split():
+            b.push_uci(u)
+        boards.append(b)
+    return boards
+
+
+@dataclass
+class NeuronReport:
+    """`top_neurons`' answer. `rows` holds each layer's top neurons, layer by
+    layer, strongest first: {layer, neuron, rank (1 = the layer's strongest),
+    mean (its peak activation averaged over the positions), std, max,
+    squares (64 per-square means, the model's frame), peak_canon (where that
+    map peaks, a model-frame index), best (indices into `positions` where it
+    peaks highest, strongest first)}. `peaks[i, j, n]` is position i's peak for
+    neuron n of `layers[j]`; `peaks_of(layer, neuron)` reads one neuron's."""
+    positions: list = field(repr=False)
+    layers: list
+    rows: list = field(repr=False)
+    peaks: torch.Tensor = field(repr=False)
+    elo: int | None = None
+    oppo_elo: int | None = None
+
+    def top(self, layer=None, n=None) -> list:
+        """The rows of one layer (or all), the first `n`."""
+        rows = [r for r in self.rows if layer is None or r["layer"] == layer]
+        return rows[:n]
+
+    def peaks_of(self, layer, neuron) -> list:
+        """One neuron's peak on every position, in the order of `positions`."""
+        return self.peaks[:, self.layers.index(int(layer)), int(neuron)].tolist()
+
+    def table(self, n=3) -> str:
+        """A short text table: each layer's `n` strongest neurons."""
+        rating = "" if self.elo is None else f" · rating {self.elo}/{self.oppo_elo}"
+        out = [f"{len(self.positions)} positions · peak activation per position, "
+               f"averaged{rating}"]
+        for L in self.layers:
+            cells = [f"n{r['neuron']:<5} {r['mean']:6.2f}" for r in self.top(L, n)]
+            out.append(f"L{L:<3}" + "   ".join(cells))
+        return "\n".join(out)
+
+
+class NeuronScan:
+    """`top_neurons` a batch at a time, for a progress bar or stopping early:
+
+        scan = NeuronScan(eng, positions)
+        while not scan.finished:
+            scan.step()                    # one batch
+            print(scan.done, "/", scan.total)
+        rep = scan.report(k=10)            # over the positions scanned so far
+
+    Arguments as `top_neurons`."""
+
+    def __init__(self, eng, positions, *, layers=None, elo=1500, oppo_elo=None,
+                 batch_size=32):
+        self.eng = eng
+        self.positions = load_positions(positions)
+        if not self.positions:
+            raise ValueError("no positions")
+        self.layers = eng._layer_ids(layers)
+        self.elo, self.oppo_elo = eng._ratings(elo, oppo_elo)
+        self.batch_size = int(batch_size)
+        ff = eng.arch.d_mlp
+        self.peaks = torch.zeros(len(self.positions), len(self.layers), ff)
+        self._square_sum = torch.zeros(len(self.layers), 64, ff)
+        self.done = 0
+
+    @property
+    def total(self):
+        return len(self.positions)
+
+    @property
+    def finished(self):
+        return self.done >= self.total
+
+    @torch.no_grad()
+    def step(self):
+        """Run the next batch; returns how many positions it took."""
+        if self.finished:
+            return 0
+        chunk = self.positions[self.done:self.done + self.batch_size]
+        for _, got in self.eng._mlp_hidden_batches(chunk, self.layers, self.elo or 0, self.oppo_elo or 0,
+                              len(chunk)):
+            for j, L in enumerate(self.layers):
+                h = got[L]                                 # (B, 64, ff), on the device
+                self.peaks[self.done:self.done + h.size(0), j] = h.amax(dim=1).cpu()
+                self._square_sum[j] += h.sum(dim=0).cpu()
+        self.done += len(chunk)
+        return len(chunk)
+
+    def run(self):
+        while not self.finished:
+            self.step()
+        return self
+
+    def report(self, k=10, n_best=5) -> NeuronReport:
+        """Each layer's `k` strongest neurons over the positions scanned so far."""
+        if not self.done:
+            raise ValueError("nothing scanned yet")
+        peaks = self.peaks[:self.done]
+        mean, std, mx = peaks.mean(0), peaks.std(0, unbiased=False), peaks.amax(0)
+        squares = self._square_sum / self.done
+        rows = []
+        for j, L in enumerate(self.layers):
+            top = mean[j].topk(min(int(k), mean.size(1)))
+            for rank, n in enumerate(top.indices.tolist(), 1):
+                sq = squares[j, :, n]
+                order = peaks[:, j, n].argsort(descending=True)[:n_best]
+                rows.append({"layer": L, "neuron": n, "rank": rank, "mean": float(mean[j, n]),
+                             "std": float(std[j, n]), "max": float(mx[j, n]),
+                             "squares": sq.tolist(), "peak_canon": int(sq.argmax()),
+                             "best": order.tolist()})
+        return NeuronReport(positions=self.positions[:self.done], layers=self.layers, rows=rows,
+                            peaks=peaks, elo=self.elo, oppo_elo=self.oppo_elo)
 
 
 # ----- the two named families ---------------------------------------------------
