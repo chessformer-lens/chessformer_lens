@@ -1,8 +1,8 @@
 """
 The app's chess pieces, drawn in matplotlib.
 
-`pieces.py` carries the artwork the app uses — python-chess's built-in "cburnett"
-set, as SVG data URIs. A figure should use that same artwork, not a lookalike:
+The app draws python-chess's built-in "cburnett" set (ui.py, as SVG data URIs).
+A figure should use that same artwork, not a lookalike:
 unicode chess glyphs are a different typeface with different proportions and no
 interior detail, which is why they read as shoddy next to the app.
 
@@ -19,11 +19,6 @@ here looks like a board there.
 
     from chessformer_lens.piece_art import draw_piece
     draw_piece(ax, "N", x=4, y=0, size=.88)     # one unit square per board square
-
-To rebuild `_ART` after changing the piece set (needs an SVG rasteriser, which is
-exactly why the drawing path does not):
-
-    pip install cairosvg && python3 -m chessformer_lens.piece_art
 """
 from __future__ import annotations
 
@@ -32,8 +27,6 @@ import functools
 import io
 
 import matplotlib.pyplot as plt
-
-PX = 256          # rasterisation size of the stored PNGs, and what __main__ rebuilds at
 
 _ART = {
     "bb": """
@@ -1477,38 +1470,3 @@ def draw_piece(ax, symbol: str, x: float, y: float, *, size: float = .88,
     im.set_clip_on(False)
     return im
 
-
-def _regenerate():
-    """Rasterise `pieces.py`'s SVGs and rewrite this file's `_ART` block in place.
-
-    Run only if the piece set changes. Kept here rather than in a sibling script so
-    the artwork and the code that rebuilds it cannot drift apart."""
-    import re
-    from pathlib import Path
-
-    import cairosvg
-
-    from .pieces import PIECE_URI
-
-    entries = []
-    for sym, uri in sorted(PIECE_URI.items()):
-        svg = base64.b64decode(uri.split(",", 1)[1])
-        png = cairosvg.svg2png(bytestring=svg, output_width=PX, output_height=PX)
-        name = ("w" if sym.isupper() else "b") + sym.lower()
-        entries.append(_render_entry(name, base64.b64encode(png).decode("ascii")))
-        print(name)
-
-    src = Path(__file__).resolve()
-    text = src.read_text()
-    block = "_ART = {\n" + "".join(entries) + "}\n"
-    text = re.sub(r"_ART = \{.*?\n\}\n", block, text, count=1, flags=re.S)
-    src.write_text(text)
-
-
-def _render_entry(name: str, b64: str) -> str:
-    body = "\n".join("        " + b64[i:i + 88] for i in range(0, len(b64), 88))
-    return f'    "{name}": """\n{body}\n""",\n'
-
-
-if __name__ == "__main__":
-    _regenerate()

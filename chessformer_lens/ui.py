@@ -2,7 +2,7 @@
 ui.py — the entire interface (HTML + CSS + JS) as one string.
 
 Pure markup: no model, and the only Python is the piece-set injection at the
-bottom (pieces.py -> `PIECE_URI`). The page talks to `LensApi` (bridge.py)
+bottom (`PIECE_URI`: python-chess's cburnett SVGs as data URIs). The page talks to `LensApi` (bridge.py)
 over `window.pywebview.api`. Edit the app's look and front-end behavior here.
 """
 
@@ -518,7 +518,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <script>
 const FILES=['a','b','c','d','e','f','g','h'];
-const PIECE_URI=__PIECE_URI__;   // symbol ('P'..'k') -> svg data URI (pieces.py)
+const PIECE_URI=__PIECE_URI__;   // symbol ('P'..'k') -> svg data URI
 const $=id=>document.getElementById(id);
 function pieceImg(sym){ const i=document.createElement('img');
   i.className='pc'; i.src=PIECE_URI[sym]; i.alt=sym; i.draggable=false; return i; }
@@ -2014,7 +2014,17 @@ window.addEventListener('resize', ()=>{
 </html>
 """
 
-# Inject the embedded SVG piece set (the only Python in this module).
+# Inject the piece set (the only Python in this module): python-chess's built-in
+# cburnett SVGs (by Colin M.L. Burnett) as data URIs.
+import base64 as _b64
 import json as _json
-from .pieces import PIECE_URI as _PIECE_URI
-INDEX_HTML = INDEX_HTML.replace("__PIECE_URI__", _json.dumps(_PIECE_URI))
+import chess.svg as _svg
+
+
+def _uri(fragment):
+    svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 45 45">' + fragment + "</svg>"
+    return "data:image/svg+xml;base64," + _b64.b64encode(svg.encode()).decode()
+
+
+PIECE_URI = {sym: _uri(frag) for sym, frag in _svg.PIECES.items()}
+INDEX_HTML = INDEX_HTML.replace("__PIECE_URI__", _json.dumps(PIECE_URI))

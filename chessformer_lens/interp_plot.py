@@ -200,7 +200,7 @@ def _inch_y(fig, inches_from_top):
 # ---------------------------------------------------------------------------
 # boards
 # ---------------------------------------------------------------------------
-# Pieces are the app's own artwork (pieces.py / python-chess "cburnett") — see
+# Pieces are the app's own artwork (python-chess's "cburnett", as in ui.py) — see
 # piece_art.py. A chess font is not a substitute: the proportions and the
 # interior linework are different, and it shows.
 

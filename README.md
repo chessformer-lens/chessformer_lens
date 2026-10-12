@@ -4,7 +4,7 @@
 
 `pip install chessformer_lens`
 
-**Try the app in your browser, no install needed:** <a href="https://colab.research.google.com/github/chessformer-lens/chessformer_lens/blob/main/app_quickstart.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
+**Try the app in your browser, no install needed:** <a href="https://colab.research.google.com/github/chessformer-lens/chessformer_lens/blob/main/notebooks/app_quickstart.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21877655.svg)](https://doi.org/10.5281/zenodo.21877655)
 
@@ -30,7 +30,7 @@ cd chessformer_lens
 pip install -r requirements.txt
 ```
 ---
-## Demo Notebook: <a href="https://colab.research.google.com/github/chessformer-lens/chessformer_lens/blob/main/demo.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" width="200"></a>
+## Demo Notebook: <a href="https://colab.research.google.com/github/chessformer-lens/chessformer_lens/blob/main/notebooks/demo.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" width="200"></a>
 
 ---
 
@@ -132,10 +132,9 @@ chessformer_lens --web              # the same app in your web browser
 - `adapters/` — one adapter per model family: `lc0.py` (Leela BT4, no maia3 needed), `maia3.py` (Maia-3), `smolgen.py` (the smolgen/GAB attention both use).
 - `interp_plot.py` — matplotlib figures that the app uses
 - `interp_widget.py` — the app's two interactive panels as a self-contained notebook cell or standalone HTML page
-- `piece_art.py` — draws `pieces.py`'s cburnett pieces in matplotlib from PNGs
+- `piece_art.py` — the cburnett pieces as PNGs, for the matplotlib figures
 - `bridge.py` — the game state + the JSON API the UI calls (`LensApi`).
 - `ui.py` — the whole interface (HTML/CSS/JS) as one string including guide to change template.
-- `pieces.py` — SVG piece set as data URIs.
 - `app.py` — app launcher (native window via pywebview); the `chessformer_lens` command is its `main()`.
 - `web.py` — the same app served to a web browser (`chessformer_lens --web`, or `web.serve()` in a notebook).
 

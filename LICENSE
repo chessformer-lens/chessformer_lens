@@ -32,8 +32,7 @@ via python-chess's chess.svg.PIECES and redistributed here as the base64 PNGs in
 chessformer_lens/piece_art.py. Triple-licensed by its author under GFDL / BSD /
 GPL; this project uses it under the BSD option, which is compatible with MIT.
 Attribution to Colin M.L. Burnett is required, and is given here and in
-chessformer_lens/pieces.py. (pieces.py itself contains no artwork — it reads
-chess.svg.PIECES at import time.)
+chessformer_lens/ui.py, which reads chess.svg.PIECES at import time.
 
 DEPENDENCIES — python-chess (GPL-3.0-or-later) and maia3 (AGPL-3.0) are
 installed by pip and no code from either is copied into this repository, so

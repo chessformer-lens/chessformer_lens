@@ -32,7 +32,7 @@ import chess
 import numpy as np
 
 from .core import canon_square as _canon
-from .pieces import PIECE_URI
+from .ui import PIECE_URI
 
 
 def _require_board(eng, board: chess.Board):
