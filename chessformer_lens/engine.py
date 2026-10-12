@@ -62,6 +62,8 @@ by alias (`load_engine`):
   top_positions         the positions that make one MLP unit fire most
   neuron_effects        what one MLP unit does on each position: the moves it pushes
                         up and down, and whether removing it changes the top move
+  search                (LeelaEngine) lc0's search on the same net: visits and Q per
+                        move beside the raw policy, the PV, the best move
   residual_stream       per-token views of how the stream is built up, one row
                         per readout point
   compare_residual      the same position at two ratings, differenced, where
@@ -104,7 +106,11 @@ app in bridge.py/app.py/ui.py (and web.py, in a browser).
 from __future__ import annotations
 
 import itertools
+import os
 import random
+import re
+import shutil
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1552,6 +1558,65 @@ class LeelaEngine(ChessformerEngine):
         (CHESSFORMER_NO_DOWNLOAD=1 refuses instead)."""
         super().__init__(Lc0Adapter.load(alias, device=device, checkpoint_path=checkpoint_path),
                          activation_dir)
+
+    def search(self, board, nodes=400, *, lc0=None, timeout=600.0, **options) -> dict:
+        """What Leela's search makes of this position: the lc0 program run on the
+        same net this engine loaded (lc0 from `lc0`, $CHESSFORMER_LC0 or PATH),
+        `nodes` visits at the root. Returns {bestmove, pv (UCI), nodes, seconds,
+        root: {q, wl, d, m} for the side to move, rows: [{uci, san, n (visits),
+        share, p (lc0's prior, after its policy temperature), q}] most visited
+        first}. `options` are lc0 UCI options, e.g. SmartPruningFactor=0.
+        Raises RuntimeError without lc0."""
+        import chess.engine
+        exe = lc0 or os.environ.get("CHESSFORMER_LC0") or shutil.which("lc0") or next(
+            (p for p in ("/opt/homebrew/bin/lc0", "/usr/local/bin/lc0") if Path(p).exists()), None)
+        if not exe or not (Path(exe).exists() or shutil.which(exe)):
+            raise RuntimeError(f"lc0 not found ({exe or 'not on PATH'}): install it, e.g. brew install lc0, "
+                               "or set $CHESSFORMER_LC0")
+        weights = self.adapter.cfg.checkpoint_path
+        if not str(weights).endswith(".pb.gz"):
+            raise RuntimeError(f"lc0 needs the .pb.gz net, not {weights}")
+        lines, pv, t0 = [], [], time.monotonic()
+        with chess.engine.SimpleEngine.popen_uci(exe, timeout=timeout) as prog:
+            prog.configure({"WeightsFile": str(weights), "VerboseMoveStats": True, **options})
+            with prog.analysis(board, chess.engine.Limit(nodes=int(nodes))) as run:
+                for info in run:
+                    if "string" in info:
+                        lines.append(info["string"])
+                    elif "pv" in info:
+                        pv = [m.uci() for m in info["pv"]]
+                best = run.wait().move
+        root, rows = self._parse_search(lines, board)
+        return {"bestmove": best.uci() if best else None, "pv": pv, "nodes": int(nodes),
+                "seconds": time.monotonic() - t0, "root": root, "rows": rows}
+
+    @staticmethod
+    def _parse_search(lines, board):
+        """lc0's VerboseMoveStats lines (after "info string") -> (root, rows): one
+        line per move, then the root as "node"; the last complete block counts."""
+        stat = re.compile(r"^(\S+)\s+\(\s*\d*\s*\)\s+N:\s+(\d+)")
+        field = re.compile(r"\((P|WL|D|M|Q):\s*([^)%]*)%?\)")
+        block, rows, root = [], [], {}
+        for line in lines:
+            m = stat.match(line)
+            if not m:
+                continue
+            f = {k: (float(v) if v.strip().lstrip("-").replace(".", "", 1).isdigit() else None)
+                 for k, v in field.findall(line)}
+            if m.group(1) == "node":
+                root = {"q": f.get("Q"), "wl": f.get("WL"), "d": f.get("D"), "m": f.get("M")}
+                block, rows = rows, []
+            else:
+                mv = board.parse_uci(m.group(1))           # castling comes as king-takes-rook
+                n = int(m.group(2))
+                rows.append({"uci": mv.uci(), "san": board.san(mv), "n": n,
+                             "p": None if f.get("P") is None else f["P"] / 100,
+                             "q": f.get("Q") if n else None})
+        total = sum(r["n"] for r in block) or 1
+        for r in block:
+            r["share"] = r["n"] / total
+        block.sort(key=lambda r: (-r["n"], -(r["p"] or 0)))
+        return root, block
 
 
 _ENGINE_CLASSES = {"maia3": MaiaEngine, "lc0": LeelaEngine}

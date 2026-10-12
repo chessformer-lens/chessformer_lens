@@ -3,6 +3,8 @@
                         Win / Draw / Loss bar with a second rating overlaid
                         when you pass `elo_b`
   plot_board            just the position without the engine, policy, or eval
+  plot_search           lc0's search beside the raw policy: visits, Q, the PV, and
+                        whether search overruled the network's top move
   plot_top_neurons      the neurons that fire most on a list of positions, as a
                         carrier-style grid, and where on the board one fires
   plot_top_positions    the positions that make one MLP neuron fire most, with its
@@ -462,6 +464,93 @@ def _bar_parts(ax, parts, *, y, h, tag=None):
                     ha="center", va="center", fontsize=_fs(7.5), color=INK, family=MONO)
         x0 += width
         
+# ---------------------------------------------------------------------------
+# search  (what Leela's search makes of the network's policy)
+# ---------------------------------------------------------------------------
+def _arrow(ax, uci, color, *, lw=3.0):
+    mv = chess.Move.from_uci(uci)
+    (x0, y0), (x1, y1) = ((chess.square_file(s), chess.square_rank(s))
+                          for s in (mv.from_square, mv.to_square))
+    ax.annotate("", xy=(x1, y1), xytext=(x0, y0), zorder=8,
+                arrowprops=dict(arrowstyle="-|>", color=color, lw=lw, alpha=.9,
+                                shrinkA=5, shrinkB=5, mutation_scale=15))
+
+
+def plot_search(eng, board: chess.Board, nodes: int = 400, *, res=None, max_moves: int = 12,
+                figsize=(11, 6.2), width=None, titles=True, **options):
+    """What lc0's search makes of the network's policy (`LeelaEngine.search`):
+    for each move, the raw policy (blue) beside its share of the search's
+    visits (green) and the search's Q for the side to move; on the board, the
+    raw policy's top move (blue arrow) and the move the search plays (green);
+    below, the principal variation and the search's Win / Draw / Loss. A search
+    that plays something other than the raw top move is marked *overruled*.
+    `res`: a result of `eng.search` to draw instead of searching again;
+    `max_moves`: rows drawn, most visited first (the raw top move always shown);
+    `options`: lc0 options for the search, e.g. SmartPruningFactor=0."""
+    if res is None:
+        res = eng.search(board, nodes, **options)
+    if not res["rows"]:
+        raise ValueError("no legal moves in this position")
+    raw = dict(eng.evaluate_batch([board])[0]["policy"])
+    raw_top = max(raw, key=raw.get)
+    best = res["bestmove"]
+
+    fig = _fig(figsize, width, titles)
+    gs = GridSpec(2, 2, figure=fig, width_ratios=[1, 1.15], height_ratios=[1, .24],
+                  hspace=.26, wspace=.10, left=.02, right=.98, top=.93, bottom=.05)
+    ax_b = fig.add_subplot(gs[:, 0])
+    ax_r = fig.add_subplot(gs[0, 1])
+    ax_w = fig.add_subplot(gs[1, 1])
+
+    draw_board(ax_b, board)
+    _arrow(ax_b, raw_top, ACCENT)
+    if best != raw_top:
+        _arrow(ax_b, best, ACCENT2)
+    side = "White" if board.turn else "Black"
+    verdict = (f"overruled: plays {board.san(chess.Move.from_uci(best))} over the raw "
+               f"{board.san(chess.Move.from_uci(raw_top))}" if best != raw_top
+               else "search agrees with the raw policy")
+    ax_b.set_title(f"{side} to move · {verdict}", fontsize=_fs(10.5),
+                   color=LOSS if best != raw_top else MUTED, pad=8, family=MONO)
+
+    ax_r.axis("off")
+    _h2(ax_r, f"Search · lc0 · {res['nodes']} nodes")
+    _hint(ax_r, "blue = raw policy · green = share of visits · Q for the side to move",
+          y=-.03, size=7)
+    rows = res["rows"][:max_moves]
+    if raw_top not in {r["uci"] for r in rows}:
+        rows = rows[:-1] + [next(r for r in res["rows"] if r["uci"] == raw_top)]
+    n = len(rows)
+    step = 1.0 / max(n, 1)
+    size = float(np.clip(90 / max(n, 1), 6.0, 9.5))
+    for i, r in enumerate(rows):
+        y = 1 - (i + .5) * step
+        played = r["uci"] == best
+        ax_r.text(.005, y, r["san"], transform=ax_r.transAxes, va="center", fontsize=_fs(size),
+                  family=MONO, color=ACCENT2 if played else TEXT,
+                  fontweight="bold" if played else "normal")
+        x0, w = .16, .52
+        for j, (p, col) in enumerate(((raw.get(r["uci"], 0.0), ACCENT), (r["share"], ACCENT2))):
+            yy = y + (step * .16 if j == 0 else -step * .16)
+            ax_r.add_patch(plt.Rectangle((x0, yy - step * .1), max(.006, p) * w, step * .2,
+                                         transform=ax_r.transAxes, fc=col, lw=0, zorder=2))
+        q = "Q   —" if r["q"] is None else f"Q {r['q']:+.3f}"
+        ax_r.text(.995, y, f"{r['n']:>5} · {q}", transform=ax_r.transAxes, va="center",
+                  ha="right", fontsize=_fs(size - .5), family=MONO,
+                  color=ACCENT2 if played else MUTED)
+
+    ax_w.axis("off")
+    pv = board.variation_san([chess.Move.from_uci(u) for u in res["pv"][:10]])
+    ax_w.text(0, 1.18, "PV  " + pv + (" …" if len(res["pv"]) > 10 else ""),
+              transform=ax_w.transAxes, fontsize=_fs(8.5), color=TEXT, family=MONO, va="bottom")
+    wl, d = res["root"].get("wl"), res["root"].get("d")
+    if wl is not None and d is not None:
+        _h2(ax_w, f"Win / Draw / Loss · after search · Q {res['root']['q']:+.3f}", y=.72)
+        _wdl_bar(ax_w, {"win": (1 - d + wl) / 2, "draw": d, "loss": (1 - d - wl) / 2},
+                 y=.05, h=.5)
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # neurons over many positions  (eng.top_neurons / eng.top_positions)
 # ---------------------------------------------------------------------------
