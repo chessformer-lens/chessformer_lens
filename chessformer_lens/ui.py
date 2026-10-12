@@ -151,6 +151,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .chip.active{background:var(--accent);color:#0a1220;border-color:var(--accent);font-weight:700}
   /* single-head ablation — a toggle; its result is the red overlay on the policy chart */
   .ablrow{display:flex;align-items:center;gap:8px;margin-top:2px}
+  .snote{font-size:10px;color:var(--muted);font-family:var(--mono);line-height:1.5}
+  .snote b{color:var(--text)}
   #ablbtn{padding:4px 10px;font-size:11px}
   #ablbtn:hover{border-color:var(--abl)}
   #ablbtn.on{background:var(--abl);color:#1a0c0e;border-color:var(--abl);font-weight:700}
@@ -197,7 +199,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .legbar{flex:1;height:8px;border-radius:4px;border:1px solid var(--line);
     background:linear-gradient(90deg, rgb(68,1,84), rgb(59,82,139), rgb(33,144,141), rgb(93,200,99), rgb(253,231,37))}
   .legbar.div{background:linear-gradient(90deg, rgb(64,132,234), rgb(24,28,36), rgb(244,134,58))}
-  .legbar.pos{background:linear-gradient(90deg, rgb(24,28,36), rgb(244,134,58))}
   .leghint{font-size:8px;color:var(--muted);margin-top:3px;font-family:var(--mono)}
 
 
@@ -239,16 +240,44 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .mlgridbox{flex:0 0 auto;overflow:auto;min-width:300px}
   /* grid-template-columns/rows + width are set per model in renderAblGrid so the
      heatmap has exactly num_heads columns × one row per layer (6/8/16/32 heads). */
-  #ablgrid{display:grid;gap:1px;margin-top:4px}
-  #ablgrid .agc{aspect-ratio:1/1;border-radius:2px;position:relative}
-  #ablgrid .agc.cell{cursor:pointer}
-  #ablgrid .agc.cell:hover{outline:1px solid var(--accent)}
-  #ablgrid .agc.strong{outline:2px solid #ff5d6c;z-index:1}
+  #ablgrid,#mpgrid{display:grid;gap:1px;margin-top:4px}
+  #ablgrid .agc,#mpgrid .agc{aspect-ratio:1/1;border-radius:2px;position:relative}
+  #ablgrid .agc.cell,#mpgrid .agc.cell{cursor:pointer}
+  #ablgrid .agc.cell:hover,#mpgrid .agc.cell:hover{outline:1px solid var(--accent)}
+  #ablgrid .agc.strong,#mpgrid .agc.strong{outline:2px solid #ff5d6c;z-index:1}
+  #mpgrid .agc.cell{border-radius:50%}    /* neurons are circles, heads squares */
   /* final layer: excluded from carrier attribution — dimmed, striped */
   #ablgrid .agc.cell.excl{background:repeating-linear-gradient(45deg,#151a22,#151a22 3px,#1c222c 3px,#1c222c 6px);opacity:.5}
-  #ablgrid .agl{display:flex;align-items:center;justify-content:center;aspect-ratio:auto;
+  #ablgrid .agl,#mpgrid .agl{display:flex;align-items:center;justify-content:center;aspect-ratio:auto;
     font-size:8px;font-family:var(--mono);color:var(--muted)}
   .mlnote{font-size:9px;color:var(--muted);font-family:var(--mono);margin:2px 0 4px;line-height:1.5}
+  /* "Analyze many positions": the drawer's second tab, over a pool of positions */
+  .mltab{cursor:pointer}
+  .mltab.off{color:var(--muted)}
+  .mltab.off b{color:inherit}
+  .mltab.off:hover{color:var(--text)}
+  #mpctl{display:none;align-items:center;gap:8px;flex:1;min-width:0}
+  #mpctl button,#mpctl select{padding:3px 10px;font-size:11px}
+  .mpbar{display:inline-block;width:120px;height:7px;border-radius:5px;background:var(--chart-bg);
+    border:1px solid var(--line);vertical-align:middle;overflow:hidden;margin-right:6px}
+  .mpbar>i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2))}
+  #mpbody{display:none}
+  .mpunit{flex:0 0 auto;display:flex;flex-direction:column;min-height:0}
+  .mpunit .attboard{margin:0}
+  .mptiles{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}
+  #mptilegrid{display:grid;gap:4px 10px;margin-top:4px;align-content:start}
+  .mptile{cursor:pointer}
+  .mptile .attboard{margin:0;max-width:none}
+  .mptile:hover .attboard{border-color:var(--accent)}
+  .attboard .attcell img.pc{position:absolute;inset:7%;width:86%;height:86%;z-index:1;
+    filter:drop-shadow(0 0 1.2px rgba(255,255,255,.6));pointer-events:none}
+  .mpempty{color:var(--muted);font-family:var(--mono);font-size:10px;padding-top:30px}
+  #mpstrip{display:none;padding:10px 14px}
+  #mpstrip .elorow{align-items:center;gap:8px;margin-bottom:6px}
+  #mpstrip .nctl{flex:0 0 auto}
+  #mpthumbs{display:flex;gap:6px}
+  #mpthumbs .attboard{margin:0;cursor:pointer}
+  #mpthumbs .on .attboard{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
   /* carrier neurons: one row per unit — name, its per-square footprint, estimate, exact */
   .mlneurons{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}
   #nrows{flex:1;min-height:0;overflow:auto;margin-top:4px}
@@ -326,6 +355,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div id="board"></div>
       <svg id="arrowsvg" viewBox="0 0 640 640" width="640" height="640"></svg>
     </div>
+    <div class="card" id="mpstrip">
+      <div class="elorow"><h2 style="margin:0" id="mpstriptitle">Strongest positions</h2>
+        <span class="snote" id="mpstriptext" style="flex:1"></span>
+        <div class="nctl"><button id="mpprev" title="previous position">◀</button><button id="mpnext" title="next position">▶</button><button id="mpback">↩ back to the game</button></div></div>
+      <div id="mpthumbs"></div>
+    </div>
+  </div>
+
   </div>
 
   <div class="right">
@@ -408,6 +445,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
           <div class="nctl"><button id="nprev" title="previous unit">◀</button><input id="nidx" type="number" min="0" value="0"><button id="nnext" title="next unit">▶</button></div></div>
         <div class="ablrow"><button id="nablbtn">Ablate this neuron</button></div>
         <div class="ablnote" id="nablnote">removes its exact write on every square — red bars on the policy chart</div>
+        <div class="ablrow"><button id="mpwhere">Where else does it fire? ▸</button></div>
       </div>
       <div class="tokmsg" id="neumsg">Per-square activation view not available yet for this
         model: its tokens aren't board squares. Picking and ablating a unit still work.</div>
@@ -422,12 +460,34 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <div id="mlens" class="drawer">
   <div class="mlhead">
-    <span class="mltitle" id="mltitle">Analyze one move</span>
+    <span class="mltitle mltab" id="mltitle">Analyze one move</span>
+    <span class="mltitle mltab off" id="mptitle">Analyze many positions</span>
+    <span id="mpctl"><select id="mppool"><option value="ordinary">1,000 ordinary positions</option><option value="game">this game</option></select>
+      <button class="primary" id="mpscan">Scan</button><button id="mpgo" style="display:none">Continue</button><button id="mpstop" style="display:none">Stop</button>
+      <span class="mlhint" id="mpstat"></span></span>
     <span class="mltags"><span class="mltag">logit lens</span><span class="mltag">causal heads</span><span class="mltag">causal neurons</span><span class="mltag">residual stream</span></span>
     <span class="mlhint" id="mlhint">click a move in the policy list</span>
     <button id="mlclose">✕ close</button>
   </div>
-  <div class="mlbody">
+  <div class="mlbody" id="mpbody">
+    <div class="mlgridbox" id="mpgridbox">
+      <div class="attlabel" id="mpgridlabel">top neurons · mean peak activation</div>
+      <div class="mlnote" id="mpnote">scan a pool to rank its neurons</div>
+      <div id="mpgrid"></div>
+      <div class="attlegend" id="mpgridlegend" style="display:none"><span>0</span><div class="legbar"></div><span id="mpgridmax">max</span></div>
+    </div>
+    <div class="mpunit" id="mpunit">
+      <div class="attlabel" id="mpunitlabel">mean activation per square</div>
+      <div class="attboard" id="mpavg"></div>
+      <div class="attlegend" id="mpavglegend" style="display:none;margin-top:4px"><span>−</span><div class="legbar div"></div><span>+</span></div>
+      <div class="mlnote" id="mpstats"></div>
+    </div>
+    <div class="mptiles">
+      <div class="attlabel" id="mptileslabel">its strongest positions · click one to see it in every panel</div>
+      <div id="mptilegrid"></div>
+    </div>
+  </div>
+  <div class="mlbody" id="mlbody">
     <div class="mlchart">
       <div class="attlabel">logit lens · the move's logit read off the residual stream at every depth</div>
       <div class="mllegend" id="mllegend"></div>
@@ -608,7 +668,7 @@ $('fenload').onclick = ()=>{ if(!busy) doSetFen($('fenin').value.trim()); };
 const WALK_MS=2000;     // budget for the fast part, whatever the walk's length
 async function doRandom(){
   if(!API || busy) return;
-  sel=null; busy=true; setupMode=true;
+  sel=null; busy=true; setupMode=true; mpBrowse=null; renderStrip();
   syncModeSelect();          // the walk leaves you in set-up mode; show that now
   setStatus('rolling a position…');
   let r;
@@ -664,7 +724,7 @@ async function resumeFrom(hc){
 }
 async function doSetFen(fen){
   if(!API || busy || !fen) return;
-  sel=null;
+  sel=null; mpBrowse=null; renderStrip();
   const r = await API.set_fen(fen);
   if(r.error){ setStatus('⚠ '+r.error); return; }
   cur=r; $('color').value='setup'; setupMode=true;
@@ -702,7 +762,7 @@ async function probe(){
 }
 
 async function newGame(){
-  sel=null; busy=true; setupMode=false;
+  sel=null; busy=true; setupMode=false; mpBrowse=null; renderStrip();
   let hc = $('color').value; if(hc==='setup'){ hc='white'; $('color').value='white'; }
   cur = await API.new_game(hc);
   orient = (hc==='black') ? 'black' : 'white';
@@ -946,9 +1006,256 @@ function renderPolicy(pol, wdl, actfile, playedUci, mlh, value){
   $('actfile').textContent = actfile ? '↳ saved '+actfile.split('/').slice(-1)[0] : '';
   markLensedRows();
 }
+/* ---- "Analyze many positions": the drawer's second tab ----
+   A pool (the bundled ordinary positions, or this game) is scanned once on a
+   background thread; every neuron's peak per position is kept, so the grid of
+   each layer's strongest neurons and any neuron's strongest positions come
+   from it. The grid is drawn as the causal-heads grid is, every board as the
+   attention and neuron boards are. */
+let mpTab=false, mpReport=null, mpSel=null, mpData=null, mpPoll=null, mpBrowse=null,
+    mpSelTimer=null, mpShown=0, mpScanId=null;
+function mpOn(on){
+  mpTab=!!on;
+  $('mltitle').classList.toggle('off', mpTab); $('mptitle').classList.toggle('off', !mpTab);
+  $('mpctl').style.display = mpTab ? 'flex' : 'none';
+  document.querySelector('#mlens .mltags').style.display = mpTab ? 'none' : '';
+  $('mlhint').style.display = mpTab ? 'none' : '';
+  $('mlbody').style.display = mpTab ? 'none' : '';
+  $('mpbody').style.display = mpTab ? 'flex' : 'none';
+  if(mpTab){ renderMpGrid(); renderMpUnit(); }
+}
+function mpOpen(){ setDrawerOpen(true); mpOn(true); }
+$('mptitle').addEventListener('click', e=>{ e.stopPropagation(); mpOpen(); });
+$('mltitle').addEventListener('click', e=>{
+  if(!mpTab) return;                       // the drawer's own click handling as before
+  e.stopPropagation(); setDrawerOpen(true); mpOn(false);
+});
+$('mpwhere').onclick=()=>{ mpSel={layer:nLayer, neuron:nIdx}; mpOpen(); mpFetchUnit(); };
+
+function mpBoard(el, size){                // an .attboard of 64 .attcell cells, no clicks
+  el.innerHTML=''; el.style.width=size+'px'; el.style.maxWidth='none';
+  for(let i=0;i<64;i++){
+    const d=document.createElement('div'); d.className='attcell'; el.appendChild(d);
+    const r=Math.floor(i/8), c=i%8;
+    if(c===0){ const sp=document.createElement('span'); sp.className='attcoord r'; d.appendChild(sp); }
+    if(r===7){ const sp=document.createElement('span'); sp.className='attcoord f'; d.appendChild(sp); }
+  }
+}
+// paint a board: `act` (64, the model's frame) on the real squares of a position
+// whose side to move is `turn` (pieces from `fen`), in the board's orientation;
+// with turn null the map itself is drawn, the side to move at the bottom
+function mpPaint(el, act, m, turn, fen, colf){
+  const map = fen ? parseFen(fen) : null;
+  [...el.children].forEach((cell, i)=>{
+    const r=Math.floor(i/8), c=i%8;
+    const name = turn ? sqName(r, c) : FILES[c]+(8-r);
+    const canon = turn ? realToCanon(name, turn) : (7-r)*8+c;
+    const light=(FILES.indexOf(name[0])+(+name[1]))%2===0;
+    cell.className='attcell '+(light?'lt':'dk');
+    cell.style.background = act ? colf(act[canon]/m) : (light ? 'var(--sq-light)' : 'var(--sq-dark)');
+    const rc=cell.querySelector('.attcoord.r'); if(rc) rc.textContent=name[1];
+    const fc=cell.querySelector('.attcoord.f'); if(fc) fc.textContent=name[0];
+    const old=cell.querySelector('img.pc'); if(old) old.remove();
+    if(map && map[name]) cell.appendChild(pieceImg(map[name]));
+  });
+}
+function mpSizes(){                         // fit the drawer, as renderAblGrid does
+  const dh=($('mlens')&&$('mlens').clientHeight)||300, vw=window.innerWidth||1400;
+  return {h:Math.max(120, dh-104), w:vw};
+}
+
+/* ---- scanning ---- */
+$('mpscan').onclick=()=>mpScan();
+$('mpstop').onclick=async()=>{ await API.scan_stop(); mpTick(); };
+$('mpgo').onclick=async()=>{ await API.scan_continue(); mpTick(); };
+$('mppool').onchange=()=>{ $('mpstat').textContent='press Scan'; };
+async function mpScan(){
+  if(!API) return;
+  const r=await API.scan_start($('mppool').value, elo);
+  if(r.error){ $('mpstat').textContent='⚠ '+r.error; return; }
+  if(r.id!==mpScanId){ mpScanId=r.id; mpReport=null; mpData=null; mpShown=0; renderMpGrid(); renderMpUnit(); }
+  mpTick();
+}
+async function mpTick(){
+  clearTimeout(mpPoll);
+  const st=await API.scan_status();
+  const stat=$('mpstat'), live=st.state==='running'||st.state==='paused';
+  $('mpstop').style.display = live ? '' : 'none';
+  $('mpgo').style.display = st.state==='paused' ? '' : 'none';
+  if(st.state==='none'){ stat.textContent='scan a pool to rank its neurons'; return; }
+  const pct=st.total ? Math.round(100*st.done/st.total) : 0;
+  const rating = st.elo==null ? '' : ` · elo ${st.elo}`;
+  if(st.state==='running') stat.innerHTML=`<span class="mpbar"><i style="width:${pct}%"></i></span>${st.done.toLocaleString()} / ${st.total.toLocaleString()} · ${st.seconds.toFixed(1)} s`+(st.eta!=null?` · ~${Math.ceil(st.eta)} s left`:'');
+  else if(st.state==='paused') stat.textContent=`⏸ ${st.done} of ${st.total.toLocaleString()} scanned · about ${Math.ceil(st.eta)} s more at this speed`;
+  else if(st.state==='error') stat.textContent='⚠ '+st.error;
+  else {
+    const stale = st.elo!=null && st.elo!==elo ? ` · scanned at elo ${st.elo}, now ${elo}: Scan again` : '';
+    stat.textContent=`${st.state==='stopped'?'stopped after':'scanned'} ${st.done.toLocaleString()} of ${st.label} in ${st.seconds.toFixed(1)} s${rating} · raw mean peak${stale}`;
+  }
+  // the grid fills in as the scan goes (every ~10%), and is final when it ends
+  if(st.done && (!live || st.done-mpShown >= Math.max(1, st.total/10))){
+    mpShown=st.done; await mpFetchReport();
+  }
+  if(live) mpPoll=setTimeout(mpTick, 300);
+}
+async function mpFetchReport(){
+  const r=await API.scan_report(10);
+  if(!r || r.error) return;
+  mpReport=r;
+  if(!mpSel){                              // nothing picked yet: the strongest neuron
+    let best=null;
+    r.grid.forEach((row,j)=>row.forEach(c=>{ if(!best || c.mean>best.mean) best={layer:r.layers[j], neuron:c.neuron, mean:c.mean}; }));
+    if(best){ mpPick(best.layer, best.neuron); return; }
+  }
+  renderMpGrid(); mpFetchUnit();
+}
+
+/* ---- the grid: each layer's strongest neurons, as the causal-heads grid ---- */
+function renderMpGrid(){
+  const el=$('mpgrid'); if(!el) return;
+  el.innerHTML='';
+  const r=mpReport;
+  if(!r){ $('mpgridlabel').textContent='top neurons · mean peak activation'; $('mpgridlegend').style.display='none'; return; }
+  const nb=r.grid.length, k=Math.max(...r.grid.map(row=>row.length));
+  const cs=gridCell(k, nb);                 // the causal-heads grid's own sizing
+  el.style.gridTemplateColumns='16px repeat('+k+','+cs+'px)';
+  el.style.gridTemplateRows='14px repeat('+nb+','+cs+'px)';
+  el.style.width=(16+k*cs+k)+'px';
+  $('mpgridbox').style.width=Math.max(300, 16+k*cs+k)+'px';
+  $('mpgridlabel').textContent=`top neurons · mean peak over ${r.n.toLocaleString()} positions`;
+  let m=1e-9; r.grid.forEach(row=>row.forEach(c=>{ m=Math.max(m, c.mean); }));
+  $('mpgridlegend').style.display=''; $('mpgridmax').textContent=m.toFixed(1);
+  el.appendChild(Object.assign(document.createElement('div'),{className:'agc agl'}));
+  for(let i=0;i<k;i++){ const d=document.createElement('div'); d.className='agc agl'; d.textContent=(cs>=16||i%4===0)?'#'+(i+1):''; el.appendChild(d); }
+  r.grid.forEach((row,j)=>{
+    const L=r.layers[j];
+    const lb=document.createElement('div'); lb.className='agc agl'; lb.textContent='L'+L; el.appendChild(lb);
+    for(let i=0;i<k;i++){
+      const c=row[i], d=document.createElement('div'); d.className='agc cell';
+      if(c){
+        d.style.background=viridis(c.mean/m);
+        d.title=`L${L}·n${c.neuron} · mean peak ${c.mean.toFixed(2)} · #${i+1} in L${L}`;
+        if(mpSel && mpSel.layer===L && mpSel.neuron===c.neuron) d.classList.add('strong');
+        d.onclick=()=>mpPick(L, c.neuron);
+      }
+      el.appendChild(d);
+    }
+  });
+  const sel=mpSel ? `selected L${mpSel.layer}·n${mpSel.neuron} · ` : '';
+  $('mpnote').textContent=`${sel}brighter = higher mean peak activation, raw · click a cell → that neuron`;
+}
+function mpPick(L, n){
+  mpSel={layer:L, neuron:n}; renderMpGrid();   // the tab and the Neurons card: one neuron
+  nLayer=L; nIdx=n; $('nlayer').value=L; $('nidx').value=n;
+  mpData=null; renderMpUnit(); mpFetchUnit();
+  updateNeuron();
+}
+function mpOnNeuron(){                       // the neuron card changed its neuron
+  if(!mpTab || !mpReport) return;
+  if(mpSel && mpSel.layer===nLayer && mpSel.neuron===nIdx && mpData && mpData.layer===nLayer && mpData.neuron===nIdx) return;
+  mpSel={layer:nLayer, neuron:nIdx}; renderMpGrid();
+  clearTimeout(mpSelTimer); mpSelTimer=setTimeout(mpFetchUnit, 200);
+}
+async function mpFetchUnit(){
+  if(!mpSel){ renderMpUnit(); return; }
+  if(!mpReport){ mpData=null; renderMpUnit(); return; }
+  const want=mpSel;
+  const d = await API.neuron_positions(want.layer, want.neuron, 8);
+  if(!mpSel || mpSel.layer!==want.layer || mpSel.neuron!==want.neuron) return;   // superseded
+  mpData = (d && !d.error) ? d : null;
+  renderMpUnit();
+}
+
+/* ---- one neuron: where it fires on average, and its strongest positions ---- */
+function renderMpUnit(){
+  const {h, w}=mpSizes();
+  const avg=$('mpavg'), grid=$('mptilegrid'), legend=$('mpavglegend');
+  const name = mpSel ? `L${mpSel.layer}·n${mpSel.neuron}` : '';
+  $('mpunitlabel').textContent = name ? `${name} · mean activation per square` : 'mean activation per square';
+  if(!mpData){
+    const msg = !mpReport ? (mpSel ? `scan a pool to see where ${name} fires` : 'scan a pool, then click a neuron') : 'loading…';
+    avg.innerHTML=''; avg.style.display='none'; legend.style.display='none';
+    $('mpstats').textContent=''; grid.innerHTML=`<div class="mpempty">${msg}</div>`;
+    return;
+  }
+  const d=mpData, bs=Math.max(120, Math.min(260, h-70));
+  $('mpunit').style.width=bs+'px';
+  avg.style.display=''; legend.style.display=''; mpBoard(avg, bs);
+  const am=Math.max(...d.squares.map(Math.abs))||1e-9;
+  mpPaint(avg, d.squares, am, null, null, divmap);
+  $('mpstats').textContent=`mean ${d.mean.toFixed(1)} · sd ${d.std.toFixed(1)} · max ${d.max.toFixed(1)} · #${d.rank} in L${d.layer}`;
+  $('mpstats').title=`over ${d.n.toLocaleString()} positions; the board is the model's frame, the side to move at the bottom`;
+  // the gallery: 2 rows of 4 plain boards, as large as the drawer allows
+  const right=document.querySelector('.mptiles').clientWidth||600;
+  const ts=Math.max(80, Math.floor(Math.min((h-30)/2, (right-3*10)/4)));
+  grid.style.gridTemplateColumns=`repeat(4, ${ts}px)`;
+  grid.innerHTML='';
+  d.tiles.forEach((t,i)=>{
+    const tile=document.createElement('div'); tile.className='mptile';
+    const side = ts>=120 ? (t.turn==='white'?'White':'Black') : (t.turn==='white'?'W':'B');
+    tile.insertAdjacentHTML('beforeend', `<div class="attlabel">${side} · ${t.peak.toFixed(1)}${ts>=120?' on':''} ${t.square}</div>`);
+    const b=document.createElement('div'); b.className='attboard'; mpBoard(b, ts);
+    mpPaint(b, null, 1, t.turn, t.fen, null);
+    tile.appendChild(b);
+    tile.title=`#${t.index} in ${d.label} · click to open it in every panel`;
+    tile.onclick=()=>mpOpenTile(i);
+    grid.appendChild(tile);
+  });
+}
+
+/* ---- opening a position: every panel shows it; the strip steps through them ---- */
+async function mpOpenTile(i, data=mpData){
+  if(!API || busy || !data) return;
+  const t=data.tiles[i]; if(!t) return;
+  const r=await API.open_position(t.index, data.scan_id);
+  if(!r || r.error){ setStatus('⚠ '+((r&&r.error)||'could not open the position')); return; }
+  cur=r; mpBrowse={k:i, data}; setupMode=true; syncModeSelect();
+  mpSel={layer:data.layer, neuron:data.neuron};        // the Neurons card shows that neuron
+  nLayer=data.layer; nIdx=data.neuron; $('nlayer').value=data.layer; $('nidx').value=data.neuron;
+  setDrawerOpen(false);                    // every panel in view; the strip steps on
+  sel=null; renderBoard(); renderMoves(); renderStrip();
+  await advance();
+}
+async function mpBack(){
+  if(!API || busy) return;
+  const r=await API.go_back();
+  cur=r; mpBrowse=null; renderStrip(); setupMode=r.human_color==='both'; syncModeSelect();
+  sel=null; renderBoard(); renderMoves();
+  await advance();
+}
+$('mpback').onclick=()=>mpBack();
+$('mpprev').onclick=()=>{ if(mpBrowse && mpBrowse.k>0) mpOpenTile(mpBrowse.k-1, mpBrowse.data); };
+$('mpnext').onclick=()=>{ if(mpBrowse && mpBrowse.k<mpBrowse.data.tiles.length-1) mpOpenTile(mpBrowse.k+1, mpBrowse.data); };
+function renderStrip(){                       // the opened positions, under the board
+  const st=$('mpstrip'); if(!st) return;
+  if(!mpBrowse){ st.style.display='none'; return; }
+  const d=mpBrowse.data, t=d.tiles[mpBrowse.k];
+  st.style.display='block';
+  $('mpstriptext').innerHTML=`<b>L${d.layer}·n${d.neuron}</b> · ${mpBrowse.k+1} of ${d.tiles.length} · <b>${t.peak.toFixed(1)}</b> on ${t.square}`;
+  const box=$('mpthumbs'); box.innerHTML='';
+  const size=Math.max(36, Math.floor(($('boardwrap').clientWidth - 28 - 7*6)/8));
+  const tm=Math.max(...d.tiles.flatMap(x=>x.act))||1e-9;
+  d.tiles.forEach((x,i)=>{                    // heat only: pieces are unreadable this small
+    const wrap=document.createElement('div'); if(i===mpBrowse.k) wrap.className='on';
+    const b=document.createElement('div'); b.className='attboard'; mpBoard(b, size);
+    mpPaint(b, x.act, tm, x.turn, null, v=>viridis(Math.max(0, v)));
+    b.querySelectorAll('.attcoord').forEach(c=>c.remove());
+    wrap.title=`${x.peak.toFixed(1)} on ${x.square}`;
+    wrap.appendChild(b); wrap.onclick=()=>mpOpenTile(i, d);
+    box.appendChild(wrap);
+  });
+}
+
 function renderMoves(){
+  // numbered from where the history starts: move 1 for a game, the FEN's move
+  // number (and "16…" for Black) for a loaded or opened position
   const h=cur && cur.san_history ? cur.san_history : [];
-  let out=''; for(let i=0;i<h.length;i+=2){ out+=`${i/2+1}. ${h[i]||''} ${h[i+1]||''}  `; }
+  let n=(cur && cur.root_fullmove)||1, white=!(cur && cur.root_turn==='black'), out='';
+  h.forEach((san,i)=>{
+    if(white) out+=`${n}. ${san} `;
+    else { out+=(i===0?`${n}… `:'')+`${san}  `; n++; }
+    white=!white;
+  });
   $('moves').textContent = out.trim() || '—';
   const fb=$('fenin'); if(fb && cur && document.activeElement!==fb) fb.value = cur.fen;
 }
@@ -1156,6 +1463,7 @@ async function updateNeuron(){
     }catch(e){ console.warn('[lens] neuron update failed', e); }
   }
   updateNeuronAblation();
+  mpOnNeuron();
 }
 async function updateNeuronAblation(){
   const btn=$('nablbtn'); if(!btn) return;
@@ -1344,6 +1652,7 @@ function markLensedRows(){
   });
 }
 function openMoveLens(uci, san){       // click toggles a move in/out of the comparison
+  if(mpTab) mpOn(false);
   const i=mlMoves.findIndex(m=>m.uci===uci);
   if(i>=0){                            // already compared -> drop it
     mlMoves.splice(i,1);
@@ -1524,9 +1833,7 @@ function renderAblGrid(g){
   // drawer's height (set by fitLayout from the board's position) and a share of
   // the width. Scales across model sizes (6/8/16/32 heads); .mlgridbox scrolls
   // if a huge model still overflows.
-  const vw=window.innerWidth||1400, dh=($('mlens')&&$('mlens').clientHeight)||300;
-  const maxW=Math.min(vw*0.30, 520), maxH=Math.max(90, dh-132);   // dh less head, labels and the note
-  const cs=Math.max(9, Math.floor(Math.min((maxW-16)/nh, (maxH-14)/nb)));
+  const cs=gridCell(nh, nb);
   const gridW=16+nh*cs+nh;  // 16px label col + nh cells + nh 1px gaps
   el.style.gridTemplateColumns = '16px repeat('+nh+','+cs+'px)';
   el.style.gridTemplateRows    = '14px repeat('+nb+','+cs+'px)';
@@ -1573,6 +1880,14 @@ function renderAblGrid(g){
     `base logit ${g.base_logit.toFixed(2)} · strongest L${sL}·h${sH} `+
     `${g.deltas[sL][sH]>=0?'+':''}${g.deltas[sL][sH].toFixed(2)} · `+
     `blue = carrier, orange = suppressor · L${NO_CARRIER_LAYER} excluded · click a cell → that head`;
+}
+
+// cell size for a drawer grid (the causal heads, the top neurons): as large as
+// fits a third of the width and the drawer's height, less head, labels, note
+function gridCell(nCols, nRows){
+  const vw=window.innerWidth||1400, dh=($('mlens')&&$('mlens').clientHeight)||300;
+  const maxW=Math.min(vw*0.30, 520), maxH=Math.max(90, dh-132);
+  return Math.max(9, Math.floor(Math.min((maxW-16)/nCols, (maxH-14)/nRows)));
 }
 
 function nb_heads(){ const i=MODEL_INFO||{}; return (i.num_blocks||8)*(i.num_heads||8); }
@@ -1690,6 +2005,8 @@ window.addEventListener('resize', ()=>{
   fitLayout();
   if(mlGrid && $('mlens').classList.contains('open')) renderAblGrid(mlGrid);
   if($('mlens').classList.contains('open')) drawMlChart();
+  if(mpTab && $('mlens').classList.contains('open')){ renderMpGrid(); renderMpUnit(); }
+  renderStrip();
 });
 
 </script>

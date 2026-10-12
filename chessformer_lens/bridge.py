@@ -11,6 +11,7 @@ thread so the window opens instantly. This file is the app's glue — for
 notebook work use interp_plot.py / interp_widget.py, or import an engine from
 engine.py directly; none of them go through here.
 """
+import itertools
 import os
 import random
 import sys
@@ -20,7 +21,7 @@ from pathlib import Path
 import chess
 
 from .core import available_models
-from .engine import load_engine, resolve_engine
+from .engine import NeuronScan, load_engine, ordinary_positions, resolve_engine
 
 # Cached activations are working data, not package content: they land under the
 # directory the app is launched from, so an installed copy is never written to.
@@ -37,6 +38,11 @@ SAVE_ACTIVATIONS = os.environ.get(
 # this: a board where the side to move has one forced reply makes for a dead
 # policy panel, which is the one panel the button exists to fill.
 RANDOM_MIN_LEGAL = 6
+
+# "Analyze many positions" scans a pool of positions on a background thread,
+# one batch per hold of the engine lock so the other panels keep answering.
+# A scan that would run past this many seconds pauses and asks first.
+SCAN_PAUSE_SECONDS = 60
 
 
 def side_name(turn):
@@ -73,6 +79,10 @@ class LensApi:
         self.san_history = []
         self._lock = threading.Lock()
         self._loading = False
+        self._game_return = None       # the game to go back to while a scanned position is shown
+        self._scan = None              # the last "many positions" scan (see `scan_start`)
+        self._scan_mutex = threading.Lock()
+        self._scan_ids = itertools.count(1)
         if self.alias and not self.ready:
             self._start_load()
 
@@ -173,8 +183,13 @@ class LensApi:
         b = self.board
         over = b.is_game_over()
         engine_to_move = (not over) and (not self.human_both) and (b.turn != self.human)
+        root = b.root()
         return {
             "fen": b.fen(),
+            # where san_history starts, so the moves list numbers from there
+            "root_fullmove": root.fullmove_number,
+            "root_turn": side_name(root.turn),
+            "browsing": self._game_return is not None,
             "turn": side_name(b.turn),
             "human_color": "both" if self.human_both else side_name(self.human),
             "human_to_move": (not over) and (self.human_both or b.turn == self.human),
@@ -192,6 +207,7 @@ class LensApi:
         }
 
     def new_game(self, human_color="white"):
+        self._game_return = None
         self.board = chess.Board()
         self.human_both = (human_color == "both")
         self.human = chess.BLACK if human_color == "black" else chess.WHITE
@@ -324,6 +340,7 @@ class LensApi:
         self.board = board
         self.human_both = True
         self.san_history = []
+        self._game_return = None
         return self._base()
 
     def random_position(self, elo=1500, min_plies=12, max_plies=60):
@@ -352,6 +369,7 @@ class LensApi:
         self.board = board
         self.san_history = sans
         self.human_both = True
+        self._game_return = None
         return {**self._base(), "walk": frames}
 
     def _self_play(self, elo, plies):
@@ -393,6 +411,7 @@ class LensApi:
                 pass
         self.human_both = True
         self.san_history = []
+        self._game_return = None
         return self._base()
 
     def attention(self, elo=1500, layer=0, head=0):
@@ -592,6 +611,232 @@ class LensApi:
                 return self.engine.carrier_neurons(b, self_elo=int(elo), move=uci, top_k=int(top_k))
         except Exception as exc:
             return {"error": f"{type(exc).__name__}: {exc}"}
+
+    # ----- many positions (engine.top_neurons & co) ---------------------------
+    def go_back(self):
+        """Leave a scanned position and restore the game exactly as it was."""
+        if self._game_return is not None:
+            self.board, self.san_history, self.human_both, self.human = self._game_return
+            self._game_return = None
+        return self._base()
+
+    def _game(self):
+        """The game being played: while a scanned position is shown, the one
+        to go back to."""
+        return self._game_return[0] if self._game_return is not None else self.board
+
+    def _pool(self, pool):
+        """(positions, label) for a pool name: the bundled ordinary positions,
+        or every position of the game, its history kept."""
+        if pool == "game":
+            game = self._game()
+            root, boards = game.root(), []
+            b = root.copy()
+            boards.append(b.copy())
+            for mv in game.move_stack:
+                b.push(mv)
+                boards.append(b.copy())
+            return boards, f"this game ({len(boards)} positions)"
+        boards = ordinary_positions()
+        return boards, f"{len(boards):,} ordinary positions"
+
+    def scan_start(self, pool="ordinary", elo=1500):
+        """Scan a pool for the neurons that fire most (`NeuronScan`),
+        on a background thread a batch at a time. The same pool and rating
+        again returns the scan already made."""
+        if not self.ready:
+            return {"error": self.error or "model still loading"}
+        elo = int(elo) if self.engine.has_conditioning else None
+        game = self._game()
+        key = (pool, elo, (game.root().fen(), tuple(m.uci() for m in game.move_stack))
+               if pool == "game" else None)
+        with self._scan_mutex:                  # one scan at a time, even with web.py's threads
+            sc = self._scan
+            if sc is not None and sc["key"] == key and sc["state"] in ("running", "paused", "done"):
+                return self.scan_status()
+            if sc is not None:
+                self._halt(sc)
+            try:
+                boards, label = self._pool(pool)
+                batch = 8 if str(self.engine.device) == "cpu" else 32
+                scan = NeuronScan(self.engine, boards, elo=elo or 0, batch_size=batch)
+            except Exception as exc:
+                return {"error": f"{type(exc).__name__}: {exc}"}
+            sc = self._scan = {"id": next(self._scan_ids), "key": key, "pool": pool,
+                               "label": label, "elo": elo, "scan": scan, "state": "running",
+                               "seconds": 0.0, "stop": False, "long_ok": False, "error": None,
+                               "go": threading.Event()}
+            threading.Thread(target=self._scan_run, args=(sc,), daemon=True).start()
+        return self.scan_status()
+
+    @staticmethod
+    def _halt(sc):
+        """Stop a scan's thread, paused or not."""
+        sc["stop"] = True
+        sc["go"].set()
+
+    def _scan_run(self, sc):
+        import time
+        scan, t0 = sc["scan"], time.monotonic()
+        try:
+            while not scan.finished and not sc["stop"]:
+                with self._lock:
+                    scan.step()
+                if sc["stop"]:
+                    break
+                sc["seconds"] = time.monotonic() - t0
+                rate = sc["seconds"] / max(1, scan.done)
+                if not sc["long_ok"] and rate * scan.total > SCAN_PAUSE_SECONDS \
+                        and not scan.finished:
+                    sc["state"] = "paused"
+                    sc["go"].wait()
+                    sc["go"].clear()
+                    if sc["stop"]:
+                        break
+                    sc["state"], t0 = "running", time.monotonic() - sc["seconds"]
+                time.sleep(0)                 # let a waiting panel take the lock
+            sc["state"] = "done" if scan.finished else "stopped"
+        except Exception as exc:
+            sc["state"], sc["error"] = "error", f"{type(exc).__name__}: {exc}"
+
+    def scan_status(self):
+        """Where the scan is: {state (none, running, paused, done, stopped,
+        error), pool, label, elo, done, total, seconds, eta}. Takes no lock."""
+        sc = self._scan
+        if sc is None:
+            return {"state": "none"}
+        scan = sc["scan"]
+        rate = sc["seconds"] / max(1, scan.done)
+        return {"state": sc["state"], "id": sc["id"], "pool": sc["pool"], "label": sc["label"],
+                "elo": sc["elo"],
+                "done": scan.done, "total": scan.total, "seconds": sc["seconds"],
+                "eta": rate * (scan.total - scan.done) if scan.done else None,
+                "error": sc["error"]}
+
+    def scan_continue(self):
+        """Let a paused scan run to the end."""
+        sc = self._scan
+        if sc is not None and sc["state"] == "paused":
+            sc["long_ok"] = True
+            sc["go"].set()
+        return self.scan_status()
+
+    def scan_stop(self):
+        """Stop the scan; what it scanned so far stays usable."""
+        sc = self._scan
+        if sc is not None and sc["state"] in ("running", "paused"):
+            self._halt(sc)
+        return self.scan_status()
+
+    def scan_report(self, k=10):
+        """Each layer's `k` strongest neurons over the positions scanned so far:
+        {n, total, label, elo, layers, grid: [[{neuron, mean}] per layer]}."""
+        sc = self._scan
+        if sc is None or not sc["scan"].done:
+            return {"error": "nothing scanned yet"}
+        with self._lock:
+            rep = sc["scan"].report(k=int(k), n_best=0)
+        grid = [[{"neuron": r["neuron"], "mean": r["mean"]} for r in rep.top(L)]
+                for L in rep.layers]
+        return {"n": len(rep.positions), "total": sc["scan"].total, "label": sc["label"],
+                "elo": sc["elo"], "layers": rep.layers, "grid": grid}
+
+    def neuron_positions(self, layer, neuron, k=8, lo=None, hi=None):
+        """One neuron over the scanned positions: its mean / sd / max peak and
+        rank in its layer, where it fires on average (64 values, the model's
+        frame), a histogram of its peaks, and `k` positions with the
+        activation on every square: its strongest, or, with `lo`/`hi`, `k`
+        spread evenly over those whose peak lies in [lo, hi] (a histogram bin)."""
+        sc = self._scan
+        if sc is None or not sc["scan"].done:
+            return {"error": "nothing scanned yet"}
+        import torch
+        scan = sc["scan"]
+        L, n = int(layer), int(neuron)
+        if L not in scan.layers or not 0 <= n < scan.peaks.size(2):
+            return {"error": f"no neuron L{L}·n{n}"}
+        j = scan.layers.index(L)
+        with self._lock:
+            peaks = scan.peaks[:scan.done, j, n].clone()
+            layer_means = scan.peaks[:scan.done, j].mean(0)
+            squares = (scan._square_sum[j, :, n] / scan.done).tolist()
+            ranked = peaks.argsort(descending=True).tolist()
+            in_bin = None
+            if lo is not None and hi is not None:
+                ranked = [i for i in ranked if float(lo) <= float(peaks[i]) <= float(hi)]
+                in_bin = len(ranked)
+                pick = sorted({round(x * (len(ranked) - 1) / max(1, int(k) - 1))
+                               for x in range(min(int(k), len(ranked)))})
+                order = [ranked[x] for x in pick]
+            else:
+                order = ranked[:int(k)]
+            boards = [scan.positions[i] for i in order]
+            tiles = self.engine.top_positions(L, n, boards, k=None, elo=sc["elo"] or 0) \
+                if boards else []
+        hist = torch.histc(peaks, bins=24, min=float(peaks.min()), max=float(peaks.max()))
+        out = []
+        for t in tiles:
+            i = order[t["index"]]
+            out.append({"index": i, "fen": t["fen"], "turn": side_name(t["board"].turn),
+                        "peak": t["peak"], "square": t["square"], "peak_canon": t["peak_canon"],
+                        "act": t["act"]})
+        return {"layer": L, "neuron": n, "n": scan.done, "label": sc["label"], "scan_id": sc["id"],
+                "bin": None if in_bin is None else {"lo": float(lo), "hi": float(hi), "count": in_bin},
+                "mean": float(peaks.mean()), "std": float(peaks.std(unbiased=False)),
+                "max": float(peaks.max()), "min": float(peaks.min()),
+                "rank": int((layer_means > layer_means[n]).sum()) + 1,
+                "squares": squares, "hist": hist.tolist(), "tiles": out}
+
+    def neuron_effects(self, layer, neuron, indices, scan_id=None):
+        """What the neuron does on scanned positions `indices`
+        (`eng.neuron_effects`): per position the top move with and
+        without it, whether it changes, and the moves it pushes up and down
+        (SAN, Δ probability)."""
+        sc = self._scan
+        if sc is None or (scan_id is not None and int(scan_id) != sc["id"]):
+            return {"error": "that scan is gone"}
+        boards = [sc["scan"].positions[int(i)] for i in indices]
+        try:
+            with self._lock:
+                eff = self.engine.neuron_effects(int(layer), int(neuron), boards,
+                                                 elo=sc["elo"] or 0)
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
+        def san(b, u):
+            return b.san(chess.Move.from_uci(u))
+        out = []
+        for i, b, e in zip(indices, boards, eff):
+            out.append({"index": int(i), "top": san(b, e["top"]), "p_top": e["p_top"],
+                        "top_ablated": san(b, e["top_ablated"]),
+                        "p_top_ablated": e["p_top_ablated"], "changed": e["changed"],
+                        "supports": [{"san": san(b, u), "dp": d} for u, d in e["supports"]],
+                        "opposes": [{"san": san(b, u), "dp": d} for u, d in e["opposes"]]})
+        return {"layer": int(layer), "neuron": int(neuron), "effects": out}
+
+    def open_position(self, index, scan_id=None):
+        """Show scanned position `index`, with its history, in every panel (in
+        analyze mode). `scan_id` (from `neuron_positions`) makes sure it is
+        that scan's position. `go_back` returns to the game."""
+        sc = self._scan
+        if sc is None or not 0 <= int(index) < sc["scan"].total \
+                or (scan_id is not None and int(scan_id) != sc["id"]):
+            return {**self._base(), "error": "that position belongs to an earlier scan"}
+        if self._game_return is None:
+            self._game_return = (self.board.copy(), list(self.san_history),
+                               self.human_both, self.human)
+        board = sc["scan"].positions[int(index)].copy()
+        self.board, self.san_history, self.human_both = board, self._sans(board), True
+        return {**self._base(), "browse_index": int(index)}
+
+    @staticmethod
+    def _sans(board):
+        """The SAN of every move in `board`'s history, from its root."""
+        replay, out = board.root(), []
+        for mv in board.move_stack:
+            out.append(replay.san(mv))
+            replay.push(mv)
+        return out
 
     def _san(self, uci):
         try:

@@ -25,7 +25,6 @@ import hashlib
 import json
 import os
 import random
-import threading
 from pathlib import Path
 
 import chess
@@ -322,12 +321,9 @@ def engine_batch(eng) -> dict:
 def _bridge(eng):
     from chessformer_lens import bridge
     Api = getattr(bridge, "LensApi", None) or getattr(bridge, "MaiaApi")
-    api = Api.__new__(Api)                  # skip __init__'s loader thread
-    api.engine, api.ready, api.error = eng, True, None
+    api = Api(engine=eng)                   # no loader thread: the engine is given
     api.alias = api.target_name = "golden"
-    api.board, api.human, api.human_both, api.san_history = chess.Board(), chess.WHITE, True, []
-    api._lock = threading.Lock()
-    api._loading = False
+    api.human_both = True
     return api
 
 

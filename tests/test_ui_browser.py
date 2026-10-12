@@ -85,7 +85,7 @@ def _free_port():
         return s.getsockname()[1]
 
 
-def run_page(tmp_path, alias, script):
+def run_page(tmp_path, alias, script, budget_ms=60000):
     """Load the app for `alias` ("-" = none) with `script` appended; returns
     (the script's DIAG dict, uncaught JS errors, the bridge methods called)."""
     port = _free_port()
@@ -107,7 +107,7 @@ def run_page(tmp_path, alias, script):
             chrome = subprocess.Popen(
                 [CHROME, "--headless=new", "--disable-gpu", "--no-first-run",
                  "--no-default-browser-check", f"--user-data-dir={tmp_path / 'profile'}",
-                 "--window-size=1560,900", "--hide-scrollbars", "--virtual-time-budget=60000",
+                 "--window-size=1560,900", "--hide-scrollbars", f"--virtual-time-budget={budget_ms}",
                  "--enable-logging=stderr", "--v=0", f"--screenshot={shot}",
                  f"http://127.0.0.1:{port}/"],
                 stdout=subprocess.DEVNULL, stderr=fh)
@@ -161,3 +161,52 @@ def test_picker_reports_bad_names_and_loads_the_choice(tmp_path):
     assert {"Leela Chess Zero", "Maia-3"} <= set(diag["families"])
     assert "Unknown model" in diag["err"]
     assert diag["picker"] == "none" and diag["model"].startswith("Toy")
+
+
+MANY = r"""
+(async () => {
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  const $ = id => document.getElementById(id);
+  for (let i = 0; i < 1200 && !booted; i++) await wait(100);
+  for (let i = 0; i < 300 && busy; i++) await wait(100);
+  const start = cur.fen;
+  $('mpwhere').click();
+  const tab = $('mpbody').style.display, empty = $('mptilegrid').textContent;
+  await mpScan();
+  for (let i = 0; i < 6000; i++) { const s = await API.scan_status(); if (s.state === 'done') break; await wait(20); }
+  await mpTick();
+  for (let i = 0; i < 200 && !mpData; i++) await wait(50);
+  const cardNeuron = mpData && mpData.layer === 0 && mpData.neuron === 0;   // the card's L0·n0
+  document.querySelectorAll('#mpgrid .agc.cell')[0].click();             // L0's strongest
+  for (let i = 0; i < 200 && !(mpData && mpData.neuron === mpReport.grid[0][0].neuron); i++) await wait(50);
+  const cells = document.querySelectorAll('#mpgrid .agc.cell').length,
+        strong = document.querySelectorAll('#mpgrid .strong').length,
+        picked = $('nidx').value == mpReport.grid[0][0].neuron && $('nlayer').value == 0,
+        tiles = document.querySelectorAll('.mptile').length, stat = $('mpstat').textContent,
+        pieces = document.querySelectorAll('.mptile img.pc').length;
+  const first = mpData.tiles[0];
+  await mpOpenTile(0);
+  for (let i = 0; i < 300 && busy; i++) await wait(100);
+  const opened = cur.fen, strip = $('mpstrip').offsetHeight, drawer = $('mlens').classList.contains('open');
+  await mpBack();
+  for (let i = 0; i < 300 && busy; i++) await wait(100);
+  console.log('DIAG ' + JSON.stringify({tab, empty, cardNeuron, picked, cells, strong, tiles, stat, pieces, first: first.fen,
+    opened, strip, drawer, back: cur.fen === start, stripAfter: $('mpstrip').offsetHeight,
+    layers: MODEL_INFO.num_blocks}));
+})();
+"""
+
+
+@pytest.mark.skipif(not _maia_cached(), reason="Maia-3 5M weights not cached")
+def test_many_positions_tab(tmp_path):
+    diag, errors, calls = run_page(tmp_path, "maia3-5m", MANY, budget_ms=240000)
+    assert not errors
+    assert diag["tab"] == "flex" and "scan a pool" in diag["empty"]
+    assert diag["cardNeuron"]                    # opened on the Neurons card's neuron
+    assert diag["cells"] == 10 * diag["layers"] and diag["strong"] == 1 and diag["picked"]
+    assert diag["tiles"] == 8 and diag["pieces"] > 8 * 10
+    assert "scanned 1,000 of 1,000 ordinary positions" in diag["stat"] and "elo 1500" in diag["stat"]
+    assert diag["opened"] == diag["first"] and diag["strip"] > 0 and not diag["drawer"]
+    assert diag["back"] and diag["stripAfter"] == 0
+    assert {"scan_start", "scan_status", "scan_report", "neuron_positions",
+            "open_position", "go_back"} <= set(calls)

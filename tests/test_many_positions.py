@@ -169,3 +169,61 @@ def test_plots(tmp_path):
     fig = ip.plot_top_positions(eng, 3, 7, results=found, k=2)
     assert len(fig.axes) == 2
     plt.close(fig)
+
+
+@pytest.mark.skipif(not _maia_cached(), reason="Maia-3 5M weights not cached")
+def test_the_apps_scan(tmp_path):
+    import time
+    from chessformer_lens.bridge import LensApi
+    from chessformer_lens.engine import MaiaEngine
+    api = LensApi(engine=MaiaEngine("maia3-5m", device="cpu", activation_dir=str(tmp_path)))
+    assert api.scan_status() == {"state": "none"} and "error" in api.scan_report()
+    api.analyze()                                                     # move both sides
+    for u in "e2e4 e7e5 g1f3 b8c6 f1b5".split():
+        assert "error" not in api.human_move(u)
+    st = api.scan_start("game", 1500)
+    for _ in range(300):
+        if api.scan_status()["state"] == "done":
+            break
+        time.sleep(.05)
+    st = api.scan_status()
+    assert st["state"] == "done" and st["total"] == 6 and st["elo"] == 1500
+    assert api.scan_start("game", 1500)["state"] == "done"            # the same scan, kept
+    rep = api.scan_report(4)
+    assert rep["n"] == 6 and len(rep["grid"]) == len(rep["layers"]) and len(rep["grid"][0]) == 4
+    L, n = rep["layers"][3], rep["grid"][3][0]["neuron"]
+    d = api.neuron_positions(L, n, 3)
+    assert d["rank"] == 1 and len(d["tiles"]) == 3 and len(d["squares"]) == 64
+    assert [t["peak"] for t in d["tiles"]] == sorted((t["peak"] for t in d["tiles"]), reverse=True)
+    t = d["tiles"][0]
+    game = api.board.copy()
+    opened = api.open_position(t["index"])
+    assert opened["fen"] == t["fen"] and opened["root_fullmove"] == 1 and opened["human_color"] == "both"
+    assert len(opened["san_history"]) == t["index"]                   # this game's history, to there
+    back = api.go_back()
+    assert back["fen"] == game.fen() and back["san_history"] == api._sans(game)
+    assert "error" in api.neuron_positions(L, 10 ** 6)
+    lo, hi = sorted(t["peak"] for t in d["tiles"])[0], d["max"]   # a range, as a histogram bin
+    binned = api.neuron_positions(L, n, 2, lo, hi)
+    assert binned["bin"]["count"] >= 2 and len(binned["tiles"]) == 2
+    assert all(lo - 1e-4 <= t["peak"] <= hi + 1e-4 for t in binned["tiles"])   # batch numerics
+    eff = api.neuron_effects(L, n, [t["index"] for t in d["tiles"]], d["scan_id"])
+    assert len(eff["effects"]) == 3 and {"top", "top_ablated", "changed"} <= set(eff["effects"][0])
+    assert "error" in api.neuron_effects(L, n, [0], d["scan_id"] + 1)
+
+
+@pytest.mark.skipif(not _maia_cached(), reason="Maia-3 5M weights not cached")
+def test_neuron_effects_are_the_engines_ablation(tmp_path):
+    from chessformer_lens.engine import MaiaEngine
+    eng = MaiaEngine("maia3-5m", device="cpu", activation_dir=str(tmp_path))
+    positions = [OPERA, BLACK] + ordinary_positions(3)
+    eff = eng.neuron_effects(4, 17, positions, k=100, batch_size=2)
+    assert len(eff) == len(positions)
+    for b, e in zip(load_positions(positions), eff):
+        clean = dict(eng.evaluate(b, 1500)["policy"])
+        ablated = dict(eng.ablate_neuron(b, 1500, 4, 17)["policy"])
+        for uci, dp in e["supports"] + e["opposes"]:
+            assert dp == pytest.approx(clean[uci] - ablated[uci], abs=1e-5)
+        assert e["top"] == max(clean, key=clean.get)
+        assert e["changed"] == (e["top"] != max(ablated, key=ablated.get))
+        assert all(d > 0 for _, d in e["supports"]) and all(d < 0 for _, d in e["opposes"])

@@ -491,27 +491,26 @@ def _neuron_grid(ax, rep, k, sel):
     rows = [rep.top(L, k) for L in rep.layers]
     k = max(len(r) for r in rows)
     m = max(r["mean"] for row in rows for r in row) or 1e-9
+    viridis = plt.get_cmap("viridis")
     ax.set_xlim(0, k)
     ax.set_ylim(nb, 0)
     ax.set_aspect("equal")
     ax.axis("off")
     for i, row in enumerate(rows):
         for c, r in enumerate(row):
-            face = _divmap(r["mean"] / m)
-            ax.add_patch(plt.Rectangle((c, i), 1, 1, ec=BG, lw=.6, fc=face))
+            face = viridis(r["mean"] / m)
+            ax.add_patch(plt.Circle((c + .5, i + .5), .46, ec=BG, lw=.6, fc=face))   # neurons: circles
             light = .2126 * face[0] + .7152 * face[1] + .0722 * face[2] > .45
             ax.text(c + .5, i + .5, str(r["neuron"]), ha="center", va="center",
                     fontsize=_fs(5.2), color=INK if light else TEXT, family=MONO, alpha=.8)
             if (r["layer"], r["neuron"]) == sel:
-                ax.add_patch(plt.Rectangle((c, i), 1, 1, fc="none", ec=QRING, lw=2, zorder=3))
+                ax.add_patch(plt.Circle((c + .5, i + .5), .46, fc="none", ec=QRING, lw=2, zorder=3))
     for c in range(k):
         ax.text(c + .5, -.15, f"#{c + 1}", ha="center", va="bottom", fontsize=_fs(7),
                 color=MUTED, family=MONO)
     for i, L in enumerate(rep.layers):
         ax.text(-.15, i + .5, f"L{L}", ha="right", va="center", fontsize=_fs(7),
                 color=MUTED, family=MONO)
-    ax.text(0, -.85, f"top neurons · mean peak over {len(rep.positions):,} positions",
-            fontsize=_fs(8.5), color=MUTED, family=MONO, fontweight="600")
 
 
 def plot_top_neurons(eng, positions=None, *, report=None, k: int = 10, layer=None,
@@ -543,7 +542,7 @@ def plot_top_neurons(eng, positions=None, *, report=None, k: int = 10, layer=Non
     ax_g.text(0, len(report.layers) + .55,
               f"strongest {'shown' if row is max(report.rows, key=lambda r: r['mean']) else 'ringed'}: "
               f"L{layer}·n{neuron}, mean {row['mean']:.1f} · sd {row['std']:.1f} · max {row['max']:.1f}\n"
-              f"orange = mean peak activation, raw (no baseline)\n"
+              f"brighter = higher mean peak activation, raw (no baseline)\n"
               f"a neuron on everywhere can top its layer: check report.peaks_of",
               fontsize=_fs(6.8), color=MUTED, family=MONO, va="top", linespacing=1.7)
     sq = np.array(row["squares"])
@@ -565,9 +564,8 @@ def plot_top_positions(eng, layer: int, neuron: int, positions=None, *, results=
                        figsize=None, width=None, titles=True):
     """The `k` positions that make one MLP neuron fire most
     (`eng.top_positions`; the bundled ordinary positions by default), each
-    drawn as `plot_position` draws a board, with the neuron's activation
-    painted on its squares (blue negative, orange positive, one scale for all
-    boards) and its peak square ringed. Pass `results` (from
+    drawn as `plot_position` draws a board, titled with the side to move,
+    the neuron's peak activation and the square it peaks on. Pass `results` (from
     `eng.top_positions`) to draw them without searching again."""
     top = results if results is not None else eng.top_positions(
         layer, neuron, positions, k=k, elo=elo, oppo_elo=oppo_elo)
@@ -578,19 +576,17 @@ def plot_top_positions(eng, layer: int, neuron: int, positions=None, *, results=
     nrow = -(-len(top) // ncol)
     fig = _fig(figsize or (2.75 * ncol, 3.0 * nrow + .85), width, titles)
     head = 1 - _inch_y(fig, .85)
-    m = max(max(abs(a) for a in t["act"]) for t in top) or 1e-9
     for i, t in enumerate(top):
         ax = fig.add_axes([(i % ncol) / ncol + .012, 1 - head - (i // ncol + 1) * (1 - head) / nrow,
                            1 / ncol - .024, (1 - head) / nrow * .86])
         b = t["board"]
-        draw_board(ax, b, heat=np.array(t["act"]) / m, cmap=_divmap, query=t["peak_canon"])
+        draw_board(ax, b)
         ax.set_title(f"{'White' if b.turn else 'Black'} to move · {t['peak']:.1f} on {t['square']}",
                      fontsize=_fs(8.5), color=MUTED, pad=5, family=MONO)
     where = "ordinary positions" if positions is None and results is None else "positions"
     _header(fig, "Top positions", f"L{int(layer)}·n{int(neuron)}",
             _rating_tag(eng, elo, oppo_elo),
-            f"the {len(top)} {where} where it fires most · its peak square ringed · "
-            f"one color scale")
+            f"the {len(top)} {where} where it fires most")
     return fig
 
 
