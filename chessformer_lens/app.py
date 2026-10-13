@@ -1,5 +1,5 @@
 """
-App Guide: see app_guide.md
+App Guide: see app_guide.md (also the Guide button in the app)
 
 From repo run: python -m chessformer_lens.app
 In a browser instead of a window: chessformer_lens --web (see web.py)

@@ -25,6 +25,8 @@ carries a per-server token in a custom header (so a cross-site request would
 need a CORS preflight, which this server never grants), and on 127.0.0.1 a
 request must name the loopback host (no DNS rebinding).
 """
+import contextlib
+import io
 import json
 import secrets
 import sys
@@ -173,8 +175,11 @@ def serve(alias=None, *, engine=None, host="127.0.0.1", port=0, open_browser=Tru
     print(f"chessformer_lens: the app is at {server.url}", flush=True)
     if _colab():
         from google.colab import output
-        output.serve_kernel_port_as_window(server.server_port, path="/",
-                                           anchor_text="Open the chessformer_lens app")
+        # silence Colab's printed "may stop working… try serve_kernel_port_as_iframe";
+        # the iframe would squeeze the app into a cell. The link is a display, not stdout.
+        with contextlib.redirect_stdout(io.StringIO()):
+            output.serve_kernel_port_as_window(server.server_port, path="/",
+                                               anchor_text="Open the chessformer_lens app")
     elif open_browser:
         webbrowser.open(server.url)
     if not block:

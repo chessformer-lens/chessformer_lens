@@ -336,9 +336,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .nrow.nofp{grid-template-columns:66px 1fr 1fr}
 
   /* model picker: nothing loads until a model is chosen */
-  #picker{position:fixed;inset:0;background:rgba(10,12,16,.86);display:none;
+  #picker,#guide{position:fixed;inset:0;background:rgba(10,12,16,.86);display:none;
     align-items:center;justify-content:center;z-index:60}
-  #picker .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  #picker .box,#guide .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;
     padding:20px 22px;width:min(560px,92vw);max-height:86vh;overflow:auto}
   #picker h2{margin:0 0 4px;font-size:15px}
   .pkfam{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;
@@ -351,6 +351,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .pkmodel:disabled{opacity:.45;cursor:not-allowed}
   .pkrow{display:flex;gap:6px;margin-top:14px}
   .pkerr{color:var(--loss);font-size:11px;margin-top:8px;white-space:pre-wrap;font-family:var(--mono)}
+
+  /* the app guide (app_guide.md, rendered at import): same overlay as the picker */
+  #guide .box{width:min(720px,92vw);font-size:12.5px;line-height:1.55}
+  #guide h3{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;
+    letter-spacing:.6px;margin:18px 0 6px}
+  #guide p{margin:0 0 8px} #guide ul{margin:0 0 8px;padding-left:20px}
+  #guide code{font-family:var(--mono);font-size:11px;background:var(--chart-bg);
+    border:1px solid var(--line);border-radius:4px;padding:0 4px}
+  #guideclose{float:right;padding:3px 8px;font-size:11px}
 </style>
 </head>
 <body>
@@ -359,6 +368,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="titlerow">
       <h1>Chessformer interpretability app</h1>
       <div class="sub" id="modelinfo">loading model…</div>
+      <button id="guidebtn" style="margin-left:auto;padding:3px 8px;font-size:11px" title="how to use the app">Guide</button>
     </div>
     <div id="boardwrap">
       <div id="board"></div>
@@ -535,6 +545,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div id="pickerlist"></div>
   <div class="pkrow"><input id="pickerin" class="fenbox" spellcheck="false" placeholder="or type an alias, an lc0 .pb.gz path, a Hugging Face repo id"><button id="pickerload">Load</button></div>
   <div class="pkerr" id="pickererr"></div>
+</div></div>
+<div id="guide"><div class="box">
+  <button id="guideclose" title="close (Escape)">✕</button>
+  <h2>App guide</h2>
+  __GUIDE_HTML__
 </div></div>
 <div id="promo"><div class="box"><div>Promote to</div><div class="glyphs" id="promoglyphs"></div></div></div>
 
@@ -1824,8 +1839,13 @@ function closeMoveLens(){ mlMoves=[]; mlPrimary=null; mlDataB=null;
   setDrawerOpen(false); markLensedRows(); }
 $('mlclose').onclick=closeMoveLens;
 document.addEventListener('keydown', e=>{
-  if(e.key==='Escape' && $('mlens').classList.contains('open')) closeMoveLens();
+  if(e.key!=='Escape') return;
+  if($('guide').style.display==='flex') $('guide').style.display='none';
+  else if($('mlens').classList.contains('open')) closeMoveLens();
 });
+$('guidebtn').onclick=()=>{ $('guide').style.display='flex'; };
+$('guideclose').onclick=()=>{ $('guide').style.display='none'; };
+$('guide').onclick=e=>{ if(e.target.id==='guide') $('guide').style.display='none'; };
 
 async function updateMoveLens(){
   if(!API || !mlMoves.length || !cur) return;
@@ -2165,3 +2185,50 @@ def _uri(fragment):
 
 PIECE_URI = {sym: _uri(frag) for sym, frag in _svg.PIECES.items()}
 INDEX_HTML = INDEX_HTML.replace("__PIECE_URI__", _json.dumps(PIECE_URI))
+
+
+# Inject the app guide: app_guide.md as HTML. Just the markdown the guide uses —
+# a bold line is a section heading, "-" lines are a list; screenshots (and their
+# captions) are left out, since the app itself is on screen.
+import html as _html
+import re as _re
+from pathlib import Path as _Path
+
+
+def _inline(t):
+    t = _html.escape(t, quote=False)
+    t = _re.sub(r"`([^`]+)`", r"<code>\1</code>", t)
+    t = _re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", t)
+    return _re.sub(r"(?<![\w*])\*([^*]+)\*(?![\w*])", r"<i>\1</i>", t)
+
+
+def _guide_html(md):
+    out, para, items, skip = [], [], [], False
+
+    def flush():
+        if para:
+            out.append(f"<p>{_inline(' '.join(para))}</p>"); para.clear()
+        if items:
+            out.append("<ul>" + "".join(f"<li>{_inline(i)}</li>" for i in items) + "</ul>"); items.clear()
+
+    for ln in md.splitlines():
+        ln = ln.strip()
+        if skip and ln.startswith("*") and not ln.startswith("**"):
+            skip = False; continue          # a screenshot's caption
+        skip = ln.startswith("![")
+        if not ln or ln.startswith(("#", "![")):
+            flush()
+        elif _re.fullmatch(r"\*\*[^*]+\*\*", ln):
+            flush(); out.append(f"<h3>{_html.escape(ln[2:-2])}</h3>")
+        elif ln.startswith("-"):
+            if para: flush()
+            items.append(ln[1:].strip())
+        else:
+            if items: flush()
+            para.append(ln)
+    flush()
+    return "\n".join(out)
+
+
+INDEX_HTML = INDEX_HTML.replace(
+    "__GUIDE_HTML__", _guide_html((_Path(__file__).parent / "app_guide.md").read_text(encoding="utf-8")))

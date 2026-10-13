@@ -1,12 +1,13 @@
 # chessformer_lens
 
-#### A toolkit and app for mechanistic interpretability of transformer based chess models.
-
-`pip install chessformer_lens`
-
-**Try the app in your browser, no install needed:** <a href="https://colab.research.google.com/github/chessformer-lens/chessformer_lens/blob/main/notebooks/app_quickstart.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
+#### A Library for Mechanistic Interpretability of Transfomer Based Chess Models. 
+Created by [David Litman](https://davidlitman.com).
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21877655.svg)](https://doi.org/10.5281/zenodo.21877655)
+
+#### **Try the app in your browser, no install needed $\longrightarrow$** <a href="https://colab.research.google.com/github/chessformer-lens/chessformer_lens/blob/main/notebooks/app_quickstart.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" width="140"></a>
+
+
 
 ![The app](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/MainShot.png)
 
@@ -108,7 +109,7 @@ iw.attention_widget(eng, board, 1500,layer=4,head=3)
 
 
 
-To me, the app is the pièce de résistance and usage should be rather intuitive, nonetheless, a detailed guide can be found in [`app_guide.md`](https://github.com/chessformer-lens/chessformer_lens/blob/main/app_guide.md).
+To me, the app is the pièce de résistance and usage should be rather intuitive, nonetheless, a detailed guide can be found in [`chessformer_lens/app_guide.md`](https://github.com/chessformer-lens/chessformer_lens/blob/main/chessformer_lens/app_guide.md).
 
 
 Play a transformer-based chess bot ("chessformer") and watch
@@ -166,7 +167,7 @@ BT4 comes from the Leela Chess Zero project (lczero.org); the smolgen / attentio
 Both Maia-3 and Leela BT4 are supported. Both treat each square as a token—which allows for beautiful board readable attention patterns. The core now works through model adapters, so other models can plug in; for models whose tokens aren't squares, the board views show a "not available yet" notice for now.
 
 
-Please don't hesitate to give me feedback or thoughts by email or at [my personal website](https://davidlitman.com). I hope for this to be a useful and intuitive tool for the community.
+Please don't hesitate to give me feedback or thoughts by email found at [my personal website](https://davidlitman.com). I hope for this to be a useful and intuitive tool for the community.
 
 ---
 ### Citing

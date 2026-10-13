@@ -83,4 +83,4 @@ markers = [
 ]
 
 [tool.setuptools.package-data]
-chessformer_lens = ["ordinary_positions.txt"]
+chessformer_lens = ["ordinary_positions.txt", "app_guide.md"]
