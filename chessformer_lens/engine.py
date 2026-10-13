@@ -1099,16 +1099,16 @@ class ChessformerEngine:
 
     @torch.no_grad()
     def neuron_overview(self, board, self_elo=None, oppo_elo=None, k=12):
-        """Every layer's `k` most active MLP units on this position, by the
-        norm of their activation over the tokens: {n_layers, n_neurons,
-        layers: [[{neuron, norm}, …] per layer, strongest first]}. One forward
-        pass; the app's network diagram is drawn from this."""
+        """Every layer's `k` most active MLP units on this position, by their
+        peak activation over the tokens (the score `top_neurons` uses):
+        {n_layers, n_neurons, layers: [[{neuron, peak}, …] per layer, strongest
+        first]}. One forward pass; the app's network diagram is drawn from this."""
         hidden = self._mlp_hidden(board, self_elo, oppo_elo)
         layers = []
         for L in sorted(hidden):
-            norms = hidden[L].float().norm(dim=0)                  # (ff,)
-            top = norms.topk(min(int(k), norms.numel()))
-            layers.append([{"neuron": int(n), "norm": float(v)}
+            peaks = hidden[L].float().amax(dim=0)                  # (ff,)
+            top = peaks.topk(min(int(k), peaks.numel()))
+            layers.append([{"neuron": int(n), "peak": float(v)}
                            for v, n in zip(top.values.tolist(), top.indices.tolist())])
         return {"n_layers": len(layers), "n_neurons": int(hidden[0].size(1)), "layers": layers}
 

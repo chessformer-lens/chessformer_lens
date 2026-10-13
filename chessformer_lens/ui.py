@@ -365,8 +365,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
-  </div>
-
   <div class="right">
     <div class="card">
       <div class="elorow">
@@ -2090,7 +2088,7 @@ function renderNet(){
   // one column per MLP layer, top = unit 0, bottom = unit N-1
   for(let L=0;L<nb;L++){
     const sel=(L===nLayer), units=(neurOv&&neurOv.layers[L])||[];
-    let m=1e-9; for(const u of units) if(u.norm>m) m=u.norm;
+    let m=1e-9; for(const u of units) if(u.peak>m) m=u.peak;
     h+=`<g class="lcol" data-l="${L}">`;
     h+=`<rect class="colhit" x="${colX(L)-5}" y="${top-8}" width="10" height="${bot-top+16}" rx="3" fill="${sel?'rgba(110,168,254,.16)':'rgba(0,0,0,0.001)'}"/>`;
     for(let j=0;j<rows;j++) h+=`<circle cx="${colX(L)}" cy="${rowY(j)}" r="2" fill="#262c37"/>`;
@@ -2099,14 +2097,14 @@ function renderNet(){
       if(sel && u.neuron===nIdx) continue;                 // drawn last, on top
       const car=carriers[L+':'+u.neuron];
       h+=`<circle class="unit" data-l="${L}" data-n="${u.neuron}" cx="${colX(L)}" cy="${yOf(u.neuron)}" r="${sel?3:2.2}" `+
-         `fill="${sel?viridis(0.35+0.65*u.norm/m):'#3a4252'}"`+(car?` stroke="${car.est<0?'#6fb3ff':'#f0a35e'}" stroke-width="1.2"`:'')+`>`+
-         `<title>L${L} · n${u.neuron} · ‖act‖ ${u.norm.toFixed(1)}${car?' · carrier Δ '+(car.est>=0?'+':'')+car.est.toFixed(2):''}</title></circle>`;
+         `fill="${sel?viridis(0.35+0.65*u.peak/m):'#3a4252'}"`+(car?` stroke="${car.est<0?'#6fb3ff':'#f0a35e'}" stroke-width="1.2"`:'')+`>`+
+         `<title>L${L} · n${u.neuron} · peak ${u.peak.toFixed(1)}${car?' · carrier Δ '+(car.est>=0?'+':'')+car.est.toFixed(2):''}</title></circle>`;
     }
     if(sel){                                               // the lit unit, at index/total
       const u=units.find(x=>x.neuron===nIdx), car=carriers[L+':'+nIdx];
       h+=`<circle class="unit" data-l="${L}" data-n="${nIdx}" cx="${colX(L)}" cy="${yOf(nIdx)}" r="4.2" `+
-         `fill="${u?viridis(0.35+0.65*u.norm/m):'#8b93a3'}" stroke="${car?(car.est<0?'#6fb3ff':'#f0a35e'):'#ff5d6c'}" stroke-width="1.6">`+
-         `<title>L${L} · n${nIdx}${u?' · ‖act‖ '+u.norm.toFixed(1):''}${car?' · carrier Δ '+(car.est>=0?'+':'')+car.est.toFixed(2):''}</title></circle>`;
+         `fill="${u?viridis(0.35+0.65*u.peak/m):'#8b93a3'}" stroke="${car?(car.est<0?'#6fb3ff':'#f0a35e'):'#ff5d6c'}" stroke-width="1.6">`+
+         `<title>L${L} · n${nIdx}${u?' · peak '+u.peak.toFixed(1):''}${car?' · carrier Δ '+(car.est>=0?'+':'')+car.est.toFixed(2):''}</title></circle>`;
     }
     h+=`<text x="${colX(L)}" y="${H-8}" fill="${sel?'#6ea8fe':'#8b93a3'}" font-size="6.5" text-anchor="middle" font-family="monospace">${(nb<=8||L%2===0||sel)?'L'+L:''}</text>`;
     h+=`</g>`;

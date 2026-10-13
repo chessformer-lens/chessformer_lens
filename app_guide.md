@@ -35,7 +35,7 @@ Select a square on the right to set the query for the three boards, labeled:
 `Ablate this head` redraws the policy list with the ablated pass in red over the clean pass in blue, re-sorted by
 signed `Δ = p(ablated) − p(clean)` — the moves the head was suppressing rise to the top, the ones it was holding up sink.
 
-The `Neurons` panel to the right does the same for one MLP neuron. A network diagram shows one column of dots per MLP layer. Click a column to pick the layer, a dot to pick the neuron. The dots in the selected layer are its most active units on this position. Below, the neuron's activation on every square, and `Ablate this neuron` removes its exact write on every square.
+The `Neurons` panel to the right does the same for one MLP neuron. A network diagram shows one column of dots per MLP layer. Click a column to pick the layer, a dot to pick the neuron. The dots in the selected layer are its most active units on this position (by peak activation over the squares, the same score the many-positions tab ranks by). Below, the neuron's activation on every square, and `Ablate this neuron` removes its exact write on every square.
 
 For models whose tokens aren't board squares, the attention boards and the neuron's activation board are replaced by a "not available yet" notice; the chips and both ablation toggles still work.
 
