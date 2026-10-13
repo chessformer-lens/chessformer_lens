@@ -156,6 +156,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .pvrow{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
   .pvrow .chip{font-family:var(--mono)}
   #ablbtn{padding:4px 10px;font-size:11px}
+  /* strength sliders: shown while a toggle is on; 0 = removed, 1 = clean, 2 = doubled, -1 = flipped */
+  .ablscale,.ablx{display:none} .ablrow.on .ablscale,.ablrow.on .ablx{display:inline-block}
+  .ablscale{width:84px;vertical-align:middle;margin:0 2px 0 6px;accent-color:var(--abl)}
+  .ablx{font-family:var(--mono);font-size:10px;color:var(--muted);min-width:30px}
   #ablbtn:hover{border-color:var(--abl)}
   #ablbtn.on{background:var(--abl);color:#1a0c0e;border-color:var(--abl);font-weight:700}
   .ablnote{font-size:9px;color:var(--muted);font-family:var(--mono)}
@@ -254,16 +258,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
     font-size:8px;font-family:var(--mono);color:var(--muted)}
   .mlnote{font-size:9px;color:var(--muted);font-family:var(--mono);margin:2px 0 4px;line-height:1.5}
   /* "Analyze many positions": the drawer's second tab, over a pool of positions */
-  .mltab{cursor:pointer}
-  .mltab.off{color:var(--muted)}
+  .mltab{cursor:pointer;padding:3px 12px;border-radius:9px;border:1px solid transparent}
+  .mltab.off{color:var(--muted);border-color:var(--line);background:var(--chart-bg);font-weight:600;font-size:15px}
   .mltab.off b{color:inherit}
-  .mltab.off:hover{color:var(--text)}
+  .mltab.off:hover{color:var(--text);border-color:var(--accent)}
+  .mltab.off::after{content:' ▸';color:var(--accent)}
   #mpctl{display:none;align-items:center;gap:8px;flex:1;min-width:0}
   #mpctl button,#mpctl select{padding:3px 10px;font-size:11px}
   .mpbar{display:inline-block;width:120px;height:7px;border-radius:5px;background:var(--chart-bg);
     border:1px solid var(--line);vertical-align:middle;overflow:hidden;margin-right:6px}
   .mpbar>i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2))}
-  #mpbody{display:none}
+  #mpbody{display:none;gap:34px;padding:4px 12px 0}
+  .mpsoon{flex:0 0 190px;display:flex;align-items:center;justify-content:center;text-align:center;
+    border:1px dashed var(--line);border-radius:10px;color:var(--muted);font-family:var(--mono);font-size:11px;line-height:1.7;padding:12px}
   .mpunit{flex:0 0 auto;display:flex;flex-direction:column;min-height:0}
   .mpunit .attboard{margin:0}
   .mptiles{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}
@@ -426,7 +433,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div class="attctrls">
         <div class="chiprow"><span class="lbl">Layer</span><div class="chips" id="layerChips"></div></div>
         <div class="chiprow"><span class="lbl">Head</span><div class="chips" id="headChips"></div></div>
-        <div class="ablrow"><button id="ablbtn">Ablate this head</button><span class="ablnote" id="ablnote">removes its exact residual write — red bars on the policy chart</span></div>
+        <div class="ablrow" id="ablrow"><button id="ablbtn">Ablate / steer this head</button><input type="range" class="ablscale" id="ablscale" min="-2" max="3" step="0.25" value="0" title="strength of the head's write: 0 removes it, 1 is the clean model, 2 doubles it, −1 flips it"><span class="ablx" id="ablx">×0</span><span class="ablnote" id="ablnote">removes its exact residual write — red bars on the policy chart</span></div>
       </div>
       <div class="attcap" id="attcap">Click a square to set the query.</div>
       <div class="tokmsg" id="attmsg">Attention view not available yet for this model: its tokens
@@ -457,7 +464,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
           <div class="nctl"><button id="lprev" title="previous layer">◀</button><input id="nlayer" type="number" min="0" value="0"><button id="lnext" title="next layer">▶</button></div></div>
         <div class="chiprow"><span class="lbl">Unit</span>
           <div class="nctl"><button id="nprev" title="previous unit">◀</button><input id="nidx" type="number" min="0" value="0"><button id="nnext" title="next unit">▶</button></div></div>
-        <div class="ablrow"><button id="nablbtn">Ablate this neuron</button></div>
+        <div class="ablrow" id="nablrow"><button id="nablbtn">Ablate / steer this neuron</button><input type="range" class="ablscale" id="nablscale" min="-2" max="3" step="0.25" value="0" title="strength of the neuron's write: 0 removes it, 1 is the clean model, 2 doubles it, −1 flips it"><span class="ablx" id="nablx">×0</span></div>
         <div class="ablnote" id="nablnote">removes its exact write on every square — red bars on the policy chart</div>
         <div class="ablrow"><button id="mpwhere">Where else does it fire? ▸</button></div>
       </div>
@@ -500,6 +507,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div class="attlabel" id="mptileslabel">its strongest positions · click one to see it in every panel</div>
       <div id="mptilegrid"></div>
     </div>
+    <div class="mpsoon">Sparse autoencoder<br>features<br><br>coming soon…</div>
   </div>
   <div class="mlbody" id="mlbody">
     <div class="mlchart">
@@ -973,7 +981,7 @@ function renderPolicy(pol, wdl, actfile, playedUci, mlh, value){
   const sr=abl ? null : searchRows();   // {uci: search row} for a searched position
   $('wdl').classList.toggle('cmp', !!abl);
   $('poltitle').textContent = abl
-    ? `Policy · clean (blue) vs ${ablData.label} ablated (red)`
+    ? `Policy · clean (blue) vs ${ablData.label} ${ablData.word||'ablated'} (red)`
     : sr ? 'Raw policy (blue) · search visits (green)'
     : (pol ? `Policy over ${pol.length} legal moves` : 'Policy over legal moves');
   if(pol && pol.length){
@@ -1503,9 +1511,10 @@ async function updateAttention(){
    policy chart in red, exactly the way the second rating is drawn in green.
    The result is cached against fen|elo|layer|head and refetched whenever any of
    those change (board move, elo slider, another head picked). ---- */
-let ablOn=false, ablData=null, ablKey=null, ablBusy=false, ablDirty=false;
+let ablOn=false, ablData=null, ablKey=null, ablBusy=false, ablDirty=false, ablScale=0, nablScale=0;
+const xs=s=>'×'+(+s).toFixed(2).replace(/\.?0+$/,'');   // ×0, ×0.5, ×2
 const ABLNOTE='removes its exact residual write — red bars on the policy chart';
-function ablKeyNow(){ return cur ? `${cur.fen}|${elo}|${attLayer}|${attHead}` : null; }
+function ablKeyNow(){ return cur ? `${cur.fen}|${elo}|${attLayer}|${attHead}|${ablScale}` : null; }
 // the overlay the policy chart should draw right now, or null (off / stale / failed).
 // One overlay at a time: the head toggle or the neuron toggle, whichever is on.
 function ablPolicy(){
@@ -1521,23 +1530,23 @@ function repaintPolicy(){
 }
 async function updateAblation(){
   const btn=$('ablbtn'); if(!btn) return;
-  btn.classList.toggle('on', ablOn);
-  btn.textContent = ablOn ? '✓ Ablating this head' : 'Ablate this head';
+  btn.classList.toggle('on', ablOn); $('ablrow').classList.toggle('on', ablOn);
+  btn.textContent = ablOn ? (ablScale===0 ? '✓ Ablating this head' : '✓ Steering this head') : 'Ablate / steer this head';
   if(!ablOn){ ablData=null; ablKey=null; ablNote(ABLNOTE); repaintPolicy(); return; }
   if(!API || !cur || cur.game_over) return;
   const key=ablKeyNow();
   if(ablData && ablKey===key) return;            // cached for this board/elo/head
   if(ablBusy){ ablDirty=true; return; }          // a stale request is in flight
-  ablBusy=true; ablNote(`ablating L${attLayer}·h${attHead}…`);
+  ablBusy=true; ablNote(`${ablScale===0?'ablating':'steering'} L${attLayer}·h${attHead}…`);
   try{
-    const d=await API.ablate(elo, attLayer, attHead);
+    const d=await API.ablate(elo, attLayer, attHead, ablScale);
     if(!d || d.error){
       ablData=null; ablKey=null;
       ablNote('⚠ '+(d && d.error ? d.error : 'ablation failed'), true);
     } else {
       const p={}; for(const r of d.rows) p[r.uci]=r.p_abl;
-      ablData={label:`L${d.layer}·h${d.head}`, p:p, wdl_abl:d.wdl_abl, value_abl:d.value_abl}; ablKey=key;
-      ablNote(`L${d.layer}·h${d.head} write removed · red = ablated`);
+      ablData={label:`L${d.layer}·h${d.head}`, word:d.scale?xs(d.scale):'ablated', p:p, wdl_abl:d.wdl_abl, value_abl:d.value_abl}; ablKey=key;
+      ablNote(d.scale ? `L${d.layer}·h${d.head} write ${xs(d.scale)} · red = steered` : `L${d.layer}·h${d.head} write removed · red = ablated`);
     }
     repaintPolicy();
   }catch(e){
@@ -1549,6 +1558,8 @@ async function updateAblation(){
   }
 }
 $('ablbtn').onclick=()=>{ ablOn=!ablOn; if(ablOn && nablOn){ nablOn=false; updateNeuronAblation(); } updateAblation(); };
+$('ablscale').oninput=()=>{ $('ablx').textContent=xs($('ablscale').value); };
+$('ablscale').onchange=()=>{ ablScale=+$('ablscale').value; updateAblation(); };
 
 /* ---- neuron panel: one MLP unit's activation per square + exact ablation ----
    Mirrors the head panel: pick a unit (inputs, ◀ ▶, or a click in the
@@ -1557,7 +1568,7 @@ $('ablbtn').onclick=()=>{ ablOn=!ablOn; if(ablOn && nablOn){ nablOn=false; updat
 let nLayer=0, nIdx=0, lastNeu=null, nablOn=false, nablBusy=false, nablDirty=false;
 let neurOv=null, neurOvKey=null;   // per-layer most-active units, cached per position
 function NABLNOTE(){ return `removes its exact write on every ${IS_BOARD?'square':'token'} — red bars on the policy chart`; }
-function neuronKeyNow(){ return cur ? `${cur.fen}|${elo}|n|${nLayer}|${nIdx}` : null; }
+function neuronKeyNow(){ return cur ? `${cur.fen}|${elo}|n|${nLayer}|${nIdx}|${nablScale}` : null; }
 function nablNote(msg, err){ const n=$('nablnote'); if(!n) return; n.textContent=msg; n.classList.toggle('err', !!err); }
 function clampNeuron(){
   const i=MODEL_INFO||{}; const nb=i.num_blocks||8, nn=i.mlp_dim||(lastNeu&&lastNeu.n_neurons)||512;
@@ -1591,21 +1602,21 @@ async function updateNeuron(){
 }
 async function updateNeuronAblation(){
   const btn=$('nablbtn'); if(!btn) return;
-  btn.classList.toggle('on', nablOn);
-  btn.textContent = nablOn ? '✓ Ablating this neuron' : 'Ablate this neuron';
+  btn.classList.toggle('on', nablOn); $('nablrow').classList.toggle('on', nablOn);
+  btn.textContent = nablOn ? (nablScale===0 ? '✓ Ablating this neuron' : '✓ Steering this neuron') : 'Ablate / steer this neuron';
   if(!nablOn){ if(!ablOn){ ablData=null; ablKey=null; } nablNote(NABLNOTE()); repaintPolicy(); return; }
   if(!API || !cur || cur.game_over) return;
   const key=neuronKeyNow();
   if(ablData && ablKey===key) return;
   if(nablBusy){ nablDirty=true; return; }
-  nablBusy=true; nablNote(`ablating L${nLayer}·n${nIdx}…`);
+  nablBusy=true; nablNote(`${nablScale===0?'ablating':'steering'} L${nLayer}·n${nIdx}…`);
   try{
-    const d=await API.ablate_neuron(elo, nLayer, nIdx);
+    const d=await API.ablate_neuron(elo, nLayer, nIdx, nablScale);
     if(!d || d.error){ ablData=null; ablKey=null; nablNote('⚠ '+(d && d.error ? d.error : 'ablation failed'), true); }
     else {
       const p={}; for(const r of d.rows) p[r.uci]=r.p_abl;
-      ablData={label:`L${d.layer}·n${d.neuron}`, p:p, wdl_abl:d.wdl_abl, value_abl:d.value_abl}; ablKey=key;
-      nablNote(`L${d.layer}·n${d.neuron} write removed · red = ablated`);
+      ablData={label:`L${d.layer}·n${d.neuron}`, word:d.scale?xs(d.scale):'ablated', p:p, wdl_abl:d.wdl_abl, value_abl:d.value_abl}; ablKey=key;
+      nablNote(d.scale ? `L${d.layer}·n${d.neuron} write ${xs(d.scale)} · red = steered` : `L${d.layer}·n${d.neuron} write removed · red = ablated`);
     }
     repaintPolicy();
   }catch(e){
@@ -1617,6 +1628,8 @@ async function updateNeuronAblation(){
   }
 }
 $('nablbtn').onclick=()=>{ nablOn=!nablOn; if(nablOn && ablOn){ ablOn=false; updateAblation(); } updateNeuronAblation(); };
+$('nablscale').oninput=()=>{ $('nablx').textContent=xs($('nablscale').value); };
+$('nablscale').onchange=()=>{ nablScale=+$('nablscale').value; updateNeuronAblation(); };
 $('nlayer').onchange=()=>{ nLayer=+$('nlayer').value; updateNeuron(); };
 $('nidx').onchange=()=>{ nIdx=+$('nidx').value; updateNeuron(); };
 $('nprev').onclick=()=>{ nIdx-=1; updateNeuron(); };
@@ -1721,7 +1734,7 @@ function renderCompare(d){
   const box=$('policy'); box.innerHTML='';
   const abl=ablPolicy();      // the ablated pass runs at rating A; drawn as a third bar
   $('poltitle').textContent=`Policy · ${d.elo_a} (blue) vs ${d.elo_b} (green)`+
-    (abl?` · ${ablData.label} ablated (red)`:'');
+    (abl?` · ${ablData.label} ${ablData.word||'ablated'} (red)`:'');
   const rows=d.rows||[];
   rows.forEach(r=>{
     const dlt=(r.p_b-r.p_a)*100, cls=dlt>=0?'up':'down';
