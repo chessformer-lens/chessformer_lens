@@ -82,7 +82,7 @@ eng = LeelaEngine("bt4")
 Recall that FEN is the modern notation for a chess position
 ```python
 !pip install -q https://github.com/CSSLab/maia3/archive/1e13597c42d4858b7cfd7cfdae01e297263364b2.zip
-!pip install -q "chessformer_lens>=2.0"
+!pip install -q "chessformer_lens>=3.0"
 
 import chess
 from chessformer_lens import MaiaEngine
