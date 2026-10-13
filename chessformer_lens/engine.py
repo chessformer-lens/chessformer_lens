@@ -2,14 +2,13 @@
 
 `ChessformerEngine` class contains every read and intervention path below and works on
 any model a `ModelAdapter` describes (see core.py): the adapter supplies the
-model, its input tokens, its move vocabulary and a view of its internals; the
-engine does the rest. Model-specific code lives in adapters/. Built-in families,
-by alias (`load_engine`):
+model and its idiosyncraties in adapters/. 
 
   MaiaEngine    a Maia-3 checkpoint (5M / 23M / 79M / 3M-ablation), conditioned
-                on a rating pair — `self_elo` / `oppo_elo` are real inputs
+                on a rating pair
   LeelaEngine   Leela Chess Zero BT4 (185M params, 15 layers x 32 heads x 1024d),
-                no rating input; `bt4` / `bt4-332` download on first use
+                no rating input; `bt4` / `bt4-332` download on first use, extremely
+                high performance chess engine, trained with self-play
 
 
   evaluate              one forward pass yielding the full normalized policy over
@@ -44,6 +43,8 @@ by alias (`load_engine`):
   
     
   ablate_head           forward pass with one head's write removed, exactly
+  steer_head            the same write multiplied by a factor (activation steering:
+                        2 doubles it, -1 flips it); steer_neuron for one MLP unit
   ablate_grid           the carrier heatmap of one move: every head ablated in
                         turn, Δlogit = ablated − clean (negative = the head
                         carried it)
@@ -704,6 +705,21 @@ class ChessformerEngine:
                                    fwd_hooks=[(f"attn_{int(layer):02d}", sub)],
                                    return_type=return_type)
 
+    def steer_head(self, board, self_elo, layer, head, scale, oppo_elo=None,
+                   return_type: str = "policy"):
+        """Forward pass with one attention head's write multiplied by `scale`
+        (activation steering): 1 is the clean model, 0 is `ablate_head`, 2
+        doubles the head's say, -1 flips it. The (1 - scale) share of the
+        head's exact write is subtracted from attn_NN, as in `ablate_head`."""
+        w = self.head_writes(board, self_elo, oppo_elo, layer)[int(head)] * (1.0 - float(scale))
+
+        def sub(act):
+            return act - w.to(act.device, act.dtype)
+
+        return self.run_with_hooks(board, self_elo, oppo_elo,
+                                   fwd_hooks=[(f"attn_{int(layer):02d}", sub)],
+                                   return_type=return_type)
+
     # ----- residual-stream evolution across depth ---------------------------
     @torch.no_grad()
     def residual_stream(self, board, self_elo=None, oppo_elo=None):
@@ -1120,6 +1136,21 @@ class ChessformerEngine:
         layers downstream react normally. Same argument order as `ablate_head`."""
         L = int(layer)
         w = self._neuron_write(L, neuron, self._mlp_hidden(board, self_elo, oppo_elo, layers=[L])[L])
+
+        def sub(act):
+            return act - w.to(act.device, act.dtype)
+
+        return self.run_with_hooks(board, self_elo, oppo_elo,
+                                   fwd_hooks=[(f"mlp_{L:02d}", sub)], return_type=return_type)
+
+    def steer_neuron(self, board, self_elo, layer, neuron, scale, oppo_elo=None,
+                     return_type: str = "policy"):
+        """Forward pass with one MLP unit's write multiplied by `scale` on every
+        token (activation steering): 1 is the clean model, 0 is
+        `ablate_neuron`, 2 doubles it, -1 flips it."""
+        L = int(layer)
+        w = self._neuron_write(L, neuron, self._mlp_hidden(board, self_elo, oppo_elo, layers=[L])[L]) \
+            * (1.0 - float(scale))
 
         def sub(act):
             return act - w.to(act.device, act.dtype)

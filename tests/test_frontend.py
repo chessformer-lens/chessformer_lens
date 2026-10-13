@@ -76,6 +76,9 @@ def test_bridge_payloads_are_model_neutral(toy):
         assert not [k for k in payload if k.startswith("maia")]
     assert not hasattr(api, "maia_move")
     ab = api.ablate(1500, 0, 1)
+    same = api.ablate(1500, 0, 1, scale=1.0)                  # scale 1 is the clean model
+    assert same["scale"] == 1.0 and all(abs(r["p_abl"] - r["p"]) < 1e-5 for r in same["rows"])
+    assert api.ablate_neuron(1500, 0, 3, scale=2.0)["scale"] == 2.0
     assert ab["value"]["wdl"] is None and ab["value_abl"]["wdl"] is None
     cp = api.compare_policy(1500, 900)
     assert cp["value_a"] and cp["value_b"]

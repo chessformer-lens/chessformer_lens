@@ -582,9 +582,10 @@ class LensApi:
         return {"rows": rows, "wdl": base["wdl"], "wdl_abl": abl["wdl"],
                 "value": base["value"].to_json(), "value_abl": abl["value"].to_json()}
 
-    def ablate_neuron(self, elo=1500, layer=0, neuron=0):
-        """Remove one MLP unit's exact write on every token (engine.ablate_neuron)
-        and report the policy + value against a clean pass — same shape as `ablate`."""
+    def ablate_neuron(self, elo=1500, layer=0, neuron=0, scale=0.0):
+        """Remove one MLP unit's exact write on every token (engine.ablate_neuron),
+        or scale it (engine.steer_neuron), and report the policy + value against a clean pass — same
+        shape as `ablate`."""
         if not self.ready:
             return {"error": self.error or "model still loading"}
         b = self.board
@@ -593,11 +594,11 @@ class LensApi:
         try:
             with self._lock:
                 base = self.engine.evaluate(b, self_elo=int(elo))
-                abl = self.engine.ablate_neuron(b, self_elo=int(elo),
-                                                layer=int(layer), neuron=int(neuron))
+                abl = (self.engine.ablate_neuron(b, self_elo=int(elo), layer=int(layer), neuron=int(neuron))
+                       if not scale else self.engine.steer_neuron(b, int(elo), int(layer), int(neuron), float(scale)))
         except Exception as exc:
             return {"error": f"{type(exc).__name__}: {exc}"}
-        return {"layer": int(layer), "neuron": int(neuron), **self._versus(base, abl)}
+        return {"layer": int(layer), "neuron": int(neuron), "scale": float(scale), **self._versus(base, abl)}
 
     def carrier_neurons(self, elo=1500, uci=None, top_k=12):
         """The carrier-neuron table of one move (engine.carrier_neurons): every
@@ -942,9 +943,10 @@ class LensApi:
         return {**out, "rows": rows, "wdl_a": ra["wdl"], "wdl_b": rb["wdl"],
                 "value_a": ra["value"].to_json(), "value_b": rb["value"].to_json()}
 
-    def ablate(self, elo=1500, layer=0, head=0):
-        """Remove one attention head's exact residual write (engine.ablate_head)
-        and report how the policy + value move vs a clean forward pass. Rows are
+    def ablate(self, elo=1500, layer=0, head=0, scale=0.0):
+        """Remove one attention head's exact residual write (engine.ablate_head),
+        or scale it by `scale` (engine.steer_head: 2 = doubled, -1 = flipped), and
+        report how the policy + value move vs a clean forward pass. Rows are
         sorted by |Δp| so the moves the head matters for come first."""
         if not self.ready:
             return {"error": self.error or "model still loading"}
@@ -954,8 +956,8 @@ class LensApi:
         try:
             with self._lock:
                 base = self.engine.evaluate(b, self_elo=int(elo))
-                abl = self.engine.ablate_head(b, self_elo=int(elo),
-                                              layer=int(layer), head=int(head))
+                abl = (self.engine.ablate_head(b, self_elo=int(elo), layer=int(layer), head=int(head))
+                       if not scale else self.engine.steer_head(b, int(elo), int(layer), int(head), float(scale)))
         except Exception as exc:  # e.g. the head-write reconstruction assert
             return {"error": f"{type(exc).__name__}: {exc}"}
-        return {"layer": int(layer), "head": int(head), **self._versus(base, abl)}
+        return {"layer": int(layer), "head": int(head), "scale": float(scale), **self._versus(base, abl)}
