@@ -10,15 +10,11 @@ The plan
     5. look        draw where one feature fires, on the positions it likes most
 
 Run a step at a time:
-    python SAE.py collect games.pgn   # -> sae_data/acts_L04.pt
-    python SAE.py train               # -> sae_data/sae_L04.pt
+    python SAE.py collect      # -> sae_data/acts_L04.pt
+    python SAE.py train        # -> sae_data/sae_L04.pt
     python SAE.py check
     python SAE.py grade
-    python SAE.py look 123            # -> sae_data/feature_0123.png
-    python SAE.py all games.pgn       # collect, train, check, grade
-
-`collect` needs a PGN of real games: pass its path, or set $CHESSFORMER_PGN.
-Lichess's monthly database dumps (database.lichess.org) work well.
+    python SAE.py look 123     # -> sae_data/feature_0123.png
 
 Facts (checked against this repo):
   - Maia-3 5M: 256-d residual stream, 8 layers ("block_00" … "block_07").
@@ -28,7 +24,6 @@ Facts (checked against this repo):
     positions mirrored vertically. `MaiaEngine._canon_square(square, board.turn)`
     maps a python-chess square to its row.
 """
-import os
 import sys
 from pathlib import Path
 
@@ -37,9 +32,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from chessformer_lens.engine import MaiaEngine, positions_from_pgn
+from chessformer_lens.engine import MaiaEngine
+from chessformer_lens import research
 
-PGN_ENV = "CHESSFORMER_PGN"       # where `collect` finds games if no path is given
+PGN = Path.home() / "Desktop/Code/maia_research/lichess_pgns.pgn"
 OUT = Path("sae_data")            # gitignore this: activations are big
 LAYER = 4                         # a middle layer to start; try others later
 SITE = f"block_{LAYER:02d}"       # residual stream after that layer
@@ -88,20 +84,14 @@ def _split(n_positions):
 # --------------------------------------------------------------------------------
 # 1. collect
 # --------------------------------------------------------------------------------
-def collect(pgn=None):
+def collect():
     """Residual-stream vectors for N_POSITIONS positions, saved as
     {acts: (N*64, 256) float16, games: [(root FEN, [uci])], site, elo}.
-    Row i*64 + c is square c (model frame) of position i. `pgn` is a path to
-    a PGN of real games, or None to read $CHESSFORMER_PGN."""
-    pgn = pgn or os.environ.get(PGN_ENV)
-    if not pgn or not Path(pgn).expanduser().exists():
-        sys.exit(f"collect needs a PGN of real games: python SAE.py collect games.pgn "
-                 f"(or set ${PGN_ENV}). Got: {pgn!r}")
-    OUT.mkdir(parents=True, exist_ok=True)
+    Row i*64 + c is square c (model frame) of position i."""
     eng = _engine()
     # one position per game, so read enough games: some are too short and skipped
-    boards = positions_from_pgn(Path(pgn).expanduser(), N_POSITIONS, seed=SEED,
-                                max_games=3 * N_POSITIONS)
+    boards = research.positions_from_pgn(PGN, N_POSITIONS, seed=SEED,
+                                         max_games=3 * N_POSITIONS)
     n = len(boards)
     acts = torch.empty(n, 64, D_MODEL, dtype=torch.float16)
     for i, board in enumerate(boards):
@@ -248,7 +238,7 @@ def check(n_splice=200):
 
     def run(board, replace):
         def hook(act):                                     # act: (1, 64, 256), live device
-            return replace(act.reshape(-1, D_MODEL)).reshape(act.shape).to(act.device, act.dtype)
+            return replace(act.reshape(-1, D_MODEL)).reshape(act.shape).to(act.dtype)
         return dict(eng.run_with_hooks(board, ELO, fwd_hooks=[(SITE, hook)])["policy"])
 
     def through_sae(a):
@@ -376,26 +366,9 @@ def look(feature, k=4):
     print(f"saved {path}")
 
 
-def main(argv):
-    """`python SAE.py <step> [arg]`, as the module docstring lists."""
-    steps = {"collect": collect, "train": train, "check": check, "grade": grade, "look": look}
-    if not argv or argv[0] not in (*steps, "all"):
-        sys.exit(__doc__)
-    step, rest = argv[0], argv[1:]
-    if step == "all":
-        collect(*rest[:1])
-        train()
-        check()
-        grade()
-    elif step == "look":
-        if not rest:
-            sys.exit("look needs a feature index: python SAE.py look 123")
-        look(int(rest[0]))
-    elif step == "collect":
-        collect(*rest[:1])
-    else:
-        steps[step]()
-
-
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    collect()
+    train()
+    check()
+    grade()
+    #look(2912)
