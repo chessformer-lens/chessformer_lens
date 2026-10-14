@@ -875,12 +875,17 @@ class ChessformerEngine:
 
         A (from, to) pair carries no promotion piece — the policy layout folds
         every rank7->rank8 promotion onto the same square pair — so it resolves
-        to whichever legal move matches those squares."""
+        to whichever legal move matches those squares.
+
+        Castling written as king-takes-rook (e1h1, lc0's own encoding) comes
+        back as the standard e1g1: python-chess accepts both as legal but they
+        are different Move objects, and every uci this package returns is the
+        standard one."""
         if isinstance(move, chess.Move):
-            return move
+            return self._standard_castling(board, move)
         if isinstance(move, str):
             try:
-                return chess.Move.from_uci(move)
+                return self._standard_castling(board, chess.Move.from_uci(move))
             except ValueError:
                 pass
             try:
@@ -891,7 +896,7 @@ class ChessformerEngine:
             frm, to = (self._frame_square(s, board) for s in move)
             mv = chess.Move(frm, to)
             if mv in board.legal_moves:
-                return mv
+                return self._standard_castling(board, mv)
             promo = next((m for m in board.legal_moves
                           if m.from_square == frm and m.to_square == to), None)
             if promo is None:
@@ -902,6 +907,14 @@ class ChessformerEngine:
         if idx not in self.idx_to_move:
             raise ValueError(f"policy index out of range: {idx}")
         return self._decode_idx(board, idx)
+
+    @staticmethod
+    def _standard_castling(board: chess.Board, mv: chess.Move) -> chess.Move:
+        """A legal king-takes-rook castling move -> the standard king-two-squares
+        form (e1h1 -> e1g1); any other move unchanged."""
+        if mv.promotion is None and board.is_castling(mv) and mv in board.legal_moves:
+            return board.parse_uci(mv.uci())
+        return mv
 
     def _move_index(self, board: chess.Board, move) -> int:
         """Policy index of a move on this board — this is where the Black mirror
