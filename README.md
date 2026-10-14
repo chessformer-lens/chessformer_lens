@@ -1,6 +1,6 @@
 # chessformer_lens
 
-#### A Library for Mechanistic Interpretability of Transfomer Based Chess Models. 
+#### A Library for Mechanistic Interpretability of Transformer-Based Chess Models. 
 Created by [David Litman](https://davidlitman.com).
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21877655.svg)](https://doi.org/10.5281/zenodo.21877655)
