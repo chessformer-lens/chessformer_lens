@@ -28,4 +28,4 @@ tests/
 *.pt
 NOTES.md
 tests.ipynb
-paper_plots.ipynb
+paper_plots.ipynbSAE.py
