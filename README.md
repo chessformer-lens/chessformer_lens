@@ -29,7 +29,9 @@ or Clone if you want to edit the code:
 git clone https://github.com/chessformer-lens/chessformer_lens
 cd chessformer_lens
 pip install -r requirements.txt
+pip install pytest pyflakes && pytest   # ~15 s on CPU: random weights, no downloads
 ```
+The tests check the core's exactness claims directly: the logit lens reproduces the real policy at the last readout, per-head writes sum back to each layer's attention output, head ablation matches an independent re-implementation of attention, and every legal move round-trips through every move form.
 ---
 ## Demo Notebook: <a href="https://colab.research.google.com/github/chessformer-lens/chessformer_lens/blob/main/notebooks/demo.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" width="200"></a>
 

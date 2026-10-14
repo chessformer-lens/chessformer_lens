@@ -15,7 +15,6 @@ env/
 .ruff_cache/
 .ipynb_checkpoints/
 weights/
-tests/
 
 # OS / editor
 .DS_Store
@@ -24,7 +23,6 @@ tests/
 
 # Project working data
 activations/
-tests/
 *.pt
 NOTES.md
 tests.ipynb
