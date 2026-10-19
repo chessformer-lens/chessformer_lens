@@ -46,7 +46,7 @@ def test_app_has_no_default_model(no_env_model):
     info = api.info()
     assert info["needs_model"] and not info["ready"] and not info["loading"]
     families = {m["family"] for m in api.models()["models"]}
-    assert {"Leela Chess Zero", "Maia-3"} <= families
+    assert {"Leela Chess Zero", "Maia-3", "Searchless chess (DeepMind)"} <= families
     assert "error" in api.load_model("no-such-model")
     assert not api.info()["loading"]
 
@@ -90,6 +90,7 @@ def test_ui_page_is_model_neutral():
     for name in ("maia_", "MaiaApi", "Maia rating", "Maia ("):
         assert name not in INDEX_HTML
     assert "Attention view not available yet" in INDEX_HTML
+    assert "Win probability" in INDEX_HTML          # the action-value models' policy heading
     assert "engine_move" in INDEX_HTML and "load_model" in INDEX_HTML
 
 

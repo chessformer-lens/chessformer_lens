@@ -414,6 +414,18 @@ def bt4_weights() -> Path | None:
     return _find_lc0_net("bt4-332")          # the goldens' net, under its official name
 
 
+def t82_weights() -> Path | None:
+    """T82 under its official name in $CHESSFORMER_WEIGHTS, ./weights or the cache."""
+    from chessformer_lens.adapters.lc0 import _find_lc0_net
+    return _find_lc0_net("t82")
+
+
+def searchless_weights() -> Path | None:
+    """The converted 9M searchless net (searchless-9m.pt) in the same places."""
+    from chessformer_lens.adapters.searchless import _find_pt
+    return _find_pt("searchless-9m")
+
+
 def make_engine(name: str, activation_dir):
     from chessformer_lens.engine import LeelaEngine, MaiaEngine
     if name == "maia3-5m":

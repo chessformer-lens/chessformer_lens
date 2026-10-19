@@ -11,7 +11,8 @@
                         activation painted on the squares
   plot_logit_curve      one move's logit at every readout point (up to 4 moves
                         overlaid)
-  plot_policy_curve     the same curve after the softmax over legal moves
+  plot_policy_curve     the same curve after the softmax over legal moves (the
+                        win probability itself on an action-value model)
   plot_rank_curve       the same as a rank, 1 = the top move at that depth
   plot_move_microscope  "Move microscope": the logit curve as the app shows it
                         with the snap marker, and one move at two ratings
@@ -329,7 +330,7 @@ def plot_position(eng, board: chess.Board, elo: int = 1500, *, oppo_elo=None,
     # ---- policy ------------------------------------------------------------
     ax_p.axis("off")
     if res_b is None:
-        _h2(ax_p, f"Policy over {len(pol)} legal moves")
+        _h2(ax_p, f"{'Win probability' if eng.caps.policy == 'win_prob' else 'Policy'} · {len(pol)} legal moves")
         rows = pol[:max_moves]
         _policy_rows(ax_p, board, [(u, p, None) for u, p in rows], played)
         extra = len(pol) - len(rows)
@@ -779,7 +780,8 @@ def plot_policy_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
                       oppo_elo=None, figsize=(11, 4.4), width=None, titles=True):
     """`eng.policy_per_depth` as a figure: the move's probability, softmaxed
     over the legal moves only, at every readout point — `plot_logit_curve` on
-    the scale the app's policy list uses."""
+    the scale the app's policy list uses. On an action-value model (searchless)
+    it is the move's win probability as estimated at that depth."""
     moves = _curve_moves(eng, board, elo, ucis, oppo_elo)
     curves = [(san, eng.policy_per_depth(board, elo, uci, oppo_elo), col, 2.2 if i == 0 else 1.5)
               for i, ((uci, san), col) in enumerate(zip(moves, MLCOLORS))]
@@ -788,8 +790,11 @@ def plot_policy_curve(eng, board: chess.Board, elo: int = 1500, ucis=None, *,
     _depth_axes(ax, [_depth_label(p) for p in eng.depth_points()], curves,
                 ylabel="p(move)", legend=True)
     ax.set_ylim(0, max(1e-3, max(v for _, ys, _, _ in curves for v in ys if v is not None)) * 1.15)
-    _curve_header(fig, "Policy through depth", moves, _elo_tag(eng, elo),
-                  "probability over the legal moves if the stream stopped there")
+    win_prob = eng.caps.policy == "win_prob"
+    _curve_header(fig, "Win probability through depth" if win_prob else "Policy through depth",
+                  moves, _elo_tag(eng, elo),
+                  "the move's win probability if the stream stopped there" if win_prob
+                  else "probability over the legal moves if the stream stopped there")
     return fig
 
 

@@ -1,31 +1,55 @@
-"""The model-agnostic layer under the engine: what a chess transformer has to
-tell chessformer_lens about itself, and the types the two sides speak in.
+"""The small set of types and helpers a chess
+transformer has to provide so that ChessformerEngine can run on it.
 
-`engine.ChessformerEngine` holds every interpretability method and never
-touches a model directly. It talks to a `ModelAdapter`, which supplies:
+Everything model-specific for ChessformerEngine lives in a `ModelAdapter` 
+subclass in adapters/ (e.g., maia3.py, lc0.py, searchless.py).
 
-  inputs       tokens / forward: boards (+ a `Conditioning`) in, `HeadOutputs`
-               (policy logits, raw value, auxiliary heads) out
-  vocabulary   a `PolicyVocab`: policy index <-> chess.Move on a real board
-  layout       a `TokenLayout`: what each token is (a square, a move, a
-               channel, a control token) — board views only where tokens
-               are squares
-  internals    named hook modules, the policy head as an unembedding (logit
-               lens), each layer's attention as q, k, v, additive score terms
-               and per-head output weights (`AttnDecomp`), and each MLP's
-               output projection (neurons)
-  extensions   anything only some architectures have, e.g. the generated
-               attention bias of smolgen models ("gab")
+  ModelAdapter       the abstract base every model family subclasses. Supplies
+                     tokens / forward, the vocab, the token layout, the named
+                     hook modules, the policy head as an unembedding, each
+                     layer's attention taken apart, each MLP's output projection
+  Conditioning       the non-board inputs: a rating pair, the clock, anything
+                     else. BT4 ignores the ratings, Maia-3 reads them
+  HeadOutputs        one batched forward pass: policy logits, raw value, aux heads
+  ValueEstimate      the value head read as an expected score, plus W/D/L
+                     on models that have it
+  Capabilities       what an architecture has (rating input? wdl or scalar
+                     value? pre or post norm? which attention score terms? a
+                     softmax policy or win probabilities per move?) so the
+                     engine and the app can skip what isn't there
+  ArchSpec           n_layers, n_heads, d_model, d_mlp, the names
+  Token, TokenLayout what each token of the residual stream is (a square, a
+                     move, a control token). `is_board` means 64 square tokens
+                     in canonical order, so activations can be drawn on a board
+  AttnDecomp         one layer's attention as q, k, v, the additive score terms,
+                     and per-head output weights; pattern() and head_writes()
+                     recompute what the model does from those
+  PolicyVocab        the policy head's move list and index <-> chess.Move on a
+                     real board. Lc0 subclasses it (castling as king-takes-rook)
 
-Adapters register by alias (`register_adapter`, or the
-`chessformer_lens.adapters` entry-point group for third-party packages), so
-`load_engine("my-model")` works for a model this package has never heard of.
+  register_adapter   class decorator that makes an adapter resolvable by alias;
+                     third-party packages can do the same through the
+                     `chessformer_lens.adapters` entry-point group
+  resolve_adapter    alias -> (adapter class, display name), no weights loaded
+  available_models   every family's models, what the app's model picker lists
+  format_catalog     the same as text, for error messages and --list
 
-Frames. A model that sees the board from the side to move ("stm_mirror", the
-Maia-3 / lc0 convention) indexes squares canonically: rank*8 + file with the
-board flipped vertically when Black is to move. `canon_square` /
-`real_square` / `mirror_uci` convert; a model in the "absolute" frame uses
-python-chess squares as they are.
+  canon_square       python-chess square -> index in the side-to-move frame
+  real_square        and back
+  mirror_uci         a uci move flipped vertically, for Black
+  uci_vocabulary     the 64x64 + promotions move list in from*64 + to order
+  sample_from_logits argmax / temperature / nucleus sampling over masked logits
+  pick_device        explicit > $CHESSFORMER_DEVICE > cuda > mps > cpu
+
+Frames: Maia-3 and lc0 both see the board from the side to move. Squares are
+indexed rank*8 + file with the board flipped vertically when Black is to move,
+so a Black move is looked up mirrored (`mirror_uci`) and comes back
+un-mirrored. That is the "stm_mirror" frame. A model in the "absolute" frame
+uses python-chess squares as they are.
+
+engine.py imports from here, the adapters subclass ModelAdapter and PolicyVocab,
+and bridge.py calls the to_json methods to send layouts and capabilities to
+the app's page.
 """
 from __future__ import annotations
 
@@ -271,7 +295,10 @@ class Capabilities:
                           decomposes into, "content" (scaled QKᵀ) first
       causal              attention is masked to earlier tokens
       needs_game_history  the input is the game's moves, not just the position
-      aux_heads           names of HeadOutputs.aux entries"""
+      aux_heads           names of HeadOutputs.aux entries
+      policy              "softmax": the policy logits are softmaxed over the legal moves;
+                          "win_prob": each legal move's logit is its win probability as
+                          the model states it (action-value models), listed as it is"""
     conditioning: frozenset = frozenset()
     value: str = "wdl"
     norm: str = "post"
@@ -279,12 +306,13 @@ class Capabilities:
     causal: bool = False
     needs_game_history: bool = False
     aux_heads: frozenset = frozenset()
+    policy: str = "softmax"
 
     def to_json(self) -> dict:
         return {"conditioning": sorted(self.conditioning), "value": self.value,
                 "norm": self.norm, "attn_terms": list(self.attn_terms), "causal": self.causal,
                 "needs_game_history": self.needs_game_history,
-                "aux_heads": sorted(self.aux_heads)}
+                "aux_heads": sorted(self.aux_heads), "policy": self.policy}
 
 
 @dataclass(frozen=True)

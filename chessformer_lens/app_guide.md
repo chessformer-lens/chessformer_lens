@@ -1,6 +1,6 @@
 # App Guide 
 
-Launched with no model named, the app opens a picker listing every engine; choose one to load it (`chessformer_lens --list` prints them). Leela's nets download on first use.
+Launched with no model named, the app opens a picker listing every engine; choose one to load it (`chessformer_lens --list` prints them). Leela's nets and DeepMind's searchless nets download on first use.
 `chessformer_lens --web` opens the same app in your web browser instead of a window.
 
 **Play or Set up a Position**
@@ -20,7 +20,7 @@ moves are recorded in SAN notation.
 
 At the top in the center there is a `Win / Draw / Loss · side to move` stacked bar (`Expected score · side to move` for models with a single value output). 
 Under it is the `Rating (self_elo)` slider: 600-2800, step 25, default 1500; Dragging reevaluates the same position. 
-Under that is the scrollable ranked list: `Policy over N legal moves`: every legal move gets a row. 
+Under that is the scrollable ranked list: `Policy · N legal moves`: every legal move gets a row (`Win probability · N legal moves` on DeepMind's searchless models, which state a win probability per move and play the best one; they have no logit lens, so the depth curves in "Analyze one move" do not apply to them). 
 
 
 ![app view](https://raw.githubusercontent.com/chessformer-lens/chessformer_lens/main/Screenshots/SS11.png)

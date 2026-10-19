@@ -4,6 +4,9 @@
 
 maia3 @ https://github.com/CSSLab/maia3/archive/1e13597c42d4858b7cfd7cfdae01e297263364b2.zip
 
+# Reads DeepMind's searchless_chess checkpoints (once; they are kept as .pt afterwards).
+tensorstore
+
 # The package itself, editable. This is what puts the `chessformer_lens` command
 # on your PATH; torch, numpy, python-chess, huggingface-hub, ipython and both
 # frontends (pywebview + matplotlib) come along as its dependencies.

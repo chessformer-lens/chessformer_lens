@@ -8,8 +8,8 @@ type: software
 license: MIT
 repository-code: "https://github.com/chessformer-lens/chessformer_lens"
 url: "https://github.com/chessformer-lens/chessformer_lens"
-version: 3.0
-date-released: "2026-10-13"
+version: 3.1
+date-released: "2026-10-19"
 doi: "10.5281/zenodo.21877655"
 identifiers:
   - type: doi
@@ -22,3 +22,4 @@ keywords:
   - mechanistic interpretability
   - MAIA
   - Leela Chess Zero
+  - searchless chess

@@ -6,6 +6,7 @@ Two engines with one method surface, three frontends:
 
     from chessformer_lens import MaiaEngine            # the interp core, on Maia-3
     from chessformer_lens import LeelaEngine           # the same surface, on Lc0 BT4
+    from chessformer_lens import SearchlessEngine      # and on DeepMind's searchless models
     from chessformer_lens import load_engine           # either one, by alias
     from chessformer_lens import interp_plot as ip     # read-once views as figures
     from chessformer_lens import interp_widget as iw   # the two live panels, in a notebook
@@ -26,7 +27,7 @@ try:  # populated once the distribution is installed
 
     __version__ = version("chessformer-lens")
 except Exception:  # running from a source checkout without an install
-    __version__ = "3.0"
+    __version__ = "3.1"
 
 # Attribute -> the submodule it lives in. Resolved lazily so that `import
 # chessformer_lens` (and `__version__`) costs nothing: engine.py pulls in torch
@@ -35,6 +36,7 @@ _LAZY = {
     "ChessformerEngine": "chessformer_lens.engine",
     "MaiaEngine": "chessformer_lens.engine",
     "LeelaEngine": "chessformer_lens.engine",
+    "SearchlessEngine": "chessformer_lens.engine",
     "load_engine": "chessformer_lens.engine",
     "resolve_engine": "chessformer_lens.engine",
     "format_engine_list": "chessformer_lens.engine",
@@ -65,12 +67,12 @@ def __dir__():
 
 
 if TYPE_CHECKING:  # so type checkers and IDEs still see the real symbols
-    from .engine import (ChessformerEngine, MaiaEngine, LeelaEngine, load_engine,
-                         resolve_engine, format_engine_list, build_cfg, pick_device)
+    from .engine import (ChessformerEngine, MaiaEngine, LeelaEngine, SearchlessEngine,
+                         load_engine, resolve_engine, format_engine_list, build_cfg, pick_device)
     from .core import Conditioning, ModelAdapter, register_adapter, available_models
     from .interp_widget import attention_widget, gab_widget
 
-__all__ = ["ChessformerEngine", "MaiaEngine", "LeelaEngine", "load_engine",
+__all__ = ["ChessformerEngine", "MaiaEngine", "LeelaEngine", "SearchlessEngine", "load_engine",
            "resolve_engine", "format_engine_list", "build_cfg", "pick_device",
            "Conditioning", "ModelAdapter", "register_adapter", "available_models",
            "attention_widget", "gab_widget", "__version__"]

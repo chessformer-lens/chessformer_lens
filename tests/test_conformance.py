@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 
+import chess
 import pytest
 import torch
 
@@ -28,6 +29,8 @@ if _maia_cached():
     ALIASES.append("maia3-5m")
 if battery.bt4_weights() is not None:
     ALIASES.append("bt4")
+if battery.searchless_weights() is not None:
+    ALIASES.append("searchless-9m")
 
 POSITIONS = ["start", "ruy_black", "promo_black"]
 
@@ -107,7 +110,10 @@ def test_policy_covers_legal_moves_and_value_is_normalized(eng):
     b = battery.board_for("ruy_black")
     res = eng.evaluate(b, 1500)
     assert {u for u, _ in res["policy"]} == {m.uci() for m in b.legal_moves}
-    assert abs(sum(p for _, p in res["policy"]) - 1) < 1e-4
+    if eng.caps.policy == "softmax":
+        assert abs(sum(p for _, p in res["policy"]) - 1) < 1e-4
+    else:                                   # win probabilities, one per move
+        assert all(0.0 <= p <= 1.0 for _, p in res["policy"])
     v = res["value"]
     assert 0.0 <= v.expected <= 1.0
     assert (v.wdl is None) == (eng.caps.value == "scalar")
@@ -181,6 +187,20 @@ def test_gab_methods_follow_the_capability(eng):
             eng.gab_templates()
         with pytest.raises(RuntimeError):
             eng.gab_bias(b, 1500, layer=0)
+
+
+def test_searchless_tokens_and_actions():
+    """The searchless adapter's FEN tokenizer and action list, which need no weights."""
+    from chessformer_lens.adapters.searchless import _all_actions, _fen_tokens
+    actions = _all_actions()
+    assert len(actions) == 1968 == len(set(actions))
+    assert actions[0] == "a1b1" and actions[-1] == "h7g8n" and "e1g1" in actions
+    for name in battery.POSITIONS:
+        assert len(_fen_tokens(battery.board_for(name).fen())) == 77
+    # 'w', the 64 squares top rank first ('.' = 18 is empty), KQkq, no en passant, 0 and 1 padded
+    start = _fen_tokens(chess.STARTING_FEN)
+    assert start[:9] == [29, 20, 19, 11, 22, 21, 11, 19, 20] and start[9:17] == [18] * 8
+    assert start[65:] == [28, 27, 21, 22, 30, 30, 0, 30, 30, 1, 30, 30]
 
 
 def test_works_without_maia3():

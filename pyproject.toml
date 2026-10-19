@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chessformer_lens"
-version = "3.0"
-description = "An interpretability lens and visualizer for square-token chess transformers (Maia-3 and Lc0 BT4 backends)."
+version = "3.1"
+description = "An interpretability lens and visualizer for chess transformers (Maia-3, Lc0 BT4 and DeepMind searchless backends)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -19,6 +19,10 @@ keywords = [
     "maia",
     "leela",
     "lc0",
+    "chessformer",
+    "litman",
+    "visualizer",
+    "searchless-chess",
     "attention",
     "logit-lens",
     "ablation",
@@ -62,6 +66,8 @@ dependencies = [
 app = []
 plot = []
 all = []
+# reads DeepMind's searchless_chess checkpoints (Orbax / tensorstore) on first use
+searchless = ["tensorstore"]
 
 [project.scripts]
 chessformer_lens = "chessformer_lens.app:main"

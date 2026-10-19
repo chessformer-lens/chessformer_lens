@@ -368,7 +368,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="titlerow">
       <h1>Chessformer interpretability app</h1>
       <div class="sub" id="modelinfo">loading model…</div>
-      <button id="guidebtn" style="margin-left:auto;padding:3px 8px;font-size:11px" title="how to use the app">Guide</button>
+      <button id="guidebtn" style="margin-left:auto;padding:6px 16px;font-size:14px;font-weight:600" title="how to use the app">Guide</button>
     </div>
     <div id="boardwrap">
       <div id="board"></div>
@@ -446,10 +446,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <div class="ablrow" id="ablrow"><button id="ablbtn">Ablate / steer this head</button><input type="range" class="ablscale" id="ablscale" min="-2" max="3" step="0.25" value="0" title="strength of the head's write: 0 removes it, 1 is the clean model, 2 doubles it, −1 flips it"><span class="ablx" id="ablx">×0</span><span class="ablnote" id="ablnote">removes its exact residual write — red bars on the policy chart</span></div>
       </div>
       <div class="attcap" id="attcap">Click a square to set the query.</div>
-      <div class="tokmsg" id="attmsg">Attention view not available yet for this model: its tokens
-        aren't board squares. A token-level view is planned. Head ablation, the logit lens and
-        the carrier-head grid still work, and eng.attention() returns the full matrices in a
-        notebook.</div>
+      <div class="tokmsg" id="attmsg">Attention view not available yet for this model: its stream
+        is not the 64 squares alone. Board views for its square tokens are planned. Head
+        ablation and the carrier-head grid still work, and eng.attention()
+        returns the full matrices in a notebook.</div>
       <div class="attset" id="attset">
         <div class="attpair">
           <div><div class="attlabel">semantic attention (QKᵀ) </div><div class="attboard" id="att_qk"></div></div>
@@ -479,7 +479,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <div class="ablrow"><button id="mpwhere">Where else does it fire? ▸</button></div>
       </div>
       <div class="tokmsg" id="neumsg">Per-square activation view not available yet for this
-        model: its tokens aren't board squares. Picking and ablating a unit still work.</div>
+        model: its stream is not the 64 squares alone. Picking and ablating a unit still work.</div>
       <div id="neuboard">
         <div><div class="attlabel" id="nlabel">L0·n0 · activation per square</div><div class="attboard" id="att_neuron"></div></div>
         <div class="attlegend"><span>−</span><div class="legbar div"></div><span>+</span></div>
@@ -521,7 +521,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
   <div class="mlbody" id="mlbody">
     <div class="mlchart">
-      <div class="attlabel">logit lens · the move's logit read off the residual stream at every depth</div>
+      <div class="attlabel" id="mllenslbl">logit lens · the move's logit read off the residual stream at every depth</div>
       <div class="mllegend" id="mllegend"></div>
       <svg id="mlsvg" viewBox="0 0 660 222"></svg>
     </div>
@@ -681,6 +681,10 @@ function setModelInfo(){
   $('wdltitle').textContent = i.value_kind==='scalar' ? 'Expected score · side to move'
                                                        : 'Win / Draw / Loss · side to move';
   if(!nablOn) nablNote(NABLNOTE());
+  // an action-value model has no policy head to read a layer through: say so over its curve
+  $('mllenslbl').textContent = (i.caps && i.caps.policy === 'win_prob')
+    ? "logit lens · not available for this model (no policy head; one move's win probability per sequence)"
+    : "logit lens · the move's logit read off the residual stream at every depth";
 }
 function modelName(){ return (MODEL_INFO && (MODEL_INFO.alias||MODEL_INFO.target)) || 'The engine'; }
 
@@ -995,10 +999,13 @@ function renderPolicy(pol, wdl, actfile, playedUci, mlh, value){
   const abl=ablPolicy();      // {uci: p_ablated} while the ablation toggle is live
   const sr=abl ? null : searchRows();   // {uci: search row} for a searched position
   $('wdl').classList.toggle('cmp', !!abl);
+  // an action-value model (searchless) states a win probability per move, not a softmax policy
+  const winProb = MODEL_INFO && MODEL_INFO.caps && MODEL_INFO.caps.policy === 'win_prob';
+  const polWord = winProb ? 'Win probability' : 'Policy';
   $('poltitle').textContent = abl
-    ? `Policy · clean (blue) vs ${ablData.label} ${ablData.word||'ablated'} (red)`
+    ? `${polWord} · clean (blue) vs ${ablData.label} ${ablData.word||'ablated'} (red)`
     : sr ? 'Raw policy (blue) · search visits (green)'
-    : (pol ? `Policy over ${pol.length} legal moves` : 'Policy over legal moves');
+    : (pol ? `${polWord} · ${pol.length} legal moves` : `${polWord} over legal moves`);
   if(pol && pol.length){
     // ablating re-sorts the list by signed Δ — the moves the head was holding up
     // sink to the bottom, the ones it was suppressing rise to the top

@@ -23,6 +23,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install chessformer_lens
 # for Maia-3 models, first: pip install https://github.com/CSSLab/maia3/archive/1e13597c42d4858b7cfd7cfdae01e297263364b2.zip
 # Leela's BT4 net downloads itself on first use
+# for DeepMind's searchless models, first: pip install tensorstore (reads their checkpoints, once)
 ```
 or Clone if you want to edit the code:
 ```bash
@@ -65,7 +66,7 @@ This is an extremely strong engine that has many many more layers and parameters
 
 **Weights:** `bt4` (the base BT4 net) or `bt4-332` (its policytune-332 fine-tune) download from [lczero.org](https://lczero.org) on first use into `~/.cache/chessformer_lens`. A path to any lc0 `.pb.gz` works too.
 
-**Load.** One alias table covers both families; neither is a default.
+**Load.** One alias table covers every family; none is a default.
 ```python
 from chessformer_lens import LeelaEngine, load_engine
 eng = LeelaEngine("bt4")
@@ -73,6 +74,7 @@ eng = LeelaEngine("bt4")
 **Search.** With the `lc0` program installed (`brew install lc0`), `eng.search(board, nodes=400)` runs Leela's search on the same net and returns every move's visits and Q beside the raw policy, the PV and the best move; `interp_plot.plot_search` draws it, and the app shows it as a Search card.
 
 ---
+
 ## Many positions at once
 
 `eng.top_neurons(positions)` ranks every layer's MLP neurons by how strongly they fire over a list of positions (FENs, boards or a PGN file; `ordinary_positions()` gives 1,000 bundled Lichess positions), `eng.top_positions(layer, neuron)` finds the positions where one neuron fires most, and `eng.neuron_effects` measures what it does there by exact ablation. `interp_plot.plot_top_neurons` / `plot_top_positions` draw them; the app has them as its "Analyze many positions" tab, which also takes a file of FENs.
@@ -125,6 +127,7 @@ chessformer_lens 23m
 chessformer_lens --model maia3-79m 
 CHESSFORMER_MODEL=5m chessformer_lens
 chessformer_lens bt4                # Leela Chess Zero BT4 — see above   
+chessformer_lens searchless-9m      # DeepMind's searchless chess, 9M (also 136m, 270m)
 chessformer_lens --web              # the same app in your web browser
 ```
 
@@ -134,10 +137,10 @@ chessformer_lens --web              # the same app in your web browser
 
 
 ### Code layout: all found within the chessformer_lens package
-- `__init__.py` — the package surface: `MaiaEngine`, `LeelaEngine`, `load_engine`, `build_cfg`, `pick_device`, `Conditioning`, `ModelAdapter`, `register_adapter`, `available_models`, `attention_widget`, `gab_widget`, `__version__`.
-- `engine.py` — the interp core (model + hooks + logit lens + head ablation + list of values through depth): `ChessformerEngine` holds every method and works on any model a `ModelAdapter` describes; `MaiaEngine` and `LeelaEngine` are thin wrappers. No UI deps; imports cleanly in a notebook.
+- `__init__.py` — the package surface: `MaiaEngine`, `LeelaEngine`, `SearchlessEngine`, `load_engine`, `build_cfg`, `pick_device`, `Conditioning`, `ModelAdapter`, `register_adapter`, `available_models`, `attention_widget`, `gab_widget`, `__version__`.
+- `engine.py` — the interp core (model + hooks + logit lens + head ablation + list of values through depth): `ChessformerEngine` holds every method and works on any model a `ModelAdapter` describes; `MaiaEngine`, `LeelaEngine` and `SearchlessEngine` are thin wrappers. No UI deps; imports cleanly in a notebook.
 - `core.py` — the model-agnostic layer: `ModelAdapter`, the adapter registry, and the types the engine speaks in (`Conditioning`, `TokenLayout`, `ValueEstimate`, …).
-- `adapters/` — one adapter per model family: `lc0.py` (Leela BT4, no maia3 needed), `maia3.py` (Maia-3), `smolgen.py` (the smolgen/GAB attention both use).
+- `adapters/` — one adapter per model family: `lc0.py` (Leela BT4, no maia3 needed), `maia3.py` (Maia-3), `searchless.py` (DeepMind's searchless chess), `smolgen.py` (the smolgen/GAB attention the first two use).
 - `interp_plot.py` — matplotlib figures that the app uses
 - `interp_widget.py` — the app's two interactive panels as a self-contained notebook cell or standalone HTML page
 - `piece_art.py` — the cburnett pieces as PNGs, for the matplotlib figures
@@ -163,8 +166,10 @@ Chessformer / Maia-3 (Monroe et al., ICLR 2026).
 
 BT4 comes from the Leela Chess Zero project (lczero.org); the smolgen / attention-body design it uses is described in the Chessformer paper and in lc0's own writeups.
 
+The searchless models come from DeepMind: Ruoss, Delétang, Medapati, Grau-Moya, Wenliang, Catt, Reid, Lewis, Veness, Genewein (2024), "Amortized Planning with Large-Scale Transformers: A Case Study on Chess", arXiv:2402.04494. Their weights are CC-BY 4.0; their tokenizer and move list are ported from the Apache-2.0 code.
 
-Both Maia-3 and Leela BT4 are supported. Both treat each square as a token—which allows for beautiful board readable attention patterns. The core now works through model adapters, so other models can plug in; for models whose tokens aren't squares, the board views show a "not available yet" notice for now.
+
+Maia-3, Leela BT4 and DeepMind's searchless models are supported. The first two treat each square as a token—which allows for beautiful board readable attention patterns. The searchless models output one move's win probability per sequence and have no policy head, so the logit lens (and the depth curves built on it) does not apply to them. The core works through model adapters, so other models can plug in; for models whose stream isn't the 64 squares alone, the board views show a "not available yet" notice for now.
 
 
 Please don't hesitate to give me feedback or thoughts by email found at [my personal website](https://davidlitman.com). I hope for this to be a useful and intuitive tool for the community.

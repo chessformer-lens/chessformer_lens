@@ -2,8 +2,7 @@
 *(`engine.py`: the interpretability core behind the app, plots, and widgets)*
 
 A mechanistic interpretability core for chess transformers.
-`LeelaEngine ` loads a Leela Chess Zero BT4 checkpoint (`bt4` / `bt4-332`, downloaded on first use). `MaiaEngine` loads a Maia-3 checkpoint. Then runs forward passes, and captures the
-residual stream at every layer.
+`LeelaEngine ` loads a Leela Chess Zero BT4 checkpoint. `MaiaEngine` loads a Maia-3 checkpoint. `SearchlessEngine` loads one of DeepMind's searchless transformer models. Then runs forward passes, and captures the residual stream at every layer.
 
 `engine.py` imports cleanly into a notebook and is called by `interp_plot.py`
 (static figures), `interp_widget.py` (interactive panels), and the standalone
@@ -13,7 +12,8 @@ app in `bridge.py` / `app.py` / `ui.py` (and `web.py`, in a browser).
 **Run the Model**
 
 - `evaluate`: one forward pass yielding the full normalized policy over legal
-  moves (in descending order) and the W/D/L for the side to move, plus
+  moves (in descending order) — or, on an action-value model (searchless), each
+  legal move's win probability — and the W/D/L for the side to move, plus
   `value` (expected score, for any value head) and `aux` (extra heads).
 - `evaluate_batch`: `evaluate` over many positions, leaving the activation
   snapshot alone.

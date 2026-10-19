@@ -278,7 +278,8 @@ class LensApi:
         return self._base()
 
     def engine_move(self, elo=1500, temperature=1.0):
-        """The engine plays the side to move (sampled at `temperature`)."""
+        """The engine plays the side to move (sampled at `temperature`; a
+        win-probability model plays its argmax, as DeepMind's do)."""
         if not self.ready:
             return {"error": self.error or "model still loading"}
         b = self.board
@@ -291,7 +292,8 @@ class LensApi:
         pol, res, act = self._policy_for_current(elo, save=True)
         with self._lock:
             mv, _ = self.engine.select_move(
-                b, self_elo=int(elo), temperature=float(temperature)
+                b, self_elo=int(elo),
+                temperature=None if self.engine.caps.policy == "win_prob" else float(temperature)
             )
         if mv is None and pol:
             mv = chess.Move.from_uci(pol[0]["uci"])
@@ -389,7 +391,7 @@ class LensApi:
             if self.ready:
                 with self._lock:
                     mv, _ = self.engine.select_move(
-                        board, self_elo=elo, temperature=1.0)
+                        board, self_elo=elo, temperature=None)       # the model's own default
             if mv is None or mv not in board.legal_moves:
                 mv = random.choice(list(board.legal_moves))
             san = board.san(mv)

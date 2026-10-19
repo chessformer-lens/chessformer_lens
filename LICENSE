@@ -34,6 +34,13 @@ GPL; this project uses it under the BSD option, which is compatible with MIT.
 Attribution to Colin M.L. Burnett is required, and is given here and in
 chessformer_lens/ui.py, which reads chess.svg.PIECES at import time.
 
+PORTED CODE — chessformer_lens/adapters/searchless.py reproduces the FEN
+tokenizer and the move list of DeepMind's searchless_chess
+(https://github.com/google-deepmind/searchless_chess, Copyright 2025 DeepMind
+Technologies Limited, Apache License 2.0). Those two functions are used under
+Apache-2.0, whose notice and attribution requirements this paragraph meets;
+the rest of the file is an independent PyTorch reimplementation.
+
 DEPENDENCIES — python-chess (GPL-3.0-or-later) and maia3 (AGPL-3.0) are
 installed by pip and no code from either is copied into this repository, so
 using this project, and redistributing its source under MIT, are unaffected.
@@ -45,4 +52,8 @@ than relying on this summary.
 
 MODEL WEIGHTS — Maia-3 checkpoints are downloaded at runtime from
 https://huggingface.co/UofTCSSLab and are not covered by this license. Check the
-model card before redistributing weights.
+model card before redistributing weights. DeepMind's searchless_chess
+checkpoints are downloaded at runtime from
+https://storage.googleapis.com/searchless_chess/checkpoints/ and are licensed
+CC-BY 4.0 (Ruoss et al. 2024, arXiv:2402.04494); the converted .pt this package
+caches is a derivative of them and carries the same attribution.

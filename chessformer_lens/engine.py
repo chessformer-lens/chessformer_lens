@@ -6,9 +6,14 @@ model and its idiosyncraties in adapters/.
 
   MaiaEngine    a Maia-3 checkpoint (5M / 23M / 79M / 3M-ablation), conditioned
                 on a rating pair
-  LeelaEngine   Leela Chess Zero BT4 (185M params, 15 layers x 32 heads x 1024d),
-                no rating input; `bt4` / `bt4-332` download on first use, extremely
-                high performance chess engine, trained with self-play
+  LeelaEngine   Leela Chess Zero BT4 (185M params, 15 layers x 32 heads x 1024d)
+                or T82 (15 layers x 24 heads x 768d, the generation before), no
+                rating input; `bt4` / `bt4-332` / `t82` download on first use,
+                extremely high performance chess engines, trained with self-play
+  SearchlessEngine  DeepMind's "grandmaster-level chess without search" action-value
+                models (9M / 136M / 270M, Stockfish-distilled, `searchless-9m` etc.
+                download on first use); they state a win probability per move
+                rather than a softmax policy (caps.policy == "win_prob")
 
 
   evaluate              one forward pass yielding the full normalized policy over
@@ -106,6 +111,7 @@ app in bridge.py/app.py/ui.py (and web.py, in a browser).
 """
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import os
 import random
@@ -126,7 +132,7 @@ from .core import (Conditioning, ModelAdapter, TokenLayout, canon_square, format
                    pick_device, real_square, register_adapter, resolve_adapter,
                    sample_from_logits)
 
-__all__ = ["ChessformerEngine", "MaiaEngine", "LeelaEngine", "BT4Model",
+__all__ = ["ChessformerEngine", "MaiaEngine", "LeelaEngine", "SearchlessEngine", "BT4Model",
            "load_engine", "resolve_engine", "format_engine_list",
            "build_cfg", "pick_device", "register_adapter", "Conditioning",
            "load_positions", "positions_from_pgn", "ordinary_positions",
@@ -359,7 +365,10 @@ class ChessformerEngine:
         policy = []
         if bool(legal_mask.any()):                  # may be empty for hand-edited positions
             logits = logits.masked_fill(~legal_mask, float("-inf"))
-            probs = torch.softmax(logits, dim=-1)   # normalized over legal moves
+            if self.caps.policy == "win_prob":      # each move's win probability, as the model states it
+                probs = logits
+            else:
+                probs = torch.softmax(logits, dim=-1)   # normalized over legal moves
             for idx in torch.nonzero(legal_mask, as_tuple=False).flatten().tolist():
                 mv = self._idx_to_move(board, idx)
                 if mv is not None:
@@ -404,9 +413,14 @@ class ChessformerEngine:
         return res
 
     def select_move(self, board: chess.Board, self_elo=None, oppo_elo: int | None = None,
-                    temperature: float = 1.0, top_p: float = 1.0):
+                    temperature: float | None = None, top_p: float = 1.0):
         """Pick a move at the given rating (temperature 0 = argmax, `top_p` < 1
-        = nucleus sampling). Activations correspond to this position."""
+        = nucleus sampling). `temperature` None is the model's own default: 1 on a
+        softmax policy, argmax on a win-probability one (softmax(Q / t) over win
+        probabilities in [0, 1] is DeepMind's opt-in sampling and near-uniform at
+        t = 1). Activations correspond to this position."""
+        if temperature is None:
+            temperature = 0.0 if self.caps.policy == "win_prob" else 1.0
         res = self.evaluate(board, self_elo, oppo_elo)
         idx = sample_from_logits(res["_logits"], temperature, top_p)
         return self._idx_to_move(board, idx), res
@@ -426,7 +440,7 @@ class ChessformerEngine:
         intervention. On a CPU-only setup (or with CHESSFORMER_DEVICE=cpu) 
         both are on the CPU and none of this matters."""
         out = self.evaluate(board, self_elo, oppo_elo)
-        cache = {k: self._snap(k).squeeze(0).clone() for k in self._activations}
+        cache = {k: self._snap(k)[0].clone() for k in self._activations}
         return out, cache
 
     @staticmethod
@@ -461,6 +475,10 @@ class ChessformerEngine:
         Example — halve layer 5's whole attention write:
             self.run_with_hooks(board, 1500, fwd_hooks=[("attn_05", lambda a: a * 0.5)])
         """
+        if self.caps.policy == "win_prob" and "move" not in Conditioning.coerce(self_elo, oppo_elo).extras:
+            # the adapter's row 0 is the model's best move, which it learns from a clean pass
+            with torch.no_grad():
+                self._forward(board, self_elo, oppo_elo)
         handles = []
         try:
             for name, fn in fwd_hooks:
@@ -696,7 +714,7 @@ class ChessformerEngine:
         `return_type` is passed straight to run_with_hooks. Watch the argument
         order: `layer`/`head` come before `oppo_elo` here, unlike the other
         methods in this file."""
-        w = self.head_writes(board, self_elo, oppo_elo, layer)[int(head)]
+        w = self._head_write_rows(board, self_elo, oppo_elo, layer, head)
 
         def sub(act):
             return act - w.to(act.device, act.dtype)
@@ -705,13 +723,22 @@ class ChessformerEngine:
                                    fwd_hooks=[(f"attn_{int(layer):02d}", sub)],
                                    return_type=return_type)
 
+    @torch.no_grad()
+    def _head_write_rows(self, board, self_elo, oppo_elo, layer, head):
+        """One head's exact write on every row the forward captured: (B, tokens, dim).
+        B is 1 on most models; a move-conditioned model (searchless) runs one row per
+        legal move, and the write differs per row."""
+        cond = Conditioning.coerce(self_elo, oppo_elo)
+        x = self._block_input(board, cond, None, layer)
+        return self._head_writes_from_x(x, layer, cond)[:, int(head)]
+
     def steer_head(self, board, self_elo, layer, head, scale, oppo_elo=None,
                    return_type: str = "policy"):
         """Forward pass with one attention head's write multiplied by `scale`
         (activation steering): 1 is the clean model, 0 is `ablate_head`, 2
         doubles the head's say, -1 flips it. The (1 - scale) share of the
         head's exact write is subtracted from attn_NN, as in `ablate_head`."""
-        w = self.head_writes(board, self_elo, oppo_elo, layer)[int(head)] * (1.0 - float(scale))
+        w = self._head_write_rows(board, self_elo, oppo_elo, layer, head) * (1.0 - float(scale))
 
         def sub(act):
             return act - w.to(act.device, act.dtype)
@@ -939,6 +966,14 @@ class ChessformerEngine:
 
     # ----- move-centric lenses ----------------------------------------------
 
+    @staticmethod
+    def _focus(cond, move):
+        """`cond` with the analyzed move (a uci, or one per board) in extras["move"]: a
+        move-conditioned adapter (searchless) puts that move's sequence in row 0; the
+        other adapters ignore it."""
+        cond = Conditioning.coerce(cond)
+        return dataclasses.replace(cond, extras={**cond.extras, "move": move})
+
     def depth_points(self):
         """The readout points as [{label, kind}] in depth order — the x axis
         every *_per_depth curve below is indexed by, without spending a forward
@@ -958,9 +993,11 @@ class ChessformerEngine:
 
         Returns {uci, san, steps: [{label, kind, logit, prob, rank}], n_legal}.
         One forward pass for all three curves — the `*_per_depth` helpers below
-        are views on this. The `logit_lens` caveat applies."""
-        self.evaluate(board, self_elo, oppo_elo)
+        are views on this. The `logit_lens` caveat applies. On a win-probability
+        model (searchless) `logit` and `prob` are the move's Q estimate at that
+        depth and `rank` compares it with the other moves' final Q."""
         info = self.move_info(board, uci)
+        self.evaluate(board, self._focus(Conditioning.coerce(self_elo, oppo_elo), info["uci"]))
         idx = info["idx"]
         legal = self._legal_mask(board).to(self.device)
         n_legal = int(legal.sum())
@@ -969,7 +1006,12 @@ class ChessformerEngine:
             logits = self.adapter.unembed(self._snap(name)[0].to(self.device))
             lg = float(logits[idx])
             masked = logits.masked_fill(~legal, float("-inf"))
-            prob = float(torch.softmax(masked, dim=-1)[idx]) if n_legal else None
+            if not n_legal:
+                prob = None
+            elif self.caps.policy == "win_prob":
+                prob = float(masked[idx])
+            else:
+                prob = float(torch.softmax(masked, dim=-1)[idx])
             rank = int((masked > masked[idx]).sum()) + 1 if n_legal else None
             steps.append({"label": lab, "kind": kind,
                           "logit": lg, "prob": prob, "rank": rank})
@@ -1023,7 +1065,8 @@ class ChessformerEngine:
         ~num_blocks·(num_heads+1) forward passes in total instead of that many
         each, and a batched forward is several times cheaper per position than a
         batch of one. `batch_size` trades that against memory — the per-layer
-        head writes are (batch_size, H, tokens, dim)."""
+        head writes are (batch_size, H, tokens, dim); on a move-conditioned model
+        (searchless) a position is one row per legal move, so keep `batch_size` small."""
         cond = Conditioning.coerce(self_elo, oppo_elo)
         nb, nh = self.arch.n_layers, self.arch.n_heads
         out = []
@@ -1040,6 +1083,7 @@ class ChessformerEngine:
                 infos = [self.move_info(b, m) for b, m in chunk]
                 rows = torch.arange(len(chunk), device=self.device)
                 idx = torch.tensor([i["idx"] for i in infos], device=self.device)
+                cond = self._focus(cond, [i["uci"] for i in infos])
 
                 base = self._forward_batch(boards, cond)[rows, idx]   # (B,)
                 # accumulated on-device and synced once below, so consecutive head
@@ -1072,17 +1116,18 @@ class ChessformerEngine:
 
 
     # ----- neurons: activation, exact ablation, carrier table ---------------
-    def _mlp_hidden(self, board, self_elo=None, oppo_elo=None, layers=None):
+    def _mlp_hidden(self, board, self_elo=None, oppo_elo=None, layers=None, all_rows=False):
         """One forward pass; returns {L: (tokens, ff)} — the MLP hidden
         activation (the input of the MLP's output projection, post-activation)
         of each requested layer, on the live device, detached. `hook_points`
-        holds that projection as mlp_NN, so the hidden is its input."""
+        holds that projection as mlp_NN, so the hidden is its input. `all_rows`
+        keeps every captured row, (B, tokens, ff), for the intervention paths."""
         want = range(self.arch.n_layers) if layers is None else list(layers)
         hidden = {}
 
         def keep(L):
             def hook(_module, inp, _out):
-                hidden[L] = inp[0].detach()[0]
+                hidden[L] = inp[0].detach() if all_rows else inp[0].detach()[0]
             return hook
 
         handles = [self.adapter.mlp_out(L).register_forward_hook(keep(L)) for L in want]
@@ -1095,9 +1140,10 @@ class ChessformerEngine:
         return hidden
 
     def _neuron_write(self, layer, neuron, hidden):
-        """The (tokens, dim) vector one MLP unit adds to the stream: h[s, n] · W2[:, n]."""
+        """The (tokens, dim) vector one MLP unit adds to the stream: h[s, n] · W2[:, n]
+        (per row when `hidden` is (B, tokens, ff))."""
         w2 = self.adapter.mlp_out(int(layer)).weight[:, int(neuron)]
-        return hidden[:, int(neuron), None] * w2[None, :]
+        return hidden[..., int(neuron), None] * w2
 
     @torch.no_grad()
     def neuron_activation(self, board, self_elo, layer, neuron, oppo_elo=None):
@@ -1135,7 +1181,8 @@ class ChessformerEngine:
         h[s,n]·W2[:,n] is subtracted from mlp_NN via run_with_hooks and the
         layers downstream react normally. Same argument order as `ablate_head`."""
         L = int(layer)
-        w = self._neuron_write(L, neuron, self._mlp_hidden(board, self_elo, oppo_elo, layers=[L])[L])
+        w = self._neuron_write(L, neuron,
+                               self._mlp_hidden(board, self_elo, oppo_elo, layers=[L], all_rows=True)[L])
 
         def sub(act):
             return act - w.to(act.device, act.dtype)
@@ -1149,7 +1196,8 @@ class ChessformerEngine:
         token (activation steering): 1 is the clean model, 0 is
         `ablate_neuron`, 2 doubles it, -1 flips it."""
         L = int(layer)
-        w = self._neuron_write(L, neuron, self._mlp_hidden(board, self_elo, oppo_elo, layers=[L])[L]) \
+        w = self._neuron_write(L, neuron,
+                               self._mlp_hidden(board, self_elo, oppo_elo, layers=[L], all_rows=True)[L]) \
             * (1.0 - float(scale))
 
         def sub(act):
@@ -1172,6 +1220,7 @@ class ChessformerEngine:
         info = self.move_info(board, move)
         idx = info["idx"]
         nb = self.arch.n_layers
+        cond = self._focus(Conditioning.coerce(self_elo, oppo_elo), info["uci"])
 
         # capture every MLP's hidden activation (the input of its output projection)
         hidden: dict[int, torch.Tensor] = {}
@@ -1184,7 +1233,7 @@ class ChessformerEngine:
         handles = [self.adapter.mlp_out(L).register_forward_hook(keep(L)) for L in range(nb)]
         try:
             with torch.enable_grad():
-                logits, _ = self._forward(board, self_elo, oppo_elo)
+                logits, _ = self._forward(board, cond)
                 grads = torch.autograd.grad(logits[idx], [hidden[L] for L in range(nb)])
         finally:
             for h in handles:
@@ -1210,7 +1259,7 @@ class ChessformerEngine:
                 def sub(act, write=write):
                     return act - write.to(act.device, act.dtype)
 
-                lm, _ = self.run_with_hooks(board, self_elo, oppo_elo,
+                lm, _ = self.run_with_hooks(board, cond,
                                             fwd_hooks=[(f"mlp_{L:02d}", sub)], return_type="logits")
                 exact = float(lm[idx]) - base
             sq = est[L, :, n]
@@ -1255,6 +1304,13 @@ class ChessformerEngine:
                     h.remove()
             yield start, got
 
+    def _needs_square_tokens(self, what):
+        """The many-positions tools average over the 64 squares and expect one captured
+        row per position; refuse a model whose stream is anything else, plainly."""
+        if not self.layout(chess.Board()).is_board:
+            raise ValueError(f"{what} is not available yet for {self.arch.display_name}: its "
+                             "stream is not the 64 squares alone (eng.layout(board) names its tokens)")
+
     def _ratings(self, elo, oppo_elo):
         """(elo, oppo_elo) as used, or (None, None) for a model with no rating input."""
         if not self.has_conditioning:
@@ -1282,6 +1338,7 @@ class ChessformerEngine:
         square (the real square it peaks on), peak_canon (the same, a model-frame
         index), act (its 64 values, model-frame order)}. `elo`/`oppo_elo` as in
         `top_neurons`."""
+        self._needs_square_tokens("top_positions")
         boards = ordinary_positions() if positions is None else load_positions(positions)
         if not boards:
             raise ValueError("no positions")
@@ -1356,7 +1413,7 @@ class ChessformerEngine:
 
         `activation_dir` is created here, on the first save, rather than in
         __init__."""
-        snap = {k: self._snap(k).squeeze(0).clone() for k in self._activations}
+        snap = {k: self._snap(k)[0].clone() for k in self._activations}
         snap["meta"] = meta or {}
         self.activation_dir.mkdir(parents=True, exist_ok=True)
         path = self.activation_dir / filename
@@ -1492,6 +1549,7 @@ class NeuronScan:
     def __init__(self, eng, positions, *, layers=None, elo=1500, oppo_elo=None,
                  batch_size=32):
         self.eng = eng
+        eng._needs_square_tokens("top_neurons")
         self.positions = load_positions(positions)
         if not self.positions:
             raise ValueError("no positions")
@@ -1573,17 +1631,18 @@ class MaiaEngine(ChessformerEngine):
 
 
 class LeelaEngine(ChessformerEngine):
-    """ChessformerEngine on Leela Chess Zero BT4, from lc0's .pb.gz (or an ONNX
-    export).
+    """ChessformerEngine on Leela Chess Zero BT4 or T82, from lc0's .pb.gz (or
+    an ONNX export).
 
-    BT4 has no rating input: self_elo / oppo_elo are accepted and ignored, so
+    Leela has no rating input: self_elo / oppo_elo are accepted and ignored, so
     the same calls work on every engine. No final norm, so the depth points
     end at m14 (no enc). evaluate()["mlh"] is the moves-left estimate in plies."""
 
     def __init__(self, alias="bt4", device=None, checkpoint_path=None,
                  activation_dir="activations"):
-        """`alias` names an official net, `bt4` (the base BT4) or `bt4-332`
-        (policytune-332), or is a path to an lc0 .pb.gz (or an .onnx export).
+        """`alias` names an official net, `bt4` (the base BT4), `bt4-332`
+        (policytune-332) or `t82` (768x15x24h), or is a path to an lc0 .pb.gz
+        (or an .onnx export).
         Without `checkpoint_path` the net is looked for in $CHESSFORMER_WEIGHTS,
         ./weights and the cache, and downloaded from lczero.org on first use
         (CHESSFORMER_NO_DOWNLOAD=1 refuses instead)."""
@@ -1649,7 +1708,31 @@ class LeelaEngine(ChessformerEngine):
         return root, block
 
 
-_ENGINE_CLASSES = {"maia3": MaiaEngine, "lc0": LeelaEngine}
+class SearchlessEngine(ChessformerEngine):
+    """ChessformerEngine on one of DeepMind's searchless action-value models
+    (`searchless-9m`, `searchless-136m`, `searchless-270m`; downloaded and
+    converted on first use, which needs `pip install tensorstore`).
+
+    No rating input. evaluate()["policy"] lists each legal move's win probability
+    (caps.policy == "win_prob"); select_move plays the best one. One forward runs
+    every legal move's sequence, row 0 being the move analyzed (or the best one),
+    which is what the residual stream, attention and neuron views describe. See
+    adapters/searchless.py.
+
+    No logit lens: there is no policy head to read an intermediate layer through,
+    only one move's win probability per sequence, so logit_lens, move_logit_lens,
+    the *_per_depth curves and residual_stream's per-depth top move do not apply."""
+
+    def __init__(self, alias="searchless-9m", device=None, checkpoint_path=None,
+                 activation_dir="activations"):
+        """`checkpoint_path`: a converted .pt, or an Orbax checkpoint directory
+        from DeepMind's zip or a searchless_chess clone."""
+        from .adapters.searchless import SearchlessAdapter
+        super().__init__(SearchlessAdapter.load(alias, device=device, checkpoint_path=checkpoint_path),
+                         activation_dir)
+
+
+_ENGINE_CLASSES = {"maia3": MaiaEngine, "lc0": LeelaEngine, "searchless": SearchlessEngine}
 
 
 def find_lc0():
