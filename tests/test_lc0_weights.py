@@ -39,6 +39,21 @@ def test_nets_are_recognised_by_size(dirs):
     assert lc0.identify_lc0_net(dirs / "missing.pb.gz") is None
 
 
+def test_pos_encoding_is_the_queen_or_knight_table():
+    """T82's fixed position table, rebuilt by rule: -1 on the square itself, 1 on
+    every square a queen or a knight there could reach."""
+    import torch
+    table = lc0._pos_encoding()
+    assert table.shape == (64, 64) and torch.equal(table, table.T)
+    assert (table.diagonal() == -1).all()
+    # from a1: 7 on the rank, 7 on the file, 7 on the diagonal, b3 and c2 for the knight
+    assert table[0].sum() == 7 + 7 + 7 + 2 - 1
+    assert table[0, chess.B3] == 1 and table[0, chess.D2] == 0
+    # from e4: 7 + 7 + 13 on the queen lines, 8 knight squares
+    assert table[chess.E4].sum() == 7 + 7 + 13 + 8 - 1
+    assert set(table.unique().tolist()) == {-1.0, 0.0, 1.0}
+
+
 def test_lookup_order_and_the_old_file_name(dirs, monkeypatch):
     base, tuned = lc0._LC0_NETS["bt4"], lc0._LC0_NETS["bt4-332"]
     assert lc0._find_lc0_net("bt4") is None

@@ -1,4 +1,4 @@
-"""Leela Chess Zero (lc0) attention-body networks — BT4 and nets built like it.
+"""Leela Chess Zero (lc0) attention-body networks — BT4, T82 and nets built like them.
 
 Reads lc0's own weights file (.pb.gz, decoded here with no protobuf
 dependency) or an `lc0 leela2onnx` export (.onnx, needs the `onnx` package),
@@ -11,6 +11,11 @@ rebuilds the net in PyTorch (`BT4Model`), and serves it to the engine through
             (4288; knight promotions share their square pair's logit)
   value     win / draw / loss, plus a moves-left head ("mlh")
   rating    none: Conditioning is ignored
+
+T82 (768x15x24h, the generation before BT4) differs from BT4 only in how the
+planes become the stream entering block 0 (`_T82Embedding` vs `_BT4Embedding`)
+and in where its .pb.gz keeps the head weights; block 0 onward is read by the
+same code and has the same hook names, so every engine method works on both.
 """
 from __future__ import annotations
 
@@ -69,6 +74,43 @@ class _BT4Embedding(nn.Module):
         return self.norm2(x + self.linear2(F.mish(self.linear1(x))))
 
 
+def _pos_encoding() -> torch.Tensor:
+    """lc0's kPosEncoding, the fixed (64, 64) table T82-era nets concatenate
+    to each square's input planes: row s is -1 on s itself, 1 on every square
+    a queen or a knight standing on s could reach, 0 elsewhere. Reproduced by
+    that rule, which matches `lc0 leela2onnx`'s /const/pos_encoding exactly."""
+    table = torch.zeros(64, 64)
+    for a in range(64):
+        for b in range(64):
+            df = abs(a % 8 - b % 8)
+            dr = abs(a // 8 - b // 8)
+            if a == b:
+                table[a, b] = -1.0
+            elif df == 0 or dr == 0 or df == dr or {df, dr} == {1, 2}:
+                table[a, b] = 1.0
+    return table
+
+
+class _T82Embedding(nn.Module):
+    """planes (B, 112, 8, 8) -> (B, 64, d) the T82 way (lc0's PE_MAP embedding):
+    each square's 112 inputs plus its row of the fixed position table, one
+    projection, mish, and the per-square gates. No norm, no FFN sublayer."""
+
+    def __init__(self, d: int, planes: int = 112):
+        super().__init__()
+        self.register_buffer("pos_encoding", _pos_encoding(), persistent=False)
+        self.proj = nn.Linear(planes + 64, d)
+        self.mul_gate = nn.Parameter(torch.ones(64, d))
+        self.add_gate = nn.Parameter(torch.zeros(64, d))
+
+    def forward(self, planes):
+        B = planes.size(0)
+        x = planes.reshape(B, planes.size(1), 64).transpose(1, 2)         # (B, 64, 112), sq = rank*8 + file
+        pos = self.pos_encoding.expand(B, -1, -1)                        # (B, 64, 64)
+        x = F.mish(self.proj(torch.cat([x, pos], dim=-1)))
+        return x * self.mul_gate + self.add_gate
+
+
 class _BT4Encoder(nn.Module):
     """The block stack, with no final norm (norm = None): BT4's heads read the
     last block directly."""
@@ -103,17 +145,25 @@ class BT4Model(nn.Module):
                      A knight promotion uses its square pair's logit.
       logits_value   win, draw, loss for the side to move
       moves_left     expected plies to the end of the game
-    `policy_map` (1858,) is lc0's gather to its own move list, kept for testing."""
+    `policy_map` (1858,) is lc0's gather to its own move list, kept for testing.
+    `embedding` picks the input embedding: "dense" (BT4, `pre` channels of
+    board-wide preprocessing) or "pe_map" (T82, the fixed position table)."""
 
     def __init__(self, num_blocks=15, dim=1024, num_heads=32, ff=1536, gen=256,
                  per_square=32, intermediate=256, pre=512, policy_dim=1024,
-                 value_dim=128, mlh_dim=32, policy_scale=1 / 32):
+                 value_dim=128, mlh_dim=32, policy_scale=1 / 32, embedding="dense"):
         super().__init__()
         self.cfg = types.SimpleNamespace(
             num_blocks=num_blocks, dim_vit=dim, num_heads=num_heads,
             mlp_ratio=ff / dim, gab_gen_size=gen, gab_per_square_dim=per_square,
-            gab_intermediate_dim=intermediate, head_hid_dim=policy_dim, use_gab=True)
-        self.embedding = _BT4Embedding(dim, ff, pre)
+            gab_intermediate_dim=intermediate, head_hid_dim=policy_dim, use_gab=True,
+            embedding=embedding)
+        if embedding == "dense":
+            self.embedding = _BT4Embedding(dim, ff, pre)
+        elif embedding == "pe_map":
+            self.embedding = _T82Embedding(dim)
+        else:
+            raise ValueError(f"embedding must be 'dense' or 'pe_map', not {embedding!r}")
         self.gab_shared_weight = nn.Parameter(torch.empty(64 * 64, gen))
         self.transformer = _BT4Encoder(
             [_bt4_block(dim, num_heads, ff, gen, per_square, intermediate, self.gab_shared_weight)
@@ -260,23 +310,30 @@ def _pb_arrays(path) -> dict:
         problems.append("needs an attention policy, a WDL value head and a moves-left head")
     if _pb_int(nf, 7) != 1 or _pb_int(nf, 9) not in (0, 1) or _pb_int(nf, 8) != 7:
         problems.append("needs mish body and FFN activations and swish smolgen")
-    if 37 not in w or 35 not in w:
-        problems.append("needs the dense input embedding and smolgen")
+    if 35 not in w:
+        problems.append("needs smolgen")
+    if 23 in w:
+        problems.append("policy-head encoder layers are not supported")
     if problems:
         raise NotImplementedError(f"{path}: this lc0 net is not supported: " + "; ".join(problems)
-                                  + ". Tested on BT4-1024x15x32h.")
+                                  + ". Tested on BT4-1024x15x32h and T82-768x15x24h.")
 
     def dense(msg, field, n_in, n_out):            # stored (out, in) -> ONNX (in, out)
         return _pb_layer(msg, field).reshape(n_out, n_in).t().contiguous()
 
     W = {}
     emb = _pb_layer(w, 26).numel()
-    pre = _pb_layer(w, 38).numel() // 64
-    W["/attn_body/embedding/preprocess/matmul/w"] = dense(w, 37, 64 * 12, 64 * pre)
-    W["/attn_body/embedding/preprocess/add/w"] = _pb_layer(w, 38)
-    W["/attn_body/matmul/w"] = dense(w, 25, 112 + pre, emb)
+    dense_embedding = 37 in w                      # BT4's preprocess layer; T82 has the position table instead
+    if dense_embedding:
+        pre = _pb_layer(w, 38).numel() // 64
+        W["/attn_body/embedding/preprocess/matmul/w"] = dense(w, 37, 64 * 12, 64 * pre)
+        W["/attn_body/embedding/preprocess/add/w"] = _pb_layer(w, 38)
+        W["/attn_body/matmul/w"] = dense(w, 25, 112 + pre, emb)
+        W["/attn_body/ln/w/scale"], W["/attn_body/ln/w/bias"] = _pb_layer(w, 39), _pb_layer(w, 40)
+    else:
+        W["/const/pos_encoding"] = _pos_encoding().reshape(1, 64, 64)
+        W["/attn_body/matmul/w"] = dense(w, 25, 112 + 64, emb)
     W["/attn_body/add/w"] = _pb_layer(w, 26)
-    W["/attn_body/ln/w/scale"], W["/attn_body/ln/w/bias"] = _pb_layer(w, 39), _pb_layer(w, 40)
     W["/ip_mul_gate/w"] = dense(w, 33, 64, emb)
     W["/ip_add_gate/w"] = dense(w, 34, 64, emb)
 
@@ -292,8 +349,9 @@ def _pb_arrays(path) -> dict:
         W[prefix + "ffn/dense2/b/w"] = _pb_layer(f, 4)
         W[prefix + "ffn/alpha/w"] = alpha
 
-    ffn("/attn_body/", _pb_msg(w, 41))
-    W["/attn_body/ln2/w/scale"], W["/attn_body/ln2/w/bias"] = _pb_layer(w, 42), _pb_layer(w, 43)
+    if dense_embedding:
+        ffn("/attn_body/", _pb_msg(w, 41))
+        W["/attn_body/ln2/w/scale"], W["/attn_body/ln2/w/bias"] = _pb_layer(w, 42), _pb_layer(w, 43)
 
     heads = _pb_int(w, 28)
     gen = _pb_layer(w, 35).numel() // 4096
@@ -323,26 +381,38 @@ def _pb_arrays(path) -> dict:
         W[o + "ln2/w/scale"], W[o + "ln2/w/bias"] = _pb_layer(e, 5), _pb_layer(e, 6)
     W["/const/encoder0/mha/shape"] = torch.tensor([-1, 64, heads, d_model // heads])
 
-    # policy: the "vanilla" head; its embedding may be shared across heads
-    heads_msg = _pb_msg(w, 45)
-    pol = _pb_msg(heads_msg, 3)
-    if 8 in pol:
-        raise NotImplementedError(f"{path}: policy-head encoder layers are not supported")
-    pw = pol if 1 in pol else heads_msg
-    pemb, pd = _pb_layer(pw, 2).numel(), _pb_layer(pol, 4).numel()
-    W["/policy/dense1/matmul/w"] = dense(pw, 1, emb, pemb)
-    W["/policy/dense1/add/w"] = _pb_layer(pw, 2)
-    W["/policy/Q/matmul/w"], W["/policy/Q/add/w"] = dense(pol, 3, pemb, pd), _pb_layer(pol, 4)
-    W["/policy/K/matmul/w"], W["/policy/K/add/w"] = dense(pol, 5, pemb, pd), _pb_layer(pol, 6)
+    # policy: the "vanilla" head. BT4 keeps it in the policy_heads message (45), with
+    # an embedding that may be shared across heads; T82 keeps it in the older
+    # top-level fields. Same layers either way.
+    if 45 in w:
+        heads_msg = _pb_msg(w, 45)
+        pol = _pb_msg(heads_msg, 3)
+        if 8 in pol:
+            raise NotImplementedError(f"{path}: policy-head encoder layers are not supported")
+        pw = pol if 1 in pol else heads_msg
+        dense1, q, k, promo = (pw, 1, 2), (pol, 3, 4), (pol, 5, 6), (pol, 7)
+    else:
+        dense1, q, k, promo = (w, 4, 5), (w, 17, 18), (w, 19, 20), (w, 22)
+    pemb, pd = _pb_layer(dense1[0], dense1[2]).numel(), _pb_layer(q[0], q[2]).numel()
+    W["/policy/dense1/matmul/w"] = dense(dense1[0], dense1[1], emb, pemb)
+    W["/policy/dense1/add/w"] = _pb_layer(dense1[0], dense1[2])
+    W["/policy/Q/matmul/w"], W["/policy/Q/add/w"] = dense(q[0], q[1], pemb, pd), _pb_layer(q[0], q[2])
+    W["/policy/K/matmul/w"], W["/policy/K/add/w"] = dense(k[0], k[1], pemb, pd), _pb_layer(k[0], k[2])
     W["/policy/scale/w"] = torch.tensor([np.float32(1) / np.sqrt(np.float32(pd))])
-    W["/policy/promotion/matmul/w"] = dense(pol, 7, pd, 4)
+    W["/policy/promotion/matmul/w"] = dense(promo[0], promo[1], pd, 4)
 
-    # value: the "winner" head; moves-left
-    val = _pb_msg(_pb_msg(w, 44), 1)
-    vc = _pb_layer(val, 2).numel()
-    W["/value/embed/matmul/w"], W["/value/embed/add/w"] = dense(val, 1, emb, vc), _pb_layer(val, 2)
-    W["/value/dense1/matmul/w"], W["/value/dense1/add/w"] = dense(val, 3, 64 * vc, 128), _pb_layer(val, 4)
-    W["/value/dense2/matmul/w"], W["/value/dense2/add/w"] = dense(val, 5, 128, 3), _pb_layer(val, 6)
+    # value: the "winner" head, in the value_heads message (44) on BT4 and in the
+    # older top-level fields on T82; moves-left
+    if 44 in w:
+        val = _pb_msg(_pb_msg(w, 44), 1)
+        embed_w, embed_b, d1_w, d1_b, d2_w, d2_b = 1, 2, 3, 4, 5, 6
+    else:
+        val = w
+        embed_w, embed_b, d1_w, d1_b, d2_w, d2_b = 29, 30, 7, 8, 9, 10
+    vc = _pb_layer(val, embed_b).numel()
+    W["/value/embed/matmul/w"], W["/value/embed/add/w"] = dense(val, embed_w, emb, vc), _pb_layer(val, embed_b)
+    W["/value/dense1/matmul/w"], W["/value/dense1/add/w"] = dense(val, d1_w, 64 * vc, 128), _pb_layer(val, d1_b)
+    W["/value/dense2/matmul/w"], W["/value/dense2/add/w"] = dense(val, d2_w, 128, 3), _pb_layer(val, d2_b)
     mc, m1 = _pb_layer(w, 32).numel(), _pb_layer(w, 14).numel()
     W["/mlh/embed/matmul/w"], W["/mlh/embed/add/w"] = dense(w, 31, emb, mc), _pb_layer(w, 32)
     W["/mlh/dense1/matmul/w"], W["/mlh/dense1/add/w"] = dense(w, 13, 64 * mc, m1), _pb_layer(w, 14)
@@ -366,12 +436,14 @@ def _bt4_from_arrays(W, device) -> BT4Model:
     per_sq = W["/encoder0/smolgen/compress/w"].shape[1]
     inter = W["/encoder0/smolgen/dense1/w/w"].shape[1]
     ff = W["/encoder0/ffn/dense1/w/w"].shape[1]
-    pre = W["/attn_body/embedding/preprocess/matmul/w"].shape[1] // 64
+    dense_embedding = "/attn_body/embedding/preprocess/matmul/w" in W     # BT4; T82 has the position table
+    pre = W["/attn_body/embedding/preprocess/matmul/w"].shape[1] // 64 if dense_embedding else 0
     model = BT4Model(nb, d, heads, ff, gen, per_sq, inter, pre,
                      policy_dim=W["/policy/Q/matmul/w"].shape[1],
                      value_dim=W["/value/embed/matmul/w"].shape[1],
                      mlh_dim=W["/mlh/embed/matmul/w"].shape[1],
-                     policy_scale=float(W["/policy/scale/w"]))
+                     policy_scale=float(W["/policy/scale/w"]),
+                     embedding="dense" if dense_embedding else "pe_map")
     for i in range(nb):     # nn.MultiheadAttention assumes a 1/sqrt(d_head) scale
         s = float(W[f"/encoder{i}/mha/QK/scale/w"])
         assert abs(s - dh ** -0.5) < 1e-6, f"encoder{i}: QK scale {s} is not 1/sqrt({dh})"
@@ -383,16 +455,20 @@ def _bt4_from_arrays(W, device) -> BT4Model:
         if bias is not None:
             sd[key + ".bias"] = bias * alpha
 
-    put("embedding.preproc", lin("/attn_body/embedding/preprocess/matmul/w"),
-        W["/attn_body/embedding/preprocess/add/w"])
     put("embedding.proj", lin("/attn_body/matmul/w"), W["/attn_body/add/w"])
-    put("embedding.norm", W["/attn_body/ln/w/scale"], W["/attn_body/ln/w/bias"])
     sd["embedding.mul_gate"] = W["/ip_mul_gate/w"]
     sd["embedding.add_gate"] = W["/ip_add_gate/w"]
-    put("embedding.linear1", lin("/attn_body/ffn/dense1/w/w"), W["/attn_body/ffn/dense1/b/w"])
-    put("embedding.linear2", lin("/attn_body/ffn/dense2/w/w"), W["/attn_body/ffn/dense2/b/w"],
-        alpha=float(W["/attn_body/ffn/alpha/w"]))
-    put("embedding.norm2", W["/attn_body/ln2/w/scale"], W["/attn_body/ln2/w/bias"])
+    if dense_embedding:
+        put("embedding.preproc", lin("/attn_body/embedding/preprocess/matmul/w"),
+            W["/attn_body/embedding/preprocess/add/w"])
+        put("embedding.norm", W["/attn_body/ln/w/scale"], W["/attn_body/ln/w/bias"])
+        put("embedding.linear1", lin("/attn_body/ffn/dense1/w/w"), W["/attn_body/ffn/dense1/b/w"])
+        put("embedding.linear2", lin("/attn_body/ffn/dense2/w/w"), W["/attn_body/ffn/dense2/b/w"],
+            alpha=float(W["/attn_body/ffn/alpha/w"]))
+        put("embedding.norm2", W["/attn_body/ln2/w/scale"], W["/attn_body/ln2/w/bias"])
+    else:       # the table is built into the model; an ONNX export carries lc0's own copy to check against
+        table = W["/const/pos_encoding"].reshape(64, 64)
+        assert torch.equal(table, model.embedding.pos_encoding), "position table differs from lc0's"
     shared = W["/const/smolgen_w"].t().contiguous()
     sd["gab_shared_weight"] = shared
     for i in range(nb):
@@ -536,9 +612,10 @@ class Lc0Vocab(PolicyVocab):
 
 # ----- the adapter ----------------------------------------------------------------
 
-# The official lc0 nets (https://lczero.org/play/networks/bestnets/). Both are BT4;
-# policytune-332 is BT4 fine-tuned for a better policy. A file is recognised by its
-# exact size, so a renamed copy still says which net it is.
+# The official lc0 nets (https://lczero.org/play/networks/bestnets/): BT4,
+# policytune-332 (BT4 fine-tuned for a better policy), and T82, the smaller net of
+# the generation before BT4. A file is recognised by its exact size, so a renamed
+# copy still says which net it is.
 _LC0_NETS = {
     "bt4": dict(
         display_name="Leela BT4", file="BT4-1024x15x32h-swa-6147500.pb.gz",
@@ -552,12 +629,17 @@ _LC0_NETS = {
             "BT4-1024x15x32h-swa-6147500-policytune-332.pb.gz",
         size=382645315,
         sha256="e6ada9d6c4a769bfab3aa0848d82caeb809aa45f83e6c605fc58a31d21bdd618"),
+    "t82": dict(
+        display_name="Leela T82", file="768x15x24h-t82-swa-7464000.pb.gz",
+        url="https://storage.lczero.org/files/768x15x24h-t82-swa-7464000.pb.gz",
+        size=170339855, sha256="98c8e077647092b7645c683bc60ca0c888b4904d9981a63a70ac47b0c4501b88"),
 }
 _LEELA_SUFFIXES = (".pb.gz", ".pb", ".onnx")     # lc0's own weights file, or an ONNX export
 _LEELA_ALIASES = {"bt4": "bt4", "leela-bt4": "bt4", "lc0-bt4": "bt4", "leela": "bt4",
                   "lc0": "bt4", "bt4-1024x15x32h": "bt4", "bt4-base": "bt4",
                   "bt4-332": "bt4-332", "bt4-it332": "bt4-332", "bt4-policytune": "bt4-332",
-                  "leela-bt4-332": "bt4-332"}
+                  "leela-bt4-332": "bt4-332",
+                  "t82": "t82", "leela-t82": "t82", "lc0-t82": "t82", "t82-768x15x24h": "t82"}
 _LEELA_LEGACY_FILE = "Leela_BT4_large_model.pb.gz"   # the old fixed name; used only if its size matches
 
 
@@ -633,7 +715,7 @@ def download_lc0_net(name, dest_dir=None):
 
 @_register_builtin
 class Lc0Adapter(ModelAdapter):
-    """An lc0 attention-body net (tested on BT4-1024x15x32h)."""
+    """An lc0 attention-body net (tested on BT4-1024x15x32h and T82-768x15x24h)."""
 
     name = "lc0"
     family = "Leela Chess Zero"
@@ -670,8 +752,8 @@ class Lc0Adapter(ModelAdapter):
 
     @classmethod
     def load(cls, alias="bt4", *, device=None, checkpoint_path=None, **_):
-        """`alias` names an official net, `bt4` (the base BT4) or `bt4-332`
-        (policytune-332), or is a path to an lc0 .pb.gz (or an .onnx export).
+        """`alias` names an official net, `bt4` (the base BT4), `bt4-332`
+        (policytune-332) or `t82`, or is a path to an lc0 .pb.gz (or an .onnx export).
         Without `checkpoint_path` the net is looked for in $CHESSFORMER_WEIGHTS,
         ./weights and the download cache (`lc0_cache_dir()`), and downloaded from
         lczero.org on first use (set CHESSFORMER_NO_DOWNLOAD=1 to refuse instead).
