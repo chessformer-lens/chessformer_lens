@@ -46,6 +46,12 @@ app in `bridge.py` / `app.py` / `ui.py` (and `web.py`, in a browser).
   `Δlogit = ablated − clean` (negative = the head carried it).
 - `ablate_grid_batch`: `ablate_grid` over a batch of positions at once;
   minimizes CPU syncs to take advantage of GPUs.
+- `steer_head` / `steer_neuron`: one head's or one neuron's write multiplied by a
+  factor (0 = ablated, 2 = doubled, −1 = flipped).
+- `steer`: several heads and neurons at once, `[("head", L, h), ("neuron", L, n), …]`
+  at one scale (or one each).
+- `direct_attribution`: direct logit attribution of one move (or `{move: weight}`)
+- `direct_attribution_batch`: the same over many positions in one forward pass
 
 **Tracing**
 
@@ -55,6 +61,9 @@ app in `bridge.py` / `app.py` / `ui.py` (and `web.py`, in a browser).
   skill diverges *inside* the stream, not just in the output.
 - `depth_points`: the readout points as `[{label, kind}]`, the x axis in every
   depth plot.
+- `readout_points`: the same as `[(hook_name, label)]`.
+- `move_tokens`: each move's from- and to-square tokens, concatenated, at every
+  readout point, for probes.
 - `move_logit_lens`: one move's depth curve: logit, probability, and rank at
   every readout point.
   - `logit_per_depth`: that curve's raw logit alone, unmasked.

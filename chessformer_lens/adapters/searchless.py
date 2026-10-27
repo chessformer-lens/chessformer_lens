@@ -482,6 +482,7 @@ class SearchlessAdapter(ModelAdapter):
                 value.append(logp[start + int(q[start:start + len(moves)].argmax())])
             else:
                 value.append(logp[start])
+        self._spans = [(start, [m.uci() for m in moves]) for start, moves in spans]   # for sequence_row
         if len(boards) == 1:
             self._last_q = policy[0].detach()
             self._last_focal_idx = int(toks[0, -1]) if spans[0][1] else None
@@ -518,6 +519,30 @@ class SearchlessAdapter(ModelAdapter):
             hooks[f"mlp_{i:02d}"] = blk.down
             hooks[f"block_{i:02d}"] = blk
         return hooks
+
+    def sequence_row(self, board_index, uci):
+        """The row of the last forward that holds `uci`'s sequence on that board."""
+        start, moves = self._spans[board_index]
+        if uci not in moves:
+            raise ValueError(f"{uci} is not a legal move there: only legal moves have a sequence")
+        return start + moves.index(uci)
+
+    def value_frozen(self, x, x0):
+        """The move's win probability from its sequence (T, d), read at the last token,
+        with the final norm frozen at `x0`'s statistics and the bucket softmax replaced
+        by its tangent at the real logits: Q0 + Σ_k p0_k (v_k − Q0)(z_k − z0_k), affine
+        in `x` and equal to the real Q at `x0`."""
+        m = self.model
+        ln = m.ln_f
+        x_last, x0_last = x[-1], x0[-1]
+        mu = x0_last.mean(-1, keepdim=True)
+        s = torch.sqrt(x0_last.var(-1, unbiased=False, keepdim=True) + ln.eps)
+        z = m.head((x_last - mu) / s * ln.weight + ln.bias)
+        z0 = m.head(ln(x0_last)).detach()
+        p0 = torch.softmax(z0, dim=-1)
+        v = m.bucket_values
+        q0 = (p0 * v).sum()
+        return q0 + (p0 * (v - q0) * (z - z0)).sum()
 
     def unembed(self, x):
         """(79, d) residual of the focal move's sequence -> (1968,): the focal move's Q read

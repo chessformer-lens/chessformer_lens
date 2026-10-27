@@ -17,6 +17,8 @@
   plot_move_microscope  "Move microscope": the logit curve as the app shows it
                         with the snap marker, and one move at two ratings
   plot_carrier_heads    the carrier grid · Δlogit = ablated − clean; costs
+  plot_direct_attribution  the same grid for the direct path: each head's and MLP's
+                        exact share of the move's logit (eng.direct_attribution)
                         ~num_blocks·(num_heads+1) forward passes
   plot_move_report      one move end to end: the position, its depth curve and
                         its carrier grid as three panels of one figure
@@ -904,6 +906,54 @@ def plot_carrier_heads(eng, board: chess.Board, elo: int = 1500, uci: str | None
     fig = _fig(figsize, width, titles)
     ax = fig.add_axes([.09, .16, .86, .74])
     _carrier_grid(ax, eng, board, elo, uci, oppo_elo)
+    return fig
+
+
+def plot_direct_attribution(eng, board: chess.Board, elo: int = 1500, uci: str | None = None,
+                            *, oppo_elo=None, figsize=(7.2, 5.6), width=None, titles=True):
+    """`eng.direct_attribution` as the carrier grid's twin: every head's and every
+    MLP's direct share of the move's logit, one forward pass. The last layer is
+    included (it is where the direct path usually lives); the embedding, the bias
+    terms and the sum check are in the caption. `uci` defaults to the model's move."""
+    if uci is None:
+        uci = eng.evaluate(board, elo, oppo_elo)["policy"][0][0]
+    d = eng.direct_attribution(board, elo, uci, oppo_elo)
+    heads, mlps = np.array(d["heads"]), np.array(d["mlps"])
+    nb, nh = heads.shape
+    cells = np.concatenate([heads, mlps[:, None]], axis=1)         # the MLP as one more column
+    # the heads and the MLP column each on their own scale: the last MLP's share is
+    # usually several times any head's, and would wash the heads out
+    scale = np.array([float(np.abs(heads).max()) or 1e-9] * nh + [float(np.abs(mlps).max()) or 1e-9])
+    sL, sC = np.unravel_index(int(np.argmax(np.abs(cells))), cells.shape)
+    gap = .6                                                       # between the heads and the MLP column
+
+    fig = _fig(figsize, width, titles)
+    ax = fig.add_axes([.09, .16, .86, .74])
+    ax.set_xlim(0, nh + gap + 1)
+    ax.set_ylim(nb, 0)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    for L in range(nb):
+        for c in range(nh + 1):
+            x = c if c < nh else nh + gap
+            ax.add_patch(plt.Rectangle((x, L), 1, 1, ec=BG, lw=.6, fc=_divmap(cells[L, c] / scale[c])))
+            if (L, c) == (sL, sC):
+                ax.add_patch(plt.Rectangle((x, L), 1, 1, fc="none", ec=QRING, lw=2, zorder=3))
+    for h in range(nh):
+        ax.text(h + .5, -.15, f"h{h}", ha="center", va="bottom", fontsize=_fs(7), color=MUTED, family=MONO)
+    ax.text(nh + gap + .5, -.15, "mlp", ha="center", va="bottom", fontsize=_fs(7), color=MUTED, family=MONO)
+    for L in range(nb):
+        ax.text(-.15, L + .5, f"L{L}", ha="right", va="center", fontsize=_fs(7), color=MUTED, family=MONO)
+    ax.text(0, -.85, f"direct logit attribution · {d['san']} · each write's share of the logit",
+            fontsize=_fs(8.5), color=MUTED, family=MONO, fontweight="600")
+    strongest = f"L{sL}·h{sC}" if sC < nh else f"L{sL}·mlp"
+    ax.text(0, nb + .55,
+            f"{'win prob' if d['units'] == 'win_prob' else 'logit'} {d['logit']:+.2f} = emb {d['emb']:+.2f} + heads {heads.sum():+.2f} + "
+            f"mlps {mlps.sum():+.2f} + bias {d['bias']:+.2f}  (off by {d['check']:.0e})\n"
+            f"strongest {strongest} {cells[sL, sC]:+.2f} · blue pushes {d['san']} down, orange up · "
+            f"heads and the mlp column on their own scales\n"
+            f"direct path only: the norms frozen, nothing downstream reacting (compare the carrier grid)",
+            fontsize=_fs(7.5), color=MUTED, family=MONO, va="top", alpha=.85)
     return fig
 
 

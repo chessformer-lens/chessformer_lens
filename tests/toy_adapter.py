@@ -190,6 +190,14 @@ class ToyAdapter(ModelAdapter):
         """Policy logits from one residual (T, d): through the final norm, at the readout token."""
         return self.model.heads(x.unsqueeze(0))[0][0]
 
+    def unembed_frozen(self, x, x0):
+        """The final norm frozen at `x0`'s statistics, then the linear policy."""
+        ln = self.model.ln_f
+        mu = x0.mean(-1, keepdim=True)
+        s = torch.sqrt(x0.var(-1, unbiased=False, keepdim=True) + ln.eps)
+        h = ((x - mu) / s * ln.weight + ln.bias)[self.model.readout]
+        return self.model.policy(h)
+
     def decompose_attention(self, layer, x, cond):
         attn = self.model.layers[int(layer)].attn
         q, k, v, _ = attn.scores(x)

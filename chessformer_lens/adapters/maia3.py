@@ -134,6 +134,11 @@ class Maia3Adapter(ModelAdapter):
                 self.cfg.checkpoint_path = m.registry.resolve_checkpoint_path(
                     self.spec, local_files_only=True)
             except Exception:
+                if os.environ.get("CHESSFORMER_NO_DOWNLOAD"):
+                    raise FileNotFoundError(
+                        f"{alias}: weights are not in the local Hugging Face cache and "
+                        f"CHESSFORMER_NO_DOWNLOAD is set. Unset it to download them from "
+                        f"https://huggingface.co/UofTCSSLab, or pass checkpoint_path") from None
                 print(f"chessformer_lens: {alias} weights are not in the local "
                       f"Hugging Face cache; downloading them now (this is a "
                       f"one-time, several-hundred-MB fetch for the larger "
@@ -214,6 +219,19 @@ class Maia3Adapter(ModelAdapter):
         promo = [scores[48 + ff, 56 + tf] + promo_bias[tf, pc]
                  for ff in range(8) for tf in range(8) for pc in range(4)]      # (256,)
         return torch.cat([scores.reshape(-1), torch.stack(promo)])             # (4352,)
+
+    def unembed_frozen(self, x, x0):
+        """The final norm as the affine map it was on `x0`, then the bilinear head."""
+        ln = self.model.transformer.norm
+        mu = x0.mean(-1, keepdim=True)
+        s = torch.sqrt(x0.var(-1, unbiased=False, keepdim=True) + ln.eps)
+        return self.unembed((x - mu) / s * ln.weight + ln.bias)
+
+    def stream_norms(self):
+        out = []
+        for i, blk in enumerate(self.model.transformer.layers):
+            out += [(f"attn_{i:02d}", blk.norm1), (f"mlp_{i:02d}", blk.norm2)]
+        return out
 
     def decompose_attention(self, layer, x, cond):
         return decompose(self.model.transformer.layers[int(layer)].self_attn, x)

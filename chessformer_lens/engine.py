@@ -50,11 +50,19 @@ model and its idiosyncraties in adapters/.
   ablate_head           forward pass with one head's write removed, exactly
   steer_head            the same write multiplied by a factor (activation steering:
                         2 doubles it, -1 flips it); steer_neuron for one MLP unit
+  steer                 several heads and neurons steered at once, each write
+                        recomputed live inside the pass, so a whole circuit can be
+                        turned down (or up) exactly in one forward
   ablate_grid           the carrier heatmap of one move: every head ablated in
                         turn, Δlogit = ablated − clean (negative = the head
                         carried it)
   ablate_grid_batch     ablate_grid called with batches of many positions at once;
                         minimizes unnecessary syncing to cpu to take advantage of gpus
+  direct_attribution    direct logit attribution of one move (or a weighted set of
+                        moves): the share of its logit each write to the stream (emb,
+                        every head, every MLP, one layer's neurons) carries straight
+                        into the policy head, exact with the norms frozen, one forward
+                        pass; direct_attribution_batch for many positions at once
   carrier_neurons       the carrier table of one move at neuron grain: every MLP
                         unit scored at once by attribution patching, with its
                         per-token footprint; optionally the top ones re-measured
@@ -76,6 +84,9 @@ model and its idiosyncraties in adapters/.
                         skill diverges inside the stream, not just in the
                         output
   depth_points          the readout points as [{label, kind}]—the x axis in the plots below
+  readout_points        the same as [(hook name, label)], for reading caches by depth
+  move_tokens           probe features: each move's from- and to-square tokens,
+                        concatenated, at every readout point, over many positions
   move_logit_lens       one move's depth curve: logit, probability and rank at
                         every readout point
   logit_per_depth       that curve's raw logit alone, unmasked
@@ -747,6 +758,62 @@ class ChessformerEngine:
                                    fwd_hooks=[(f"attn_{int(layer):02d}", sub)],
                                    return_type=return_type)
 
+    def steer(self, board, self_elo, components, scale=0.0, oppo_elo=None,
+              return_type: str = "policy"):
+        """Forward pass with several components steered at once, exactly. Each entry
+        of `components` is ("head", layer, head) or ("neuron", layer, neuron), or a
+        dict {kind, layer, index, scale}; `scale` applies to entries without their
+        own (0 removes the write, 1 is the clean model, 2 doubles it, -1 flips it).
+        each steered write is recomputed from its live input inside the pass."""
+        heads, neurons = {}, {}
+        for c in components:
+            if isinstance(c, dict):
+                kind, L, i, s = c["kind"], int(c["layer"]), int(c["index"]), float(c.get("scale", scale))
+            else:
+                kind, L, i = c[0], int(c[1]), int(c[2])
+                s = float(c[3]) if len(c) > 3 else float(scale)
+            if kind not in ("head", "neuron"):
+                raise ValueError(f"a component is ('head', layer, head) or ('neuron', layer, neuron), not {c!r}")
+            (heads if kind == "head" else neurons).setdefault(L, []).append((i, s))
+        cond = Conditioning.coerce(self_elo, oppo_elo)
+        live, pre_handles, fwd_hooks = {}, [], []
+
+        def catch(L):                           # the stream entering layer L's attention, live
+            def pre(_module, args, kwargs):     # Maia-3 passes it by keyword
+                live[L] = args[0] if args else next(iter(kwargs.values()))
+            return pre
+
+        def steer_heads(L, picks):
+            def fn(act):
+                dec = self.adapter.decompose_attention(L, live[L], cond)
+                writes = dec.head_writes()                               # (B, H, T, d)
+                for h, s in picks:
+                    act = act - (1.0 - s) * writes[:, h].to(act.dtype)
+                return act
+            return fn
+
+        for L, picks in heads.items():
+            pre_handles.append(self.hook_points[f"attn_{L:02d}"].register_forward_pre_hook(catch(L), with_kwargs=True))
+            fwd_hooks.append((f"attn_{L:02d}", steer_heads(L, picks)))
+        for L, picks in neurons.items():
+            lin2 = self.adapter.mlp_out(L)
+
+            def catch_hidden(_module, inp, L=L):
+                live[("h", L)] = inp[0]
+
+            def fn(act, L=L, picks=picks, lin2=lin2):
+                h = live[("h", L)]
+                idx = torch.tensor([n for n, _ in picks], device=act.device)
+                fade = torch.tensor([1.0 - s for _, s in picks], device=act.device, dtype=act.dtype)
+                return act - (h[..., idx] * fade) @ lin2.weight[:, idx].t().to(act.dtype)
+            pre_handles.append(lin2.register_forward_pre_hook(catch_hidden))
+            fwd_hooks.append((f"mlp_{L:02d}", fn))
+        try:
+            return self.run_with_hooks(board, cond, fwd_hooks=fwd_hooks, return_type=return_type)
+        finally:
+            for h in pre_handles:
+                h.remove()
+
     # ----- residual-stream evolution across depth ---------------------------
     @torch.no_grad()
     def residual_stream(self, board, self_elo=None, oppo_elo=None):
@@ -974,6 +1041,64 @@ class ChessformerEngine:
         cond = Conditioning.coerce(cond)
         return dataclasses.replace(cond, extras={**cond.extras, "move": move})
 
+    def readout_points(self):
+        """The readout points of the running residual stream in depth order, as
+        [(hook name, label)]: ("embed_in", "emb"), ("postattn_00", "a0"),
+        ("block_00", "m0"), ..., and ("encoder_out", "enc") where the heads read
+        through a final norm. The hook names are keys of a `run_with_cache` cache
+        and of `move_tokens`' result."""
+        return [(name, label) for name, label, _ in self._lens_steps()]
+
+    @torch.no_grad()
+    def move_tokens(self, boards, moves, self_elo=None, oppo_elo=None):
+        """Probe features for moves: at every readout point, each move's from-square
+        token concatenated with its to-square token. `moves` has one entry per board,
+        a move (any form `to_move` reads; a (from, to) pair as a tuple) or a list of
+        moves on that board; the rows follow that order. Returns {label: (n_moves,
+        2 * d_model)} keyed by the `readout_points` labels, on CPU. One forward pass
+        over `boards`; the activation snapshot is left as it was.
+
+        On a move-conditioned model (searchless: one sequence per legal move, the
+        move its last token) the feature is different: each move's last-token
+        residual in its own sequence, {label: (n_moves, d_model)}, not a from/to
+        concatenation. Models with neither raise."""
+        boards = list(boards)
+        if len(boards) != len(moves):
+            raise ValueError("one move (or list of moves) per board")
+        layout = self.layout(chess.Board())
+        per_move_sequence = layout.tokens[-1].kind == "move"
+        if not layout.is_board and not per_move_sequence:
+            raise ValueError(f"move_tokens needs square tokens or one sequence per move; "
+                             f"{self.arch.display_name} has neither")
+        # each row: its board and the move's two squares, as token indices (the model's frame)
+        rows = []
+        for r, (board, entry) in enumerate(zip(boards, moves)):
+            listed = entry if isinstance(entry, list) else [entry]
+            for mv in listed:
+                info = self.move_info(board, mv)
+                rows.append((r, info["uci"], info["from"], info["to"]))
+        board_of = torch.tensor([r for r, _, _, _ in rows])
+        sq_from = torch.tensor([f for _, _, f, _ in rows])
+        sq_to = torch.tensor([t for _, _, _, t in rows])
+
+        saved = (self._activations, self._aux, self._last_aux)
+        try:
+            self._forward_batch(boards, Conditioning.coerce(self_elo, oppo_elo))
+            out = {}
+            if per_move_sequence:
+                # each move's own sequence, read at its last token (the move token)
+                seq_row = torch.tensor([self.adapter.sequence_row(r, u) for r, u, _, _ in rows])
+                for name, label in self.readout_points():
+                    act = self._snap(name).float().cpu()                           # (rows, 79, d)
+                    out[label] = act[seq_row, -1]
+                return out
+            for name, label in self.readout_points():
+                act = self._snap(name).float().cpu()                               # (B, 64, d)
+                out[label] = torch.cat([act[board_of, sq_from], act[board_of, sq_to]], dim=-1)
+            return out
+        finally:
+            self._activations, self._aux, self._last_aux = saved
+
     def depth_points(self):
         """The readout points as [{label, kind}] in depth order — the x axis
         every *_per_depth curve below is indexed by, without spending a forward
@@ -1114,6 +1239,197 @@ class ChessformerEngine:
             self._capture_on_device = False
         return out
 
+
+    # ----- direct logit attribution ------------------------------------------
+    @torch.no_grad()
+    def direct_attribution(self, board, self_elo, move, oppo_elo=None, *, neurons_of=None):
+        """Direct logit attribution of one move: the share of its logit that each
+        write to the residual stream carries straight into the policy head — the
+        embedding, every head's write, every MLP's write and, for layer
+        `neurons_of`, every neuron's."""
+        cond = Conditioning.coerce(self_elo, oppo_elo)
+        # the forward the algebra reads (the snapshot), keeping one layer's hidden if asked
+        hidden = None
+        if neurons_of is None:
+            self.evaluate(board, cond)
+        else:
+            L = self._layer_ids([neurons_of])[0]
+            hidden = (L, self._mlp_hidden(board, cond, layers=[L], all_rows=True)[L].float())
+        out = self._direct_attribution([board], [move], cond, hidden)
+        moves = out["moves"][0]
+        single = not isinstance(move, dict)
+        return {"uci": moves[0][0] if single else None,
+                "san": board.san(chess.Move.from_uci(moves[0][0])) if single else None,
+                "moves": moves, "logit": float(out["logit"][0]), "emb": float(out["emb"][0]),
+                "heads": out["heads"][0].tolist(), "mlps": out["mlps"][0].tolist(),
+                "bias": float(out["bias"][0]), "neurons": out["neurons"],
+                "check": float(out["check"][0]), "units": out["units"]}
+
+    @torch.no_grad()
+    def direct_attribution_batch(self, boards, self_elo, moves_per_board, oppo_elo=None):
+        """`direct_attribution` over many positions in one forward pass. `moves_per_board`
+        holds one entry per board: a move, or a dict {move: weight}. Returns per-board
+        tensors {logit (B,), emb (B,), heads (B, n_layers, n_heads), mlps (B, n_layers),
+        bias (B,), check (B,), moves: [[(uci, weight)] per board], units}. The activation
+        snapshot is left as it was. Memory: every hook point's activation for the whole
+        batch, so pass a few hundred positions at a time."""
+        boards = list(boards)
+        if len(boards) != len(moves_per_board):
+            raise ValueError("one move (or {move: weight} dict) per board")
+        cond = Conditioning.coerce(self_elo, oppo_elo)
+        saved = (self._activations, self._aux, self._last_aux)
+        try:
+            self._forward_batch(boards, cond)
+            return self._direct_attribution(boards, list(moves_per_board), cond, None)
+        finally:
+            self._activations, self._aux, self._last_aux = saved
+
+    def _direct_attribution(self, boards, moves, cond, hidden):
+        """The algebra of direct_attribution(_batch) on the snapshot of a forward
+        over `boards`: tensors per board, see those two. `hidden` is (layer, its MLP
+        hidden (rows, T, ff)) for the neuron split, or None. The snapshot has one row
+        per board, or on a move-conditioned model one per legal move
+        (`adapter.sequence_row` says which); shares are computed per row and summed
+        into their board."""
+        win_prob = self.caps.policy == "win_prob"
+        nb, nh = self.arch.n_layers, self.arch.n_heads
+        norms = self.adapter.stream_norms()
+        points = ["embed_in"] + [p for L in range(nb) for p in (f"attn_{L:02d}", f"mlp_{L:02d}")]
+        dev = self.device
+        B = len(boards)
+
+        # each board's attributed quantity: (uci, row of its sequence, policy index, weight)
+        picks = []
+        for r, (board, spec) in enumerate(zip(boards, moves)):
+            weighted = spec.items() if isinstance(spec, dict) else [(spec, 1.0)]
+            pick = []
+            for mv, w in weighted:
+                info = self.move_info(board, mv)
+                pick.append((info["uci"], self.adapter.sequence_row(r, info["uci"]), info["idx"], float(w)))
+            picks.append(pick)
+
+        # each stream norm's input scale per token, recomputed from the snapshot: the
+        # input of the norm after a write is the running stream before it plus that write
+        # a LayerNorm centers and has an offset; an RMSNorm (Maia-3's blocks) does neither
+        def centered(ln):
+            return isinstance(ln, torch.nn.LayerNorm)
+
+        sigma = {}
+        stream = self._snap("embed_in").to(dev).float()
+        after = dict(norms)
+        for L in range(nb):
+            for name in (f"attn_{L:02d}", f"mlp_{L:02d}"):
+                stream = stream + self._snap(name).to(dev).float()
+                if name in after:
+                    ln = after[name]
+                    eps = ln.eps if ln.eps is not None else torch.finfo(torch.float32).eps
+                    if centered(ln):
+                        ms = stream.var(-1, unbiased=False, keepdim=True)
+                    else:
+                        ms = stream.pow(2).mean(-1, keepdim=True)
+                    sigma[name] = torch.sqrt(ms + eps)                              # (B, T, 1)
+                    # what the norm handed on is the stream the next write adds to
+                    if name.startswith("attn"):
+                        stream = self._snap(f"postattn_{L:02d}").to(dev).float()
+                    else:
+                        stream = self._snap(f"block_{L:02d}").to(dev).float()
+
+        # a frozen norm is the linear map v -> (v - mean v) * gamma / sigma, plus its offset
+        def frozen(name, ln, v):
+            if centered(ln):
+                v = v - v.mean(-1, keepdim=True)
+            return v / sigma[name] * ln.weight.detach().float()
+
+        def frozen_t(name, ln, u):              # its transpose, for the adjoint below
+            w = u * ln.weight.detach().float() / sigma[name]
+            return w - w.mean(-1, keepdim=True) if centered(ln) else w
+
+        # the readout, linearized per row: ½(∇f(x0) + ∇f(0)) · w is w's exact share of a
+        # quadratic (or affine) f. f is Σ weight · logit(move) on a policy-head model, and
+        # Σ weight · Q(move) on a win-probability one, each move read in its own row
+        x0 = self._snap(f"block_{nb - 1:02d}").to(dev).float()                      # (rows, T, d)
+        half = torch.zeros_like(x0)
+        logit = torch.zeros(B)
+        bias = torch.zeros(B)
+        for r in range(B):
+            for _, row, idx, w in picks[r]:
+                with torch.enable_grad():
+                    xg = x0[row].clone().requires_grad_(True)
+                    zg = torch.zeros_like(x0[row]).requires_grad_(True)
+                    if win_prob:
+                        f = w * self.adapter.value_frozen(xg, x0[row])
+                        f0 = w * self.adapter.value_frozen(zg, x0[row])
+                    else:
+                        f = w * self.adapter.unembed_frozen(xg, x0[row])[idx]
+                        f0 = w * self.adapter.unembed_frozen(zg, x0[row])[idx]
+                    g = torch.autograd.grad(f, xg)[0]
+                    g0 = torch.autograd.grad(f0, zg)[0]
+                half[row] += 0.5 * (g + g0)
+                logit[r] += float(f)
+                bias[r] += float(f0)
+
+        # every row's share goes to its board: the rows of a board, summed
+        board_of_row = torch.zeros(x0.size(0), dtype=torch.long)
+        for r in range(B):
+            for _, row, _, _ in picks[r]:
+                board_of_row[row] = r
+
+        def per_board(per_row):                 # (rows, ...) -> (B, ...)
+            out = torch.zeros(B, *per_row.shape[1:])
+            return out.index_add_(0, board_of_row, per_row.cpu())
+
+        # the writes pushed forward through the frozen norms must sum to the stream the
+        # head read; the norm offsets' shares go to `bias`
+        comps = [self._snap("embed_in").to(dev).float()]
+        offsets = []
+        for L in range(nb):
+            for name in (f"attn_{L:02d}", f"mlp_{L:02d}"):
+                comps.append(self._snap(name).to(dev).float())
+                if name in after:
+                    ln = after[name]
+                    comps = [frozen(name, ln, v) for v in comps]
+                    offsets = [frozen(name, ln, v) for v in offsets]
+                    if centered(ln):
+                        offsets.append(ln.bias.detach().float().expand_as(x0))
+        check_recon(sum(comps) + sum(offsets, torch.zeros_like(x0)), x0,
+                    "direct attribution: the writes do not sum to the stream the head read")
+        for v in offsets:
+            bias += per_board((half * v).sum((1, 2)))
+
+        # adjoint of the head's gradient at each write point: the share of a write
+        # made there is adjoint · write, so heads and neurons need no propagation
+        def adjoint(point):
+            a = half
+            for name, ln in reversed(norms):
+                if points.index(name) >= points.index(point):
+                    a = frozen_t(name, ln, a)
+            return a
+
+        emb = per_board((adjoint("embed_in") * self._snap("embed_in").to(dev).float()).sum((1, 2)))
+        heads = torch.zeros(B, nb, nh)
+        mlps = torch.zeros(B, nb)
+        neurons = None
+        for L in range(nb):
+            a = adjoint(f"attn_{L:02d}")                                             # (rows, T, d)
+            x_in = self._snap(self.adapter.attn_input_key(L)).to(dev)
+            dec = self.adapter.decompose_attention(L, x_in, cond)
+            writes = dec.head_writes().float()                                       # (rows, H, T, d)
+            heads[:, L] = per_board((writes * a[:, None]).sum((2, 3)))
+            if dec.b_O is not None:
+                bias += per_board((a * dec.b_O.detach().float()).sum((1, 2)))
+            a = adjoint(f"mlp_{L:02d}")
+            mlps[:, L] = per_board((a * self._snap(f"mlp_{L:02d}").to(dev).float()).sum((1, 2)))
+            if hidden is not None and L == hidden[0]:
+                lin2 = self.adapter.mlp_out(L)
+                w2 = lin2.weight.detach().float()                                    # (d, ff)
+                values = (hidden[1] * (a @ w2)).sum((0, 1))                          # (ff,), every row of the one board
+                b2 = float((a * lin2.bias.detach().float()).sum()) if lin2.bias is not None else 0.0
+                neurons = {"layer": L, "values": values.cpu().tolist(), "b2": b2}
+        total = emb + heads.sum((1, 2)) + mlps.sum(1) + bias
+        moves_out = [[(u, w) for u, _, _, w in pick] for pick in picks]
+        return {"logit": logit, "emb": emb, "heads": heads, "mlps": mlps, "bias": bias,
+                "check": (total - logit).abs(), "neurons": neurons, "moves": moves_out,
+                "units": "win_prob" if win_prob else "logit"}
 
     # ----- neurons: activation, exact ablation, carrier table ---------------
     def _mlp_hidden(self, board, self_elo=None, oppo_elo=None, layers=None, all_rows=False):

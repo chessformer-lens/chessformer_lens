@@ -559,6 +559,32 @@ class ModelAdapter(ABC):
             return "embed_in" if layer == 0 else f"block_{layer - 1:02d}"
         return f"attn_in_{layer:02d}"
 
+    def stream_norms(self) -> list:
+        """The LayerNorms the residual stream itself passes through, in order,
+        each tagged with the write it follows: [("attn_00", norm1), ("mlp_00",
+        norm2), ...] on a Post-LN model, nothing on a Pre-LN one. The engine's
+        direct attribution freezes them to make the stream a sum of writes."""
+        return []
+
+    def sequence_row(self, board_index: int, uci: str) -> int:
+        """The row of the last forward's batch that holds this move's sequence: the
+        board's own row on a model that reads one sequence per position. A
+        move-conditioned model (one sequence per legal move) maps the move to its row."""
+        return board_index
+
+    def value_frozen(self, x: torch.Tensor, x0: torch.Tensor) -> torch.Tensor:
+        """Win-probability models only: the move's stated win probability from its
+        sequence's residual `x` (T, d), with the head's nonlinearities frozen at what
+        they computed on `x0` (an affine function of `x`). See unembed_frozen."""
+        raise NotImplementedError(f"{type(self).__name__} states no win probability per move")
+
+    def unembed_frozen(self, x: torch.Tensor, x0: torch.Tensor) -> torch.Tensor:
+        """`unembed(x)` with the head's nonlinearities (its norm, an activation)
+        frozen at what they computed on `x0`, the stream the head really read:
+        then the logits are a quadratic function of `x`, which the engine's
+        direct attribution splits exactly. A linear head keeps the default."""
+        return self.unembed(x)
+
     def extensions(self) -> dict:
         """Architecture-specific accessors by name, e.g. {"gab": ...}."""
         return {}

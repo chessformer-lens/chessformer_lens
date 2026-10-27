@@ -91,6 +91,7 @@ def test_ui_page_is_model_neutral():
         assert name not in INDEX_HTML
     assert "Attention view not available yet" in INDEX_HTML
     assert "Win probability" in INDEX_HTML          # the action-value models' policy heading
+    assert "steerbar" in INDEX_HTML and "API.steer(" in INDEX_HTML
     assert "engine_move" in INDEX_HTML and "load_model" in INDEX_HTML
 
 

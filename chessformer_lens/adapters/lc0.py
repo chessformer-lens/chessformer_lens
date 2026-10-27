@@ -185,8 +185,11 @@ class BT4Model(nn.Module):
 
     def policy_logits(self, x):
         """(B, 64, dim) encoder output -> (B, 4288) move logits."""
-        B = x.size(0)
-        h = F.mish(self.policy_dense(x))
+        return self.policy_from_hidden(F.mish(self.policy_dense(x)))
+
+    def policy_from_hidden(self, h):
+        """The head after its activation: (B, 64, policy_dim) -> (B, 4288)."""
+        B = h.size(0)
         q, k = self.policy_q(h), self.policy_k(h)
         scores = (q @ k.transpose(-2, -1)) * self.policy_scale              # (B, 64, 64)
         offs = k[:, 56:64] @ self.policy_promo                             # (B, 8 to-files, 4)
@@ -836,6 +839,23 @@ class Lc0Adapter(ModelAdapter):
     def unembed(self, x):
         """(64, dim) residual -> (4288,) move logits, through BT4's policy head."""
         return self.model.policy_logits(x.unsqueeze(0))[0]
+
+    def unembed_frozen(self, x, x0):
+        """The head with its mish replaced by its tangent at the activation `x0`
+        produced, so the logits are bilinear in `x`."""
+        m = self.model
+        z0 = m.policy_dense(x0).detach()
+        with torch.enable_grad():
+            z = z0.clone().requires_grad_(True)
+            slope = torch.autograd.grad(F.mish(z).sum(), z)[0]
+        h = F.mish(z0) + slope * (m.policy_dense(x) - z0)
+        return m.policy_from_hidden(h.unsqueeze(0))[0]
+
+    def stream_norms(self):
+        out = []
+        for i, blk in enumerate(self.model.transformer.layers):
+            out += [(f"attn_{i:02d}", blk.norm1), (f"mlp_{i:02d}", blk.norm2)]
+        return out
 
     def decompose_attention(self, layer, x, cond):
         return decompose(self.model.transformer.layers[int(layer)].self_attn, x)

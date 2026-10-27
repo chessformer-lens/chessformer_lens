@@ -19,7 +19,15 @@ def golden_run(request, tmp_path_factory):
         pytest.skip("BT4 weights not found (set CHESSFORMER_WEIGHTS)")
     meta, tree, arrays = battery.load(name)
     eng = battery.make_engine(name, tmp_path_factory.mktemp("act"))
-    new_tree, new_arrays = battery.encode(battery.run(eng))
+    # CPU kernels reduce in a thread-count-dependent order, so bit equality only
+    # holds at the thread count the goldens were written with
+    threads = torch.get_num_threads()
+    if meta.get("threads"):
+        torch.set_num_threads(meta["threads"])
+    try:
+        new_tree, new_arrays = battery.encode(battery.run(eng))
+    finally:
+        torch.set_num_threads(threads)
     rtol = os.environ.get("CHESSFORMER_GOLDEN_RTOL")
     if rtol is None and meta.get("torch") != torch.__version__:
         rtol = "1e-5"

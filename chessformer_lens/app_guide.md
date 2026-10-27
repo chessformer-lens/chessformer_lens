@@ -1,7 +1,11 @@
 # App Guide 
 
-Launched with no model named, the app opens a picker listing every engine; choose one to load it (`chessformer_lens --list` prints them). Leela's nets and DeepMind's searchless nets download on first use.
-`chessformer_lens --web` opens the same app in your web browser instead of a window.
+**Background, if chess transformers are new to you**
+Each model here is a neural network that looks at one chess position and, in a single calculation, outputs a probability for every legal move (the `policy`) it can play and a guess at the current evaluation (`Win / Draw / Loss`). Maia-3 is trained on human games, so at a given `Rating` it predicts what a human of that strength would play, blunders included. Leela's nets are trained to play at a world competitive level. Other models may differ but each has a transformer neural network backing it, the same architecture that backs modern LLMs like Claude.
+
+Inside, the position is 64 tokens, one per square. They pass through a stack of layers, and each layer has two parts: `attention heads`, where every square gathers information from the other squares (like a knight's square looking at the squares it attacks), and an `MLP` of many `neurons` that is trained to perform some sort of calculations per token. Each part adds its contribution to a running vector per square, the `residual stream`, until at the end a policy head reads the moves off that stream. A move's `logit` is its raw score before the scores are turned into probabilities.
+
+This app takes that whole process apart and let's you play around with the internals. 
 
 **Play or Set up a Position**
 Click to move your pieces. Select an Elo for the engine (Maia-3 is created to mimic how HUMANS play at that strength, with all of our innate biases)
@@ -61,6 +65,9 @@ Under the logit-lens curve, a strip shows the model's own top move at every read
 **Analyze Many Positions**
 
 The drawer's second tab. Pick a pool — the 1,000 ordinary positions bundled with the package (real Lichess games), this game, or a file of FENs (one per line) — and press `Scan`: every MLP neuron's peak activation on every position is recorded on a background thread, a batch at a time, so the rest of the app keeps answering (a scan that would take over a minute pauses and asks first). The grid on the left is each layer's ten strongest neurons by mean peak (brighter = higher; circles for neurons, squares for heads elsewhere). Click one, or press `Where else does it fire? ▸` in the Neurons panel, and the middle board shows where it fires on average (the model's frame, side to move at the bottom) with its mean, spread, max and rank in the layer; on the right are the eight positions where it fires most. Click a position to see it in every panel; a strip under the board steps through the eight, and `↩ back to the game` restores the game exactly as it was.
+
+**Steer a circuit**
+Shift+click heads in the causal-heads grid and rows in the causal-neurons list (or turn on `Pick for steering` in the drawer and click them) to build a steer set; it appears above the board as chips with one strength slider (×0 removes every picked write, ×2 doubles it, ×−1 flips it). 
 
 **Search (Leela)**
 

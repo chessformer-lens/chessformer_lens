@@ -47,6 +47,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
   h1{font-size:15px;font-weight:600;letter-spacing:.3px;margin:0}
   .sub{font-size:11px;color:var(--muted);font-family:var(--mono)}
   .titlerow{display:flex;align-items:baseline;gap:4px 14px;flex-wrap:wrap}
+  /* the steer set: the heads and neurons picked for steering, above the board */
+  #steerbar{display:none;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0 2px;padding:6px 10px;
+    border:1px solid rgba(255,93,108,.45);border-radius:8px;background:rgba(255,93,108,.06);font-size:11px}
+  #steerbar.on{display:flex}
+  #steerbar .lbl{font-family:var(--mono);color:#ff5d6c;font-weight:700}
+  #steerbar .chip{font-family:var(--mono);padding:2px 7px}
+  #steerbar .chip b{margin-left:5px;color:var(--muted);font-weight:400}
+  #steerbar .chip:hover b{color:#ff5d6c}
+  #steerbar input[type=range]{width:110px}
+  #steerbar .note{font-family:var(--mono);color:var(--muted);flex-basis:100%}
+  .agc.cell.picked{outline:2px solid #ff5d6c;outline-offset:-2px}
+  .nrow.picked{background:rgba(255,93,108,.12)}
+  #steerpick.on{background:#ff5d6c;color:#0a1220;border-color:#ff5d6c;font-weight:700}
 
   /* board — capped at 640px, otherwise a share of the viewport height: what is
      left under it is the microscope drawer's room, so the drawer never has to
@@ -370,6 +383,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div class="sub" id="modelinfo">loading model…</div>
       <button id="guidebtn" style="margin-left:auto;padding:6px 16px;font-size:14px;font-weight:600" title="how to use the app">Guide</button>
     </div>
+    <div id="steerbar">
+      <span class="lbl">Steering</span><span id="steerchips" style="display:contents"></span>
+      <input type="range" id="steerscale" min="-2" max="3" step="0.25" value="0" title="strength of every picked write: 0 removes them, 1 is the clean model, 2 doubles them, −1 flips them">
+      <span class="ablx" id="steerx">×0</span>
+      <button id="steerclear" title="forget the set">Clear</button>
+      <span class="note" id="steernote"></span>
+    </div>
     <div id="boardwrap">
       <div id="board"></div>
       <svg id="arrowsvg" viewBox="0 0 640 640" width="640" height="640"></svg>
@@ -498,6 +518,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <span class="mlhint" id="mpstat"></span></span>
     <span class="mltags"><span class="mltag">logit lens</span><span class="mltag">causal heads</span><span class="mltag">causal neurons</span><span class="mltag">residual stream</span></span>
     <span class="mlhint" id="mlhint">click a move in the policy list</span>
+    <button id="steerpick" title="while on, clicking a head cell or a neuron row adds it to the steer set (shift+click always does)">Pick for steering</button>
     <button id="mlclose">✕ close</button>
   </div>
   <div class="mlbody" id="mpbody">
@@ -653,6 +674,7 @@ async function pickModel(err){
 async function chooseModel(alias){
   if(!alias || !API) return;
   $('pickererr').textContent='';
+  if(steerSet.length){ steerSet=[]; renderSteerBar(); ablData=null; ablKey=null; }   // its heads may not exist on the new model
   const info = await API.load_model(alias);
   if(info.error && !info.loading){ $('pickererr').textContent = info.error; return; }
   $('picker').style.display='none';
@@ -833,7 +855,7 @@ async function advance(){
   if(d.engine_to_move){
     setStatus(`${modelName()} (${cur.turn}) is thinking…`);
     await sleep(1500);
-    const r = await API.engine_move(elo, temp);
+    const r = steerSet.length ? await API.engine_move(elo, temp, steerSet, steerScale) : await API.engine_move(elo, temp);
     cur = r; renderBoard(); renderMoves();
     renderPolicy(r.engine_policy, r.engine_wdl, r.activation_file,
                  r.engine_move && r.engine_move.uci, r.engine_mlh, r.engine_value);
@@ -1003,15 +1025,18 @@ function renderPolicy(pol, wdl, actfile, playedUci, mlh, value){
   const winProb = MODEL_INFO && MODEL_INFO.caps && MODEL_INFO.caps.policy === 'win_prob';
   const polWord = winProb ? 'Win probability' : 'Policy';
   $('poltitle').textContent = abl
-    ? `${polWord} · clean (blue) vs ${ablData.label} ${ablData.word||'ablated'} (red)`
+    ? `${polWord} · clean (blue) vs ${ablData.label} ${ablData.word||'ablated'} (red)${steerSet.length && ablKey===steerKeyNow() ? ' · sorted by the steered policy' : ''}`
     : sr ? 'Raw policy (blue) · search visits (green)'
     : (pol ? `${polWord} · ${pol.length} legal moves` : `${polWord} over legal moves`);
   if(pol && pol.length){
     // ablating re-sorts the list by signed Δ — the moves the head was holding up
     // sink to the bottom, the ones it was suppressing rise to the top
-    const list = abl
-      ? pol.slice().sort((a,b)=>((abl[b.uci]||0)-b.p)-((abl[a.uci]||0)-a.p))
-      : pol;
+    // a steer set shows the steered policy itself: sorted by the red bars, so what
+    // the steered engine would play is at the top
+    const steering = abl && steerSet.length && ablKey===steerKeyNow();
+    const list = !abl ? pol
+      : steering ? pol.slice().sort((a,b)=>(abl[b.uci]||0)-(abl[a.uci]||0))
+      : pol.slice().sort((a,b)=>((abl[b.uci]||0)-b.p)-((abl[a.uci]||0)-a.p));
     list.forEach((m,i)=>{
       const row=document.createElement('div');
       row.className='prow'+(abl?' cmp':sr?' cmp'+(m.uci===lastSearch.bestmove?' top':''):(i===0?' top':''))
@@ -1021,11 +1046,12 @@ function renderPolicy(pol, wdl, actfile, playedUci, mlh, value){
       if(abl){
         // same shape as the second-rating compare, but the overlay is the ablated pass
         const pb=abl[m.uci]||0, dlt=(pb-m.p)*100, cls=dlt>=0?'up':'down';
-        row.title=`clean: ${(m.p*100).toFixed(1)}% · ablated: ${(pb*100).toFixed(1)}%`;
+        row.title=`clean: ${(m.p*100).toFixed(1)}% · ${steering?'steered':'ablated'}: ${(pb*100).toFixed(1)}%`;
         row.innerHTML=`<span class="san">${m.san}</span>`+
           `<span class="dualbar"><span class="bar a" style="width:${Math.max(1,m.p*100).toFixed(1)}%"></span>`+
           `<span class="bar r" style="width:${Math.max(1,pb*100).toFixed(1)}%"></span></span>`+
-          `<span class="pct delta ${cls}">${dlt>=0?'+':''}${dlt.toFixed(1)}</span>`;
+          (steering ? `<span class="pct">${(pb*100).toFixed(1)}%</span>`
+                    : `<span class="pct delta ${cls}">${dlt>=0?'+':''}${dlt.toFixed(1)}</span>`);
       } else if(sr){
         // the network's raw probability over the share of the search's visits
         const v=sr[m.uci]||{n:0,share:0,q:null};
@@ -1515,6 +1541,7 @@ async function updateAttention(){
   ensureAttUi(MODEL_INFO);
   updateAblation();          // keeps the red policy overlay in step with the picked head
   updateNeuron();            // and the neuron panel (its activation + overlay) with the board
+  updateSteer();             // and the steer set's overlay
   if(!IS_BOARD) return;      // nothing to draw on: the notice stands in (ablation above still runs)
   try{
     const d = await API.attention(elo, attLayer, attHead);
@@ -1541,10 +1568,63 @@ function ablKeyNow(){ return cur ? `${cur.fen}|${elo}|${attLayer}|${attHead}|${a
 // One overlay at a time: the head toggle or the neuron toggle, whichever is on.
 function ablPolicy(){
   if(!ablData) return null;
+  if(steerSet.length && ablKey===steerKeyNow()) return ablData.p;
   if(ablOn && ablKey===ablKeyNow()) return ablData.p;
   if(nablOn && ablKey===neuronKeyNow()) return ablData.p;
   return null;
 }
+
+/* ---- the steer set: several heads and neurons steered at once (engine.steer),
+   picked from the carrier grid and the causal-neurons list; the engine plays
+   with it while it is on, so a circuit can be turned down and watched. */
+let steerSet=[], steerScale=0, steerPick=false, steerBusy=false, steerDirty=false;
+const steerName=c=>`L${c.layer}·${c.kind==='head'?'h':'n'}${c.index}`;
+function steerKeyNow(){ return cur ? `${cur.fen}|${elo}|steer|${steerSet.map(steerName).join(',')}|${steerScale}` : null; }
+function steerHas(kind, layer, index){ return steerSet.some(c=>c.kind===kind&&c.layer===layer&&c.index===index); }
+function steerToggle(kind, layer, index){
+  const i=steerSet.findIndex(c=>c.kind===kind&&c.layer===layer&&c.index===index);
+  if(i>=0) steerSet.splice(i,1); else steerSet.push({kind, layer, index});
+  if(steerSet.length && (ablOn||nablOn)){ ablOn=false; nablOn=false; updateAblation(); updateNeuronAblation(); }
+  renderSteerBar(); updateSteer();
+}
+function renderSteerBar(){
+  const bar=$('steerbar'); bar.classList.toggle('on', steerSet.length>0);
+  const chips=$('steerchips'); chips.innerHTML='';
+  for(const c of steerSet){
+    const ch=document.createElement('span'); ch.className='chip';
+    ch.innerHTML=`${steerName(c)}<b>✕</b>`; ch.title='remove from the set';
+    ch.onclick=()=>steerToggle(c.kind, c.layer, c.index);
+    chips.appendChild(ch);
+  }
+  $('steerx').textContent=xs(steerScale);
+  document.querySelectorAll('#ablgrid .cell').forEach(d=>{ if(d.dataset.l!==undefined) d.classList.toggle('picked', steerHas('head', +d.dataset.l, +d.dataset.h)); });
+  document.querySelectorAll('#nrows .nrow').forEach(r=>{ if(r.dataset.l!==undefined) r.classList.toggle('picked', steerHas('neuron', +r.dataset.l, +r.dataset.n)); });
+}
+async function updateSteer(){
+  if(!steerSet.length){ if(ablData && ablKey && ablKey.includes('|steer|')){ ablData=null; ablKey=null; } repaintPolicy(); return; }
+  if(!API || !cur || cur.game_over) return;
+  const key=steerKeyNow();
+  if(ablData && ablKey===key) return;
+  if(steerBusy){ steerDirty=true; return; }
+  steerBusy=true;
+  try{
+    const d=await API.steer(elo, steerSet, steerScale);
+    if(!d || d.error){ ablData=null; ablKey=null; $('steernote').textContent='⚠ '+(d&&d.error?d.error:'steering failed'); }
+    else {
+      const p={}; for(const r of d.rows) p[r.uci]=r.p_abl;
+      ablData={label:`${d.n} steered`, word:xs(d.scale), p:p, wdl_abl:d.wdl_abl, value_abl:d.value_abl}; ablKey=key;
+      const top=d.rows.slice().sort((a,b)=>b.p_abl-a.p_abl)[0];
+      $('steernote').textContent=`every picked write ${xs(d.scale)}, recomputed live in one pass (exact across layers) · `+
+        `red bars = the steered policy · the engine plays with it · steered top move ${top?top.san:'—'}`;
+    }
+    repaintPolicy();
+  }catch(e){ console.error(e); ablData=null; ablKey=null; $('steernote').textContent='⚠ steering failed — see console'; repaintPolicy(); }
+  finally{ steerBusy=false; if(steerDirty){ steerDirty=false; updateSteer(); } }
+}
+$('steerscale').oninput=e=>{ steerScale=+e.target.value; $('steerx').textContent=xs(steerScale); updateSteer(); };
+$('steerclear').onclick=()=>{ steerSet=[]; renderSteerBar(); updateSteer(); };
+$('steerpick').onclick=()=>{ steerPick=!steerPick; $('steerpick').classList.toggle('on', steerPick);
+  $('steerpick').textContent=steerPick?'✓ Picking for steering':'Pick for steering'; };
 function ablNote(msg, err){ const n=$('ablnote'); if(!n) return; n.textContent=msg; n.classList.toggle('err', !!err); }
 function repaintPolicy(){
   if(cmpOn){ if(lastCmp) renderCompare(lastCmp); }
@@ -1579,7 +1659,8 @@ async function updateAblation(){
     if(ablDirty){ ablDirty=false; updateAblation(); }
   }
 }
-$('ablbtn').onclick=()=>{ ablOn=!ablOn; if(ablOn && nablOn){ nablOn=false; updateNeuronAblation(); } updateAblation(); };
+$('ablbtn').onclick=()=>{ ablOn=!ablOn; if(ablOn && nablOn){ nablOn=false; updateNeuronAblation(); }
+  if(ablOn && steerSet.length){ steerSet=[]; renderSteerBar(); } updateAblation(); };
 $('ablscale').oninput=()=>{ $('ablx').textContent=xs($('ablscale').value); };
 $('ablscale').onchange=()=>{ ablScale=+$('ablscale').value; updateAblation(); };
 
@@ -1649,7 +1730,8 @@ async function updateNeuronAblation(){
     if(nablDirty){ nablDirty=false; updateNeuronAblation(); }
   }
 }
-$('nablbtn').onclick=()=>{ nablOn=!nablOn; if(nablOn && ablOn){ ablOn=false; updateAblation(); } updateNeuronAblation(); };
+$('nablbtn').onclick=()=>{ nablOn=!nablOn; if(nablOn && ablOn){ ablOn=false; updateAblation(); }
+  if(nablOn && steerSet.length){ steerSet=[]; renderSteerBar(); } updateNeuronAblation(); };
 $('nablscale').oninput=()=>{ $('nablx').textContent=xs($('nablscale').value); };
 $('nablscale').onchange=()=>{ nablScale=+$('nablscale').value; updateNeuronAblation(); };
 $('nlayer').onchange=()=>{ nLayer=+$('nlayer').value; updateNeuron(); };
@@ -2029,7 +2111,10 @@ function renderAblGrid(g){
           d.title=`L${L}·h${hh}  Δ ${v>=0?'+':''}${v.toFixed(2)} — ${v<0?'supports':'suppresses'} ${g.san}`;
           if(L===sL && hh===sH) d.classList.add('strong');
         }
-        d.onclick=((L2,H2)=>()=>{             // jump the attention panel to this head
+        d.dataset.l=L; d.dataset.h=hh;
+        if(steerHas('head', L, hh)) d.classList.add('picked');
+        d.onclick=((L2,H2)=>(ev)=>{           // jump the attention panel to this head, or pick it for steering
+          if(steerPick || ev.shiftKey){ steerToggle('head', L2, H2); return; }
           attLayer=L2; attHead=H2;
           const info=MODEL_INFO||{};
           buildChips('layerChips', info.num_blocks||8, L2, i=>{ attLayer=i; updateAttention(); });
@@ -2043,7 +2128,7 @@ function renderAblGrid(g){
   if(g && sL>=0) $('mlnote').innerHTML=
     `base logit ${g.base_logit.toFixed(2)} · strongest L${sL}·h${sH} `+
     `${g.deltas[sL][sH]>=0?'+':''}${g.deltas[sL][sH].toFixed(2)} · `+
-    `blue = carrier, orange = suppressor · L${NO_CARRIER_LAYER} excluded · click a cell → that head`;
+    `blue = carrier, orange = suppressor · L${NO_CARRIER_LAYER} excluded · click a cell → that head · shift+click → steer it`;
 }
 
 // cell size for a drawer grid (the causal heads, the top neurons): as large as
@@ -2084,7 +2169,10 @@ function renderNeurons(d){
       `<span class="${ex==null?'dim':cls(ex)}">${ex==null?'':'exact '+f(ex)}</span>`);
     row.title=`layer ${t.layer} neuron ${t.neuron}`+(IS_BOARD?` · acts most at ${canonToReal(t.peak, cur.turn)}`:'')+` · `+
       `${(ex!=null?ex:t.est)<0?'carries':'suppresses'} ${d.san} · click to open it in the neuron panel`;
-    row.onclick=()=>{ nLayer=t.layer; nIdx=t.neuron; updateNeuron(); };
+    row.dataset.l=t.layer; row.dataset.n=t.neuron;
+    if(steerHas('neuron', t.layer, t.neuron)) row.classList.add('picked');
+    row.onclick=(ev)=>{ if(steerPick || ev.shiftKey){ steerToggle('neuron', t.layer, t.neuron); return; }
+      nLayer=t.layer; nIdx=t.neuron; updateNeuron(); };
     el.appendChild(row);
   });
   renderNet();
@@ -2093,7 +2181,7 @@ function renderNeurons(d){
     `Δ = first-order effect of removing the unit on ${d.san}'s logit · blue = carrier, orange = suppressor · `+
     (IS_BOARD ? 'mini-board = where on the board it acts · '
               : 'per-square footprints not available yet for this model (its tokens aren\'t board squares) · ')+
-    `L${NO} excluded, as in the head grid · click a row to open it in the neuron panel`;
+    `L${NO} excluded, as in the head grid · click a row to open it in the neuron panel · shift+click → steer it`;
 }
 
 /* ---- the network diagram: input squares, one column of dots per MLP layer, output.

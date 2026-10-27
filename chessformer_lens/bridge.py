@@ -20,7 +20,7 @@ from pathlib import Path
 
 import chess
 
-from .core import available_models
+from .core import available_models, sample_from_logits
 from .engine import (LeelaEngine, NeuronScan, find_lc0, load_engine, load_positions,
                      ordinary_positions, resolve_engine)
 
@@ -277,9 +277,10 @@ class LensApi:
         b.push(mv)
         return self._base()
 
-    def engine_move(self, elo=1500, temperature=1.0):
+    def engine_move(self, elo=1500, temperature=1.0, components=None, scale=0.0):
         """The engine plays the side to move (sampled at `temperature`; a
-        win-probability model plays its argmax, as DeepMind's do)."""
+        win-probability model plays its argmax, as DeepMind's do). With
+        `components` it plays the steered model (engine.steer at `scale`)."""
         if not self.ready:
             return {"error": self.error or "model still loading"}
         b = self.board
@@ -290,11 +291,15 @@ class LensApi:
 
         # policy + activations for the position the engine is about to move in
         pol, res, act = self._policy_for_current(elo, save=True)
+        t = None if self.engine.caps.policy == "win_prob" else float(temperature)
         with self._lock:
-            mv, _ = self.engine.select_move(
-                b, self_elo=int(elo),
-                temperature=None if self.engine.caps.policy == "win_prob" else float(temperature)
-            )
+            if components:
+                steered = self.engine.steer(b, int(elo), list(components), float(scale))
+                if t is None:
+                    t = 0.0
+                mv = self.engine._idx_to_move(b, sample_from_logits(steered["_logits"], t))
+            else:
+                mv, _ = self.engine.select_move(b, self_elo=int(elo), temperature=t)
         if mv is None and pol:
             mv = chess.Move.from_uci(pol[0]["uci"])
         played = None
@@ -963,3 +968,28 @@ class LensApi:
         except Exception as exc:  # e.g. the head-write reconstruction assert
             return {"error": f"{type(exc).__name__}: {exc}"}
         return {"layer": int(layer), "head": int(head), "scale": float(scale), **self._versus(base, abl)}
+
+    def steer(self, elo=1500, components=(), scale=0.0):
+        """Several heads and neurons steered at once (engine.steer: each write
+        recomputed live, exact across layers) against a clean pass — same shape as
+        `ablate`. `components` is [{kind, layer, index}, ...]; `scale` 0 removes them."""
+        if not self.ready:
+            return {"error": self.error or "model still loading"}
+        b = self.board
+        if b.is_game_over():
+            return {"error": "game over"}
+        if not components:
+            return {"error": "nothing picked"}
+        arch = self.engine.arch
+        for c in components:
+            width = arch.n_heads if c.get("kind") == "head" else arch.d_mlp
+            if c.get("kind") not in ("head", "neuron") or not 0 <= int(c["layer"]) < arch.n_layers \
+                    or not 0 <= int(c["index"]) < width:
+                return {"error": f"no such component on {arch.display_name}: {c}"}
+        try:
+            with self._lock:
+                base = self.engine.evaluate(b, self_elo=int(elo))
+                abl = self.engine.steer(b, int(elo), list(components), float(scale))
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        return {"n": len(components), "scale": float(scale), **self._versus(base, abl)}

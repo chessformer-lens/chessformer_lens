@@ -174,6 +174,116 @@ def test_attention_is_a_distribution_over_its_terms(eng):
             assert a["mask"] is not None
 
 
+def _real_value(eng, b, weighted):
+    """Σ weight · logit(move), or Σ weight · Q(move) on a win-probability model."""
+    if eng.caps.policy == "win_prob":
+        q = dict(eng.evaluate(b, 1500)["policy"])
+        return sum(w * q[u] for u, w in weighted.items())
+    lg = eng.run_with_hooks(b, 1500, return_type="logits")[0]
+    return sum(w * float(lg[eng.move_info(b, u)["idx"]]) for u, w in weighted.items())
+
+
+@pytest.mark.parametrize("pos", POSITIONS + ["promo_white"])
+def test_direct_attribution_sums_to_the_logit(eng, pos):
+    """The writes' direct shares, with every norm frozen, add up to the move's real
+    logit; one layer's neurons add up to that layer's MLP share."""
+    b = battery.board_for(pos)
+    mv = eng.evaluate(b, 1500)["policy"][0][0]
+    L = eng.arch.n_layers - 1
+    d = eng.direct_attribution(b, 1500, mv, neurons_of=L)
+    assert d["units"] == ("win_prob" if eng.caps.policy == "win_prob" else "logit")
+    real = _real_value(eng, b, {mv: 1.0})
+    tol = 1e-3 * max(1.0, abs(real))
+    assert abs(d["logit"] - real) < tol
+    total = d["emb"] + sum(map(sum, d["heads"])) + sum(d["mlps"]) + d["bias"]
+    assert abs(total - real) < tol and d["check"] < tol
+    assert abs(sum(d["neurons"]["values"]) + d["neurons"]["b2"] - d["mlps"][L]) < tol
+    assert len(d["heads"]) == eng.arch.n_layers and len(d["heads"][0]) == eng.arch.n_heads
+
+
+def test_direct_attribution_batch_matches_single(eng):
+    """The batched attribution, one forward for all positions, gives each board what
+    the single call gives it, for a single move and for a weighted set; the weighted
+    quantity is Σ weight · logit; the snapshot is left alone."""
+    boards, specs = [], []
+    for i, pos in enumerate(battery.POSITIONS):
+        b = battery.board_for(pos)
+        pol = eng.evaluate(b, 1500)["policy"]
+        boards.append(b)
+        if i % 2 == 0:
+            specs.append(pol[0][0])
+        else:                                   # "mean of two others minus the top move"
+            specs.append({pol[0][0]: -1.0, pol[1][0]: 0.5, pol[2][0]: 0.5})
+    eng.evaluate(boards[0], 1500)
+    before = {k: v.clone() for k, v in eng._activations.items()}
+    bat = eng.direct_attribution_batch(boards, 1500, specs)
+    assert all(torch.equal(before[k], eng._activations[k]) for k in before)
+    assert bat["heads"].shape == (len(boards), eng.arch.n_layers, eng.arch.n_heads)
+    assert bat["mlps"].shape == (len(boards), eng.arch.n_layers)
+    for r, (b, spec) in enumerate(zip(boards, specs)):
+        one = eng.direct_attribution(b, 1500, spec)
+        real = _real_value(eng, b, spec if isinstance(spec, dict) else {spec: 1.0})
+        tol = 1e-3 * max(1.0, abs(real))
+        assert abs(one["logit"] - real) < tol and abs(float(bat["logit"][r]) - real) < tol
+        assert torch.allclose(bat["heads"][r], torch.tensor(one["heads"]), atol=tol)
+        assert torch.allclose(bat["mlps"][r], torch.tensor(one["mlps"]), atol=tol)
+        for key in ("emb", "bias"):
+            assert abs(float(bat[key][r]) - one[key]) < tol
+        assert float(bat["check"][r]) < tol and one["check"] < tol
+        assert (one["uci"] is None) == isinstance(spec, dict)
+
+
+def test_readout_points_and_move_tokens(eng):
+    """readout_points are the depth axis as (hook, label); move_tokens is each move's
+    from- and to-square token at every one, as a single cache would give it."""
+    points = eng.readout_points()
+    assert [lab for _, lab in points] == [p["label"] for p in eng.depth_points()]
+    boards = [battery.board_for(p) for p in ("start", "ruy_black", "promo_white")]
+    layout = eng.layout(boards[0])
+    if eng.caps.policy == "win_prob":
+        # one sequence per move: its last-token residual, here checked on the model's own
+        # best move, the sequence a single cache holds
+        best = eng.evaluate(boards[1], 1500)["policy"][0][0]
+        feats = eng.move_tokens(boards, ["e2e4", ["b7b5", best], "b7a8q"], 1500)
+        assert all(v.shape == (4, eng.arch.d_model) for v in feats.values())
+        _, cache = eng.run_with_cache(boards[1], 1500)
+        name, label = points[len(points) // 2]
+        assert torch.allclose(feats[label][2], cache[name][-1], atol=1e-4)
+        return
+    if not layout.is_board:
+        with pytest.raises(ValueError, match="square tokens"):
+            eng.move_tokens(boards, ["e2e4", "a6b5", "b7a8q"], 1500)
+        return
+    moves = ["e2e4", ["a6b5", "f6e4"], "b7a8q"]
+    feats = eng.move_tokens(boards, moves, 1500)
+    assert list(feats) == [lab for _, lab in points]
+    assert all(v.shape == (4, 2 * eng.arch.d_model) for v in feats.values())
+    _, cache = eng.run_with_cache(boards[1], 1500)
+    info = eng.move_info(boards[1], "f6e4")
+    name, label = points[len(points) // 2]
+    ref = torch.cat([cache[name][info["from"]], cache[name][info["to"]]])
+    assert torch.allclose(feats[label][2], ref, atol=1e-4)
+
+
+def test_steer_matches_the_single_component_paths(eng):
+    """`steer` on one head / one neuron is `steer_head` / `steer_neuron`; at scale 1
+    it is the clean model; several components at once run and give a policy."""
+    b = battery.board_for("ruy_black")
+    L, h, n = eng.arch.n_layers - 2, 1, 3
+    clean = eng.run_with_hooks(b, 1500, return_type="logits")[0]
+    one = eng.steer(b, 1500, [("head", L, h)], 0.5, return_type="logits")[0]
+    assert torch.allclose(one, eng.steer_head(b, 1500, L, h, 0.5, return_type="logits")[0], atol=1e-4)
+    one = eng.steer(b, 1500, [("neuron", L, n)], -1.0, return_type="logits")[0]
+    assert torch.allclose(one, eng.steer_neuron(b, 1500, L, n, -1.0, return_type="logits")[0], atol=1e-4)
+    same = eng.steer(b, 1500, [("head", 0, 0), ("neuron", L, n)], 1.0, return_type="logits")[0]
+    assert torch.allclose(same, clean, atol=1e-4)
+    res = eng.steer(b, 1500, [("head", 0, 0), {"kind": "head", "layer": L, "index": h, "scale": 2.0},
+                              ("neuron", 0, 5), ("neuron", L, n)], 0.0)
+    assert {u for u, _ in res["policy"]} == {m.uci() for m in b.legal_moves}
+    with pytest.raises(ValueError):
+        eng.steer(b, 1500, [("layer", 0, 0)])
+
+
 def test_gab_methods_follow_the_capability(eng):
     b = battery.board_for("start")
     if eng.has_generated_bias:
