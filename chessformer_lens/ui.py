@@ -366,11 +366,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .pkerr{color:var(--loss);font-size:11px;margin-top:8px;white-space:pre-wrap;font-family:var(--mono)}
 
   /* the app guide (app_guide.md, rendered at import): same overlay as the picker */
-  #guide .box{width:min(720px,92vw);font-size:12.5px;line-height:1.55}
-  #guide h3{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;
+  #guide .box{width:min(800px,92vw);font-size:14.5px;line-height:1.6}
+  #guide h3{font-size:12.5px;font-weight:600;color:var(--muted);text-transform:uppercase;
     letter-spacing:.6px;margin:18px 0 6px}
   #guide p{margin:0 0 8px} #guide ul{margin:0 0 8px;padding-left:20px}
-  #guide code{font-family:var(--mono);font-size:11px;background:var(--chart-bg);
+  #guide code{font-family:var(--mono);font-size:13px;background:var(--chart-bg);
     border:1px solid var(--line);border-radius:4px;padding:0 4px}
   #guideclose{float:right;padding:3px 8px;font-size:11px}
 </style>
@@ -381,7 +381,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="titlerow">
       <h1>Chessformer interpretability app</h1>
       <div class="sub" id="modelinfo">loading model…</div>
-      <button id="guidebtn" style="margin-left:auto;padding:6px 16px;font-size:14px;font-weight:600" title="how to use the app">Guide</button>
+      <button id="guidebtn" style="margin-left:auto;padding:8px 22px;font-size:16px;font-weight:600" title="how to use the app">Guide</button>
     </div>
     <div id="steerbar">
       <span class="lbl">Steering</span><span id="steerchips" style="display:contents"></span>

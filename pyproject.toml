@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chessformer_lens"
-version = "3.1"
+version = "3.2"
 description = "An interpretability lens and visualizer for chess transformers (Maia-3, Lc0 BT4 and DeepMind searchless backends)."
 readme = "README.md"
 requires-python = ">=3.10"
