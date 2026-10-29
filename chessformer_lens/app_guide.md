@@ -5,7 +5,7 @@ Each model here is a neural network that looks at one chess position and, in a s
 
 Inside, the position is 64 tokens, one per square. They pass through a stack of layers, and each layer has two parts: `attention heads`, where every square gathers information from the other squares (like a knight's square looking at the squares it attacks), and an `MLP` of many `neurons` that is trained to perform some sort of calculations per token. Each part adds its contribution to a running vector per square, the `residual stream`, until at the end a policy head reads the moves off that stream. A move's `logit` is its raw score before the scores are turned into probabilities.
 
-This app takes that whole process apart and let's you play around with the internals. 
+This app takes that whole process apart and let's you play around with the internals. If you would just like to play against a specific model without the internals, click `Simple Play`.
 
 **Play or Set up a Position**
 Click to move your pieces. Select an Elo for the engine (Maia-3 is created to mimic how HUMANS play at that strength, with all of our innate biases)
@@ -14,7 +14,9 @@ It is also possible to `paste a FEN to load` a position with the `Load` button.
 
 `Random position` generates a position through a random walk of the engine's policies. It is ideal for testing mechanistic hypothesis on realistic positions. 
 
-In setup mode both sides are yours; clicks move pieces ignoring legality, and clicking the same square twice deletes the piece. 
+In setup mode both sides are yours; clicks move pieces ignoring legality.
+Double clicking a piece removes it. Double clicking an empty square cycles through
+different pieces to add to the position.
 Select a color to continue as it from that position.
 
 The last move is indicated by a gold arrow, legal moves for a selected piece are indicated by dots, captures are drawn as rings. The games

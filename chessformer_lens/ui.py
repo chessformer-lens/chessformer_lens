@@ -11,7 +11,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chessformer Interpretability</title>
+<title>ChessformerLens App</title>
 <style>
   /* Pitch-black neutrals — the app's original scheme, restored 2026-08 after a
      brief lighter run (see interp_plot.py, which still carries the lifted set
@@ -39,14 +39,40 @@ INDEX_HTML = r"""<!DOCTYPE html>
   /* while the microscope is up, the whole top layout shrinks toward the top so the
      drawer can rise 1.5in above the columns' bottom edge without covering anything */
   body.microscope .wrap{transform:scale(var(--shrink,1))}
+  /* simple play: just the game. The two interp columns, the microscope drawer,
+     the steer bar and the scanned-positions strip go, and the dock space with them */
+  body.simple .arch, body.simple .neur, body.simple #mlens, body.simple #steerbar,
+  body.simple #mpstrip, body.simple .right>.card{display:none !important}
+  /* the moves card takes the right column: as wide as the board leaves, as tall
+     as the board, the move list filling it in a readable size */
+  body.simple .right{max-width:none}
+  body.simple #movescard{display:flex !important;flex-direction:column;flex:1;min-height:0}
+  body.simple #movescard h2{font-size:14px}
+  body.simple .moves{flex:1;max-height:none;font-size:16px;line-height:1.8;color:var(--text)}
+  body.simple .status{font-size:14px}
+  body.simple .wrap{padding-bottom:16px}
+  /* and the board takes the room: the window's height under the header, or its
+     width less the moves card */
+  body.simple #boardwrap{width:min(calc(100vh - 100px), calc(100vw - 420px));
+    height:min(calc(100vh - 100px), calc(100vw - 420px))}
   .left{display:flex;flex-direction:column;gap:10px}
   .right{flex:1;display:flex;flex-direction:column;gap:12px;min-width:250px;max-width:320px;height:100%}
   .arch{flex:0 0 350px;display:flex;flex-direction:column;height:100%}
   .neur{flex:1 1 214px;min-width:214px;display:flex;flex-direction:column;height:100%}
 
-  h1{font-size:15px;font-weight:600;letter-spacing:.3px;margin:0}
+  h1{font-size:18px;font-weight:600;letter-spacing:.3px;margin:0}
   .sub{font-size:11px;color:var(--muted);font-family:var(--mono)}
-  .titlerow{display:flex;align-items:baseline;gap:4px 14px;flex-wrap:wrap}
+  /* the header on one row, as wide as the board: the title and buttons keep their size and
+     the model info gives way with an ellipsis (its full text is the tooltip). width:0 plus
+     min-width:100% stops the row from widening the board's column */
+  .titlerow{display:flex;align-items:center;gap:12px;white-space:nowrap;width:0;min-width:100%}
+  .titlerow>h1{flex-shrink:0}
+  /* the two header buttons, side by side at the row's right end */
+  .hbtns{display:flex;gap:4px;margin-left:auto;flex-shrink:0}
+  .hbtns button{padding:6px 12px;font-size:13px;font-weight:600}
+  /* the model on two short lines, name · device over its shape, so it fits beside the title */
+  #modelinfo{flex:0 1 auto;min-width:0;line-height:1.3}
+  #modelinfo span{display:block;overflow:hidden;text-overflow:ellipsis}
   /* the steer set: the heads and neurons picked for steering, above the board */
   #steerbar{display:none;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0 2px;padding:6px 10px;
     border:1px solid rgba(255,93,108,.45);border-radius:8px;background:rgba(255,93,108,.06);font-size:11px}
@@ -379,9 +405,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="wrap">
   <div class="left">
     <div class="titlerow">
-      <h1>Chessformer interpretability app</h1>
+      <h1>ChessformerLens App</h1>
       <div class="sub" id="modelinfo">loading model…</div>
-      <button id="guidebtn" style="margin-left:auto;padding:8px 22px;font-size:16px;font-weight:600" title="how to use the app">Guide</button>
+      <span class="hbtns">
+        <button id="simplebtn" title="hide the interpretability panels and just play">Simple Play</button>
+        <button id="guidebtn" title="how to use the app">Guide</button>
+      </span>
     </div>
     <div id="steerbar">
       <span class="lbl">Steering</span><span id="steerchips" style="display:contents"></span>
@@ -444,7 +473,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div class="act" id="actfile" style="margin-top:4px"></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="movescard">
       <h2>Moves</h2>
       <div class="moves" id="moves">—</div>
       <div class="fenrow"><input id="fenin" class="fenbox" spellcheck="false" placeholder="paste a FEN to load"><button id="fenload">Load</button></div>
@@ -583,6 +612,7 @@ function pieceImg(sym){ const i=document.createElement('img');
 
 let API=null, cur=null, orient='white', sel=null, busy=false;
 let elo=1500, temp=1, pendingPromo=null, MODEL_INFO=null, setupMode=false;
+let simple=false;      // simple play: the interp panels are hidden and never asked for (see setSimple)
 // false for a model whose tokens are not the 64 squares: the board panels
 // (attention, neuron activation, carrier footprints) show a notice instead
 let IS_BOARD=true;
@@ -631,6 +661,7 @@ async function boot(){
     MODEL_INFO = info;
     setModelInfo();
     ensureAttUi(info);
+    if(info.simple) setSimple(true);
     console.log('[lens] bridge ready', info);
     $('loading').style.display='none';
     fitLayout();
@@ -689,10 +720,14 @@ function setModelInfo(){
   const i=MODEL_INFO;
   IS_BOARD = i.is_board !== false;
   document.body.classList.toggle('tokmode', !IS_BOARD);
-  $('modelinfo').textContent =
-    `${i.alias||i.target||'model'} · ${i.device||'cpu'} · `+
-    `${i.num_blocks||8} layers × ${i.num_heads||8} heads × ${i.dim_vit||256}d`+
+  const nameLine = `${i.alias||i.target||'model'} · ${i.device||'cpu'}`;
+  const shapeLine = `${i.num_blocks||8} layers × ${i.num_heads||8} heads × ${i.dim_vit||256}d`+
     (IS_BOARD ? '' : ` · ${i.n_tokens} tokens`);
+  const info = $('modelinfo'); info.innerHTML = '';
+  for(const line of [nameLine, shapeLine]){
+    const span = document.createElement('span'); span.textContent = line; info.appendChild(span);
+  }
+  info.title = nameLine + ' · ' + shapeLine;   // the whole line, when a narrow window cuts it short
   // A model with no rating input (Leela BT4) gets no rating card: the engine
   // ignores the value, so the slider and the second-rating compare would be
   // dead controls. Everything else on the page is derived from the engine.
@@ -803,6 +838,28 @@ async function freeEdit(from, to){
   busy=false;
   await advance();
 }
+// set-up mode's piece cycle: double-clicking an empty square puts a white pawn there and
+// starts it, each click on that square then shows the next piece, and a click anywhere else
+// stops it on the piece showing. It lasts only while the position is the one it left, so
+// any other change to the board (a new game, a FEN, a move) ends it.
+let cycle=null;        // {sq, fen}: the cycling square and the position after its last step
+function cyclingAt(name){ return cycle!==null && cycle.sq===name && cur && cur.fen===cycle.fen; }
+async function cycleStep(name){
+  busy=true;
+  cur = await API.cycle_square(name);
+  cycle = {sq:name, fen:cur.fen};
+  renderBoard(); renderMoves();
+  busy=false;
+}
+// the double-click: a piece is taken off, an empty square starts the cycle. The two
+// single clicks before it only selected and deselected. On the cycling square it is just
+// two quick clicks, already counted as two steps, so it is ignored.
+async function dblonSquare(name){
+  if(busy || !cur || !setupMode || cyclingAt(name)) return;
+  sel=null; cycle=null;
+  if(pieceColorAt(name)){ await freeEdit(name, null); return; }
+  await cycleStep(name);
+}
 $('elo').addEventListener('input', e=>{
   elo = +e.target.value; $('eloval').textContent = elo;
   scheduleProbe();
@@ -848,18 +905,20 @@ async function advance(){
   // show policy for whoever is to move; if it's the engine's turn, let it reply
   if(cur.game_over){ finishUI(); return; }
   busy=true;
-  let d = await API.policy(elo, true);
-  cur = d; renderBoard();
-  renderPolicy(d.policy, d.wdl, d.activation_file, null, d.mlh, d.value);
+  if(!simple){      // the human side's policy only feeds the chart, hidden in simple play
+    const d = await API.policy(elo, true);
+    cur = d; renderBoard();
+    renderPolicy(d.policy, d.wdl, d.activation_file, null, d.mlh, d.value);
+  }
   setStatus();
-  if(d.engine_to_move){
+  if(cur.engine_to_move){
     setStatus(`${modelName()} (${cur.turn}) is thinking…`);
     await sleep(1500);
     const r = steerSet.length ? await API.engine_move(elo, temp, steerSet, steerScale) : await API.engine_move(elo, temp);
     cur = r; renderBoard(); renderMoves();
     renderPolicy(r.engine_policy, r.engine_wdl, r.activation_file,
                  r.engine_move && r.engine_move.uci, r.engine_mlh, r.engine_value);
-    if(!r.game_over){
+    if(!r.game_over && !simple){
       const h = await API.policy(elo, true);
       cur = h; renderBoard();
       renderPolicy(h.policy, h.wdl, h.activation_file, null, h.mlh, h.value);
@@ -896,7 +955,8 @@ function renderBoard(){
   const pieces = cur ? parseFen(cur.fen) : {};
   const last = cur && cur.last_move ? [cur.last_move.slice(0,2),cur.last_move.slice(2,4)] : [];
   const targets = (sel && !setupMode) ? legalTargets(sel) : {};
-  const hlSq = IS_BOARD ? (attQueryReal || null) : null;
+  // the attention query ring: an interp mark, so not in simple play
+  const hlSq = (IS_BOARD && !simple) ? (attQueryReal || null) : null;
   for(let row=0;row<8;row++) for(let col=0;col<8;col++){
     const name=sqName(row,col);
     const fileIdx=FILES.indexOf(name[0]), rankNum=+name[1];
@@ -905,7 +965,7 @@ function renderBoard(){
     d.className='sq '+(isLight?'light':'dark');
     d.dataset.sq=name;
     if(last.includes(name)) d.classList.add('lastmove');
-    if(sel===name) d.classList.add('sel');
+    if(sel===name || cyclingAt(name)) d.classList.add('sel');
     if(name===hlSq) d.classList.add('attq');
     if(cur && (cur.human_to_move || setupMode)) d.classList.add('playable');
     const pc=pieces[name];
@@ -918,6 +978,7 @@ function renderBoard(){
     if(col===0){const c=document.createElement('span');c.className='coord r';c.textContent=name[1];d.appendChild(c);}
     if(row===7){const c=document.createElement('span');c.className='coord f';c.textContent=name[0];d.appendChild(c);}
     d.onclick=()=>onSquare(name);
+    d.ondblclick=()=>dblonSquare(name);
     board.appendChild(d);
   }
   drawArrow();
@@ -969,8 +1030,15 @@ function realToCanon(name, turn){
 async function onSquare(name){
   if(busy || !cur) return;
   if(setupMode){
+    if(cyclingAt(name)){ await cycleStep(name); return; }       // the cycle: the next piece
+    if(cycle!==null){
+      // a click elsewhere stops the cycle; the policy (skipped while cycling) catches up.
+      // not awaited, so a double-click that follows is not blocked by it
+      cycle=null; renderBoard();
+      if(!simple) probe();
+    }
     if(sel===null){ if(pieceColorAt(name)){ sel=name; renderBoard(); } return; }
-    if(name===sel){ await freeEdit(sel, null); sel=null; return; }   // click selected square again = delete
+    if(name===sel){ sel=null; renderBoard(); return; }   // click selected square again = deselect
     await freeEdit(sel, name); sel=null; return;
   }
   if(!cur.human_to_move) return;
@@ -1537,7 +1605,7 @@ function canonToReal(idx, turn){
 }
 
 async function updateAttention(){
-  if(!API || !cur || cur.game_over) return;
+  if(!API || !cur || cur.game_over || simple) return;
   ensureAttUi(MODEL_INFO);
   updateAblation();          // keeps the red policy overlay in step with the picked head
   updateNeuron();            // and the neuron panel (its activation + overlay) with the board
@@ -1771,7 +1839,7 @@ function ensureAttUi(info){    // idempotent: builds the boards + chips once
 function fitLayout(){
   const bw=$('boardwrap'), dr=$('mlens'); if(!bw || !dr) return;
   // layout geometry (offset*, unaffected by the open-state scale transform)
-  const boardBottom=bw.offsetTop+bw.offsetHeight, colBottom=boardBottom+EXTRA;
+  const boardBottom=bw.offsetTop+bw.offsetHeight, colBottom=boardBottom+(simple?0:EXTRA);
   let wrapTop=16;
   document.querySelectorAll('.right, .arch, .neur').forEach(col=>{
     wrapTop=col.offsetTop;
@@ -1933,11 +2001,30 @@ document.addEventListener('keydown', e=>{
   else if($('mlens').classList.contains('open')) closeMoveLens();
 });
 $('guidebtn').onclick=()=>{ $('guide').style.display='flex'; };
+/* simple play: hide every interp panel and stop asking the engine for them
+   (updateAttention and updateMoveLens, which every panel refresh goes through,
+   return early). Entering it drops the steer set and any ablation, so the
+   engine plays the clean policy and no hidden overlay lingers on the chart. */
+function setSimple(on){
+  simple=!!on;
+  document.body.classList.toggle('simple', simple);
+  $('simplebtn').textContent = simple ? 'Interpretability Mode' : 'Simple Play';
+  if(cur) renderBoard();     // the query ring comes and goes with the mode
+  if(simple){
+    setDrawerOpen(false);
+    steerSet=[]; ablOn=false; nablOn=false;
+    renderSteerBar(); updateAblation(); updateNeuronAblation();
+  } else {
+    probe();      // the policy chart missed the last moves; this also refreshes the panels
+  }
+  fitLayout();
+}
+$('simplebtn').onclick=()=>setSimple(!simple);
 $('guideclose').onclick=()=>{ $('guide').style.display='none'; };
 $('guide').onclick=e=>{ if(e.target.id==='guide') $('guide').style.display='none'; };
 
 async function updateMoveLens(){
-  if(!API || !mlMoves.length || !cur) return;
+  if(!API || !mlMoves.length || !cur || simple) return;
   if(mlBusy){ mlDirty=true; return; }   // a click landed mid-fetch -> pick it up when we finish
   mlBusy=true;
   try{

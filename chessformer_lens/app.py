@@ -22,6 +22,10 @@ def _args():
                     help="same as the positional argument")
     ap.add_argument("--list", action="store_true",
                     help="print every registered engine and its aliases, then exit")
+    ap.add_argument("--simple", action="store_true",
+                    help="simple play: just the board, the policy and the engine's "
+                         "evaluation, with the interpretability panels hidden "
+                         "(the Simple play button in the app toggles this too)")
     ap.add_argument("--web", action="store_true",
                     help="serve the app to your web browser instead of opening a window")
     ap.add_argument("--port", type=int, default=0,
@@ -63,13 +67,13 @@ def main():
     if args.web:
         from .web import serve
         serve(alias, host=args.host, port=args.port, open_browser=not args.no_browser,
-              block=True)
+              block=True, simple=args.simple)
         return
     try:
         import webview  # pywebview
     except ImportError:
         sys.exit("pywebview is not installed.  Run:  pip install --upgrade chessformer_lens")
-    api = LensApi(alias=alias)
+    api = LensApi(alias=alias, simple=args.simple)
     # Size the window to the screen: the board is sized from the window's height
     # (the side panels run 1.5in under it and the drawer peeks below that), so a
     # fixed 880px window left a small board on a large display.

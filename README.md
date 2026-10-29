@@ -121,6 +121,7 @@ CHESSFORMER_MODEL=5m chessformer_lens
 chessformer_lens bt4                # Leela Chess Zero BT4 — see above   
 chessformer_lens searchless-9m      # DeepMind's searchless chess, 9M (also 136m, 270m)
 chessformer_lens --web              # the same app in your web browser
+chessformer_lens maia3-5m --simple  # load app in simple mode; no interpretability
 ```
 
 

@@ -45,6 +45,9 @@ RANDOM_MIN_LEGAL = 6
 # A scan that would run past this many seconds pauses and asks first.
 SCAN_PAUSE_SECONDS = 60
 
+# set-up mode's piece cycle, in order: each step puts down the piece after the one on the square
+PIECE_CYCLE = ["P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k"]
+
 
 def side_name(turn):
     return "white" if turn == chess.WHITE else "black"
@@ -61,9 +64,12 @@ class LensApi:
     `compare_residual` are not wired to any control — they're kept as a stable
     surface for poking at the model from the webview console."""
 
-    def __init__(self, alias=None, engine=None):
-        """`engine`: an engine already loaded (a notebook's), used as is."""
+    def __init__(self, alias=None, engine=None, simple=False):
+        """`engine`: an engine already loaded (a notebook's), used as is.
+        `simple`: open in simple play (the page hides the interpretability
+        panels and never asks for them; the engine only plays and evaluates)."""
         self.engine = engine
+        self.simple = bool(simple)
         self.ready = engine is not None
         self.error = None
         if engine is not None:
@@ -168,6 +174,8 @@ class LensApi:
             # the Search card: Leela with lc0 installed
             "search": bool(eng and isinstance(eng, LeelaEngine) and find_lc0()),
             "activation_dir": str(ACT_DIR) if SAVE_ACTIVATIONS else None,
+            # start in simple play: just the game, no interpretability panels
+            "simple": self.simple,
         }
         if eng:
             layout = eng.layout(chess.Board())
@@ -420,6 +428,28 @@ class LensApi:
                 self.board.set_piece_at(chess.parse_square(to), piece)
             except Exception:
                 pass
+        self.human_both = True
+        self.san_history = []
+        self._game_return = None
+        return self._base()
+
+    def cycle_square(self, sq):
+        """One step of set-up mode's piece cycle on `sq`: the piece after the one
+        on it in PIECE_CYCLE. An empty square gets a white pawn; after the black
+        king the square is empty again. Stays in analyze mode."""
+        try:
+            sq = chess.parse_square(sq)
+        except Exception:
+            return self._base()
+        piece = self.board.piece_at(sq)
+        if piece is None:
+            next_idx = 0
+        else:
+            next_idx = PIECE_CYCLE.index(piece.symbol()) + 1
+        if next_idx < len(PIECE_CYCLE):
+            self.board.set_piece_at(sq, chess.Piece.from_symbol(PIECE_CYCLE[next_idx]))
+        else:
+            self.board.remove_piece_at(sq)
         self.human_both = True
         self.san_history = []
         self._game_return = None

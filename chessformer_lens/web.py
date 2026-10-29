@@ -164,14 +164,15 @@ def _colab():
 
 
 def serve(alias=None, *, engine=None, host="127.0.0.1", port=0, open_browser=True,
-          block=False):
+          block=False, simple=False):
     """Serve the app for `alias` (no alias: the page opens on the model picker),
     or for `engine`, one already loaded, and open it. The app and your own
     cells then share that engine, so let a panel finish before running a cell
     on it. With block=False (the default, for notebooks) the server runs on a
     daemon thread and is returned; `server.shutdown()` stops it. With
-    block=True this serves until interrupted."""
-    server = make_server(LensApi(alias=alias, engine=engine), host, port)
+    block=True this serves until interrupted. simple=True opens in simple
+    play (no interpretability panels; the page's Simple play button)."""
+    server = make_server(LensApi(alias=alias, engine=engine, simple=simple), host, port)
     print(f"chessformer_lens: the app is at {server.url}", flush=True)
     if _colab():
         from google.colab import output
