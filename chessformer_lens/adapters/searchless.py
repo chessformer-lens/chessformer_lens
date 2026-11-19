@@ -459,7 +459,8 @@ class SearchlessAdapter(ModelAdapter):
         toks, spans = self._sequences(boards, focals)
         logp = self.model(toks)                                      # (R, 128)
         q = (logp.exp() * self.model.bucket_values).sum(-1)          # (R,)
-        # a position whose focal move is unknown is run again with its best move in row 0
+        # a position whose focal move is unknown is run again with its best move in row 0, unless
+        # the caller reads no activations (extras["reorder_focal"] False): Q is the same either way
         rerun = False
         for board, focal, (start, moves) in zip(boards, focals, spans):
             if focal is None and moves and board.fen() not in self._best:
@@ -468,7 +469,7 @@ class SearchlessAdapter(ModelAdapter):
                     del self._best[next(iter(self._best))]
                 self._best[board.fen()] = moves[best].uci()
                 rerun = True
-        if rerun:
+        if rerun and cond.extras.get("reorder_focal", True):
             toks, spans = self._sequences(boards, focals)
             logp = self.model(toks)
             q = (logp.exp() * self.model.bucket_values).sum(-1)

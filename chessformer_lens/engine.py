@@ -413,8 +413,12 @@ class ChessformerEngine:
         boards = list(boards)
         if not boards:
             return []
+        # nothing reads the snapshot here, so searchless doesn't need to rerun
+        # it's batch just to put each position's best move in row 0
+        cond = Conditioning.coerce(self_elo, oppo_elo)
+        cond = dataclasses.replace(cond, extras={**cond.extras, "reorder_focal": False})
         with self.no_capture():
-            out = self.adapter.forward(boards, Conditioning.coerce(self_elo, oppo_elo))
+            out = self.adapter.forward(boards, cond)
         res = []
         for i, b in enumerate(boards):
             _, policy = self._policy(b, out.policy[i].float())
