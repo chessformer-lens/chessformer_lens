@@ -139,3 +139,18 @@ def test_search_runs_lc0_on_the_same_net():
     assert r["rows"][0]["uci"] == "b3b8" and r["seconds"] > 0
     with pytest.raises(RuntimeError):
         eng.search(board, 10, lc0="/no/such/lc0")
+
+
+@pytest.mark.skipif(lc0._find_lc0_net("bt3") is None or not shutil.which("lc0"),
+                    reason="lc0 and BT3 weights needed")
+def test_bt3_matches_lc0():
+    """BT3's smolgen has no activation: read as swish, the Opera policy is off by 0.6.
+    lc0 runs on blas, because its Metal backend differs on promotion priors."""
+    from chessformer_lens.engine import LeelaEngine
+    eng = LeelaEngine("bt3", device="cpu")
+    assert eng.adapter.arch.display_name == "Leela BT3"
+    for fen in (OPERA, "3r2k1/1P3ppp/8/8/8/8/5PPP/6K1 w - - 0 30"):
+        board = chess.Board(fen)
+        ours = dict(eng.evaluate(board, 1500)["policy"])
+        rows = eng.search(board, 1, PolicyTemperature=1.0, Backend="blas")["rows"]
+        assert max(abs(ours[r["uci"]] - r["p"]) for r in rows) < 1e-3

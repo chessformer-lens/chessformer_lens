@@ -44,6 +44,9 @@ from .smolgen import GabAccess, PostLNBlock, SmolgenAttention, decompose
 # lc0's own .pb.gz, or the ONNX file `lc0 leela2onnx` produces.
 
 _BT4_LN_EPS = 1e-3
+# lc0's ActivationFunction numbers for the smolgen layers: swish on BT4 and T82, none on BT3
+_SMOLGEN_SWISH = 7
+_SMOLGEN_NONE = 3
 
 
 class _BT4Embedding(nn.Module):
@@ -126,11 +129,15 @@ class _BT4Encoder(nn.Module):
         return x
 
 
-def _bt4_block(d, heads, ff, gen, per_square, intermediate, gab_weight):
-    """One BT4 encoder layer: Post-LN, mish FFN, swish smolgen with no bias on
-    its compress layer, LayerNorm eps 1e-3."""
+def _bt4_block(d, heads, ff, gen, per_square, intermediate, gab_weight, smolgen_act):
+    """One BT4 encoder layer: Post-LN, mish FFN, smolgen (swish, or no activation
+    on BT3) with no bias on its compress layer, LayerNorm eps 1e-3."""
+    if smolgen_act == "swish":
+        act = nn.SiLU()
+    else:
+        act = nn.Identity()          # SmolgenAttention reads act=None as GELU
     attn = SmolgenAttention(d, heads, gen, per_square, intermediate, gab_weight,
-                            act=nn.SiLU(), ln_eps=_BT4_LN_EPS, compress_bias=False)
+                            act=act, ln_eps=_BT4_LN_EPS, compress_bias=False)
     return PostLNBlock(attn, d, ff, F.mish, ln_eps=_BT4_LN_EPS)
 
 
@@ -147,11 +154,13 @@ class BT4Model(nn.Module):
       moves_left     expected plies to the end of the game
     `policy_map` (1858,) is lc0's gather to its own move list, kept for testing.
     `embedding` picks the input embedding: "dense" (BT4, `pre` channels of
-    board-wide preprocessing) or "pe_map" (T82, the fixed position table)."""
+    board-wide preprocessing) or "pe_map" (T82, the fixed position table).
+    `smolgen_act` is "swish" (BT4, T82) or "none" (BT3)."""
 
     def __init__(self, num_blocks=15, dim=1024, num_heads=32, ff=1536, gen=256,
                  per_square=32, intermediate=256, pre=512, policy_dim=1024,
-                 value_dim=128, mlh_dim=32, policy_scale=1 / 32, embedding="dense"):
+                 value_dim=128, mlh_dim=32, policy_scale=1 / 32, embedding="dense",
+                 smolgen_act="swish"):
         super().__init__()
         self.cfg = types.SimpleNamespace(
             num_blocks=num_blocks, dim_vit=dim, num_heads=num_heads,
@@ -166,7 +175,8 @@ class BT4Model(nn.Module):
             raise ValueError(f"embedding must be 'dense' or 'pe_map', not {embedding!r}")
         self.gab_shared_weight = nn.Parameter(torch.empty(64 * 64, gen))
         self.transformer = _BT4Encoder(
-            [_bt4_block(dim, num_heads, ff, gen, per_square, intermediate, self.gab_shared_weight)
+            [_bt4_block(dim, num_heads, ff, gen, per_square, intermediate, self.gab_shared_weight,
+                        smolgen_act)
              for _ in range(num_blocks)])
         # attention policy head
         self.policy_dense = nn.Linear(dim, policy_dim)
@@ -311,20 +321,22 @@ def _pb_arrays(path) -> dict:
         problems.append("not an attention-body network")
     if _pb_int(nf, 4) != 3 or _pb_int(nf, 5) != 2 or _pb_int(nf, 6) != 1:
         problems.append("needs an attention policy, a WDL value head and a moves-left head")
-    if _pb_int(nf, 7) != 1 or _pb_int(nf, 9) not in (0, 1) or _pb_int(nf, 8) != 7:
-        problems.append("needs mish body and FFN activations and swish smolgen")
+    if (_pb_int(nf, 7) != 1 or _pb_int(nf, 9) not in (0, 1)
+            or _pb_int(nf, 8) not in (_SMOLGEN_SWISH, _SMOLGEN_NONE)):
+        problems.append("needs mish body and FFN activations and a swish or plain smolgen")
     if 35 not in w:
         problems.append("needs smolgen")
     if 23 in w:
         problems.append("policy-head encoder layers are not supported")
     if problems:
         raise NotImplementedError(f"{path}: this lc0 net is not supported: " + "; ".join(problems)
-                                  + ". Tested on BT4-1024x15x32h and T82-768x15x24h.")
+                                  + ". Tested on BT4-1024x15x32h, BT3-768x15x24h and T82-768x15x24h.")
 
     def dense(msg, field, n_in, n_out):            # stored (out, in) -> ONNX (in, out)
         return _pb_layer(msg, field).reshape(n_out, n_in).t().contiguous()
 
     W = {}
+    W["/const/smolgen_activation"] = torch.tensor(_pb_int(nf, 8))     # not an ONNX name; ONNX keeps it in the graph
     emb = _pb_layer(w, 26).numel()
     dense_embedding = 37 in w                      # BT4's preprocess layer; T82 has the position table instead
     if dense_embedding:
@@ -441,12 +453,17 @@ def _bt4_from_arrays(W, device) -> BT4Model:
     ff = W["/encoder0/ffn/dense1/w/w"].shape[1]
     dense_embedding = "/attn_body/embedding/preprocess/matmul/w" in W     # BT4; T82 has the position table
     pre = W["/attn_body/embedding/preprocess/matmul/w"].shape[1] // 64 if dense_embedding else 0
+    smolgen_act = "swish"                # what an .onnx export is read as: its initializers do not say
+    if "/const/smolgen_activation" in W:
+        if int(W["/const/smolgen_activation"]) == _SMOLGEN_NONE:
+            smolgen_act = "none"
     model = BT4Model(nb, d, heads, ff, gen, per_sq, inter, pre,
                      policy_dim=W["/policy/Q/matmul/w"].shape[1],
                      value_dim=W["/value/embed/matmul/w"].shape[1],
                      mlh_dim=W["/mlh/embed/matmul/w"].shape[1],
                      policy_scale=float(W["/policy/scale/w"]),
-                     embedding="dense" if dense_embedding else "pe_map")
+                     embedding="dense" if dense_embedding else "pe_map",
+                     smolgen_act=smolgen_act)
     for i in range(nb):     # nn.MultiheadAttention assumes a 1/sqrt(d_head) scale
         s = float(W[f"/encoder{i}/mha/QK/scale/w"])
         assert abs(s - dh ** -0.5) < 1e-6, f"encoder{i}: QK scale {s} is not 1/sqrt({dh})"
@@ -636,13 +653,18 @@ _LC0_NETS = {
         display_name="Leela T82", file="768x15x24h-t82-swa-7464000.pb.gz",
         url="https://storage.lczero.org/files/768x15x24h-t82-swa-7464000.pb.gz",
         size=170339855, sha256="98c8e077647092b7645c683bc60ca0c888b4904d9981a63a70ac47b0c4501b88"),
+    "bt3": dict(
+        display_name="Leela BT3", file="BT3-768x15x24h-swa-2790000.pb.gz",
+        url="https://storage.lczero.org/files/networks-contrib/BT3-768x15x24h-swa-2790000.pb.gz",
+        size=190937780, sha256="e3067757d1fc2dfc66947b21d15ace0cedf4c54254fc1de83d77c378a3e8b8e1"),
 }
 _LEELA_SUFFIXES = (".pb.gz", ".pb", ".onnx")     # lc0's own weights file, or an ONNX export
 _LEELA_ALIASES = {"bt4": "bt4", "leela-bt4": "bt4", "lc0-bt4": "bt4", "leela": "bt4",
                   "lc0": "bt4", "bt4-1024x15x32h": "bt4", "bt4-base": "bt4",
                   "bt4-332": "bt4-332", "bt4-it332": "bt4-332", "bt4-policytune": "bt4-332",
                   "leela-bt4-332": "bt4-332",
-                  "t82": "t82", "leela-t82": "t82", "lc0-t82": "t82", "t82-768x15x24h": "t82"}
+                  "t82": "t82", "leela-t82": "t82", "lc0-t82": "t82", "t82-768x15x24h": "t82",
+                  "bt3": "bt3", "leela-bt3": "bt3", "lc0-bt3": "bt3", "bt3-768x15x24h": "bt3"}
 _LEELA_LEGACY_FILE = "Leela_BT4_large_model.pb.gz"   # the old fixed name; used only if its size matches
 
 
